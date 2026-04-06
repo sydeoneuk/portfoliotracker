@@ -57,22 +57,59 @@
     }
     .table-card td { vertical-align: middle; border-color: #f0f2f5; }
 
-    .pnl-pos { color: #0fa968; font-weight: 600; }
-    .pnl-neg { color: #e0334c; font-weight: 600; }
+    .pnl-pos { color: #0fa968 !important; font-weight: 600; }
+    .pnl-neg { color: #e0334c !important; font-weight: 600; }
+
+    .side-nav .nav-link {
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      transition: background .15s;
+      font-size: .88rem; letter-spacing: .3px;
+    }
+    .side-nav .nav-link:hover { background: rgba(0,200,150,0.1); color: var(--t212-green) !important; }
+    .side-nav .nav-link.active { background: rgba(0,200,150,0.15); color: var(--t212-green) !important; font-weight: 600; }
     .cov-good { color: #0fa968; font-weight: 600; }
     .cov-warn { color: #fd7e14; font-weight: 600; }
     .cov-bad  { color: #e0334c; font-weight: 600; }
 
     .breadcrumb { font-size: .78rem; }
+    .badge-exchange { background: #e9ecef; color: #495057; font-size: .68rem; font-weight: 500; border-radius: 4px; padding: 2px 6px; }
   </style>
 </head>
 <body>
 
+<!-- ── Side nav (offcanvas) ─────────────────────────────────── -->
+<div class="offcanvas offcanvas-start side-nav" tabindex="-1" id="sideNav"
+     style="width:210px; background:#0f1923; border-right:1px solid rgba(255,255,255,0.08);">
+  <div class="offcanvas-header pb-2">
+    <span class="text-white fw-bold" style="font-size:.95rem;">Trading 212 <span style="color:#00c896;">Portfolio</span></span>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas"></button>
+  </div>
+  <div class="offcanvas-body p-0">
+    <nav class="nav flex-column pt-1">
+      <a class="nav-link text-white px-4 py-3" href="/">&#9;📊&nbsp; Portfolio</a>
+      <a class="nav-link text-white px-4 py-3" href="/transactions">&#9;🔄&nbsp; Transactions</a>
+      <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
+      <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
+    </nav>
+  </div>
+</div>
+
 <!-- ── Top bar ──────────────────────────────────────────────────────────── -->
 <div class="top-bar">
   <div class="d-flex align-items-center gap-3">
+    <button class="btn btn-link text-white p-0" data-bs-toggle="offcanvas" data-bs-target="#sideNav" aria-label="Menu">
+      <svg width="22" height="22" fill="currentColor" viewBox="0 0 16 16">
+        <path fill-rule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/>
+      </svg>
+    </button>
     <div class="brand">Trading 212 <span>Portfolio</span></div>
     <a href="/?account={{ account_filter }}" class="btn btn-sm btn-outline-light">← Portfolio</a>
+    <div class="btn-group btn-group-sm ms-2" role="group">
+      <a href="/holding/{{ ticker }}?account={% if account_filter == 'ISA' %}combined{% else %}ISA{% endif %}"
+         class="btn {% if account_filter == 'ISA' %}btn-light active{% else %}btn-outline-light{% endif %}">ISA</a>
+      <a href="/holding/{{ ticker }}?account={% if account_filter == 'Trading' %}combined{% else %}Trading{% endif %}"
+         class="btn {% if account_filter == 'Trading' %}btn-light active{% else %}btn-outline-light{% endif %}">Trading</a>
+    </div>
   </div>
   <div class="user-info">
     {% if user.avatar_url %}
@@ -116,6 +153,16 @@
 <!-- ── Main content ─────────────────────────────────────────────────────── -->
 <div class="container-fluid px-4 py-3">
 
+  {% if instrument.description %}
+  <!-- ── About ──────────────────────────────────────────────────────────── -->
+  <div class="section-title">About</div>
+  <div class="card mb-4" style="border:none; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,.08);">
+    <div class="card-body py-3 px-4">
+      <p class="mb-0" style="font-size:.85rem; line-height:1.65; color:#3a3a3a; font-weight:600; white-space:pre-wrap;">{{ instrument.description }}</p>
+    </div>
+  </div>
+  {% endif %}
+
   <!-- ── Key metrics ────────────────────────────────────────────────────── -->
   <div class="section-title">Position Summary</div>
   <div class="row g-3 mb-4">
@@ -139,16 +186,16 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Total Cost</div>
-        <div class="value {% if cost_gbp <= value_gbp %}pnl-pos{% else %}pnl-neg{% endif %}">
-          {{ cfmt(cost_gbp, "GBP") }}
-        </div>
+        <div class="value">{{ cfmt(cost_gbp, "GBP") }}</div>
       </div>
     </div>
 
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Market Value</div>
-        <div class="value">{{ cfmt(value_gbp, "GBP") }}</div>
+        <div class="value {% if value_gbp >= cost_gbp %}pnl-pos{% else %}pnl-neg{% endif %}">
+          {{ cfmt(value_gbp, "GBP") }}
+        </div>
       </div>
     </div>
 
@@ -189,6 +236,35 @@
     </div>
 
   </div>
+
+  <!-- ── Pies ─────────────────────────────────────────────────────────────── -->
+  {% if pies_in %}
+  <div class="section-title">Pies</div>
+  <div class="row g-3 mb-4">
+    {% for pie in pies_in %}
+    <div class="col-6 col-md-3 col-lg-2">
+      <a href="/?account={{ pie.account or 'combined' }}&pies={{ pie.id }}"
+         style="text-decoration:none; color:inherit;">
+        <div class="card metric-card p-3" style="cursor:pointer; transition: box-shadow .15s;"
+             onmouseover="this.style.boxShadow='0 4px 12px rgba(0,200,150,.25)'"
+             onmouseout="this.style.boxShadow=''">
+          <div class="label d-flex align-items-center justify-content-between">
+            <span>{{ pie.name }}</span>
+            {% if pie.account %}
+            <span class="badge-exchange ms-1">{{ pie.account }}</span>
+            {% endif %}
+          </div>
+          <div class="value" style="font-size:1rem;">{{ fmt(pie.owned_quantity, 4) }} shares</div>
+          <div class="sub">
+            {% if pie.current_share is not none %}{{ fmt(pie.current_share * 100, 1) }}% of pie{% endif %}
+            {% if pie.expected_share is not none %} · target {{ fmt(pie.expected_share * 100, 1) }}%{% endif %}
+          </div>
+        </div>
+      </a>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
 
   <!-- ── Dividend & valuation metrics ────────────────────────────────────── -->
   <div class="section-title">Dividend &amp; Valuation</div>
@@ -251,14 +327,6 @@
     </div>
 
   </div>
-
-  <!-- ── Description ──────────────────────────────────────────────────────── -->
-  {% if instrument.description %}
-  <div class="card table-card mb-4 p-3">
-    <div class="section-title mb-1">About</div>
-    <p class="mb-0 text-muted" style="font-size:.8rem; line-height:1.5">{{ instrument.description }}</p>
-  </div>
-  {% endif %}
 
   <!-- ── Dividend payments received ──────────────────────────────────────── -->
   <div class="section-title">Dividend Payments Received</div>

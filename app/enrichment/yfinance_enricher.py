@@ -32,6 +32,11 @@ class DividendOutlook:
     next_pay_date: Optional[datetime.date]
     next_amount: Optional[float]   # last known payment amount as proxy
     projected: list[dict] = field(default_factory=list)  # [{ex_date, amount, is_estimated}]
+    # Instrument metadata — populated from yf.info in get_outlook()
+    description: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    country: Optional[str] = None
 
 
 class YFinanceDividendEnricher:
@@ -84,8 +89,14 @@ class YFinanceDividendEnricher:
             if raw_ex:
                 next_ex_date = _ts_to_date(raw_ex)
 
+            description = info.get("longBusinessSummary") or None
+            sector      = info.get("sector") or None
+            industry    = info.get("industry") or None
+            country     = info.get("country") or None
+
         except Exception as exc:
             logger.warning("  [yfinance] %s outlook failed: %s", yf_ticker, exc)
+            description = sector = industry = country = None
 
         frequency = _infer_frequency(history)
         last_amount = history[-1].amount if history else None
@@ -107,6 +118,10 @@ class YFinanceDividendEnricher:
             next_pay_date=None,  # yfinance doesn't provide this; FMP enricher fills it in
             next_amount=last_amount,
             projected=projected,
+            description=description,
+            sector=sector,
+            industry=industry,
+            country=country,
         )
 
 

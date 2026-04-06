@@ -11,6 +11,16 @@
   <style>
     :root { --t212-green: #00c896; --t212-dark: #0f1923; }
     body { background: #f4f6f9; font-size: 0.875rem; }
+
+    .side-nav .nav-link {
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      transition: background .15s;
+      font-size: .88rem;
+      letter-spacing: .3px;
+    }
+    .side-nav .nav-link:hover  { background: rgba(0,200,150,0.1);  color: var(--t212-green) !important; }
+    .side-nav .nav-link.active { background: rgba(0,200,150,0.15); color: var(--t212-green) !important; font-weight: 600; }
+
     .top-bar {
       background: var(--t212-dark); color: #fff;
       padding: 1rem 1.5rem; display: flex; align-items: center; justify-content: space-between;
@@ -36,16 +46,39 @@
   </style>
 </head>
 <body>
+
+<!-- ── Side nav (offcanvas) ──────────────────────────────────────────── -->
+<div class="offcanvas offcanvas-start side-nav" tabindex="-1" id="sideNav"
+     style="width:210px; background:#0f1923; border-right:1px solid rgba(255,255,255,0.08);">
+  <div class="offcanvas-header pb-2">
+    <span class="text-white fw-bold" style="font-size:.95rem;">Trading 212 <span style="color:#00c896;">Portfolio</span></span>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas"></button>
+  </div>
+  <div class="offcanvas-body p-0">
+    <nav class="nav flex-column pt-1">
+      <a class="nav-link text-white px-4 py-3" href="/">&#9;📊&nbsp; Portfolio</a>
+      <a class="nav-link text-white px-4 py-3" href="/transactions">&#9;🔄&nbsp; Transactions</a>
+      <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
+      <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
+    </nav>
+  </div>
+</div>
+
+<!-- ── Top bar ───────────────────────────────────────────────────────── -->
   <div class="top-bar">
-    <a href="/" class="brand text-decoration-none text-white">
-      Trading 212 <span>Portfolio</span>
-    </a>
+    <div class="d-flex align-items-center gap-3">
+      <button class="btn btn-link text-white p-0" data-bs-toggle="offcanvas" data-bs-target="#sideNav" aria-label="Menu">
+        <svg width="22" height="22" fill="currentColor" viewBox="0 0 16 16">
+          <path fill-rule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/>
+        </svg>
+      </button>
+      <div class="brand">Trading 212 <span>Portfolio</span></div>
+    </div>
     <div class="user-info">
       {% if user.avatar_url %}
       <img src="{{ user.avatar_url }}" class="avatar" alt="">
       {% endif %}
       <span>{{ user.name or user.email }}</span>
-      <a href="/" class="btn btn-sm btn-outline-light ms-2">← Dashboard</a>
       <form method="post" action="/logout" class="d-inline">
         <button class="btn btn-sm btn-outline-secondary">Sign out</button>
       </form>
@@ -127,6 +160,21 @@
       </div>
     </div>
 
+    <!-- Clear data -->
+    <div class="card mb-4 border border-danger-subtle">
+      <div class="card-body">
+        <h6 class="card-title mb-1 text-danger">Clear Portfolio Data</h6>
+        <p class="text-muted mb-3" style="font-size:.85rem;">
+          Removes all synced positions, orders, transactions, dividend payments and pies for your account.
+          Instrument metadata and dividend history are not affected.
+          Your API keys and login are preserved. Run a sync afterwards to repopulate.
+        </p>
+        <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#clearDataModal">
+          Clear All Data
+        </button>
+      </div>
+    </div>
+
     <!-- Sync -->
     <div class="card mb-4">
       <div class="card-body">
@@ -173,6 +221,38 @@
 
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<!-- ── Clear data confirmation modal ──────────────────────────────────── -->
+<div class="modal fade" id="clearDataModal" tabindex="-1" aria-labelledby="clearDataModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold text-danger" id="clearDataModalLabel">⚠️ Clear All Portfolio Data?</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" style="font-size:.9rem;">
+        <p>This will permanently delete:</p>
+        <ul class="mb-3">
+          <li>All <strong>positions</strong></li>
+          <li>All <strong>orders</strong></li>
+          <li>All <strong>transactions</strong></li>
+          <li>All <strong>dividend payments</strong></li>
+          <li>All <strong>pies and pie holdings</strong></li>
+        </ul>
+        <p class="mb-0 text-muted" style="font-size:.82rem;">
+          Instrument metadata, dividend history, and transactions are not affected.
+          Your API keys and account login are preserved.
+        </p>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <form method="post" action="/settings/clear-data" class="d-inline">
+          <button type="submit" class="btn btn-danger">Yes, delete everything</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

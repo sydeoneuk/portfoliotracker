@@ -1,11 +1,13 @@
 import datetime
+import json
 import time
 import traceback
+from urllib.parse import quote, urlencode
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import yfinance as yf
-from fastapi import FastAPI, Depends, Request, BackgroundTasks, Form
+from fastapi import FastAPI, Depends, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -19,7 +21,13 @@ from app.auth.crypto import encrypt, decrypt
 from app.auth.oauth import oauth
 
 app = FastAPI(title="Trading 212 Dashboard")
-app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret,
+    same_site="lax",       # blocks cross-site POST — effective CSRF mitigation
+    https_only=settings.https_only,  # set HTTPS_ONLY=true in production
+    session_cookie="session",
+)
 
 
 @app.on_event("startup")
@@ -38,8 +46,9 @@ def _reset_stuck_syncs():
         db.close()
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+templates.env.filters["urlencode_val"] = lambda v: quote(str(v or ""), safe="")
 
-_sync_executor = ThreadPoolExecutor(max_workers=4)
+_sync_executor = ThreadPoolExecutor(max_workers=4)  # used directly for sync tasks
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────
@@ -230,7 +239,8 @@ def _run_sync(user_id: int) -> None:
             user_settings = db.query(UserSettings).filter_by(user_id=user_id).first()
             if user_settings:
                 user_settings.sync_status = "error"
-                user_settings.sync_message = str(exc)
+                # Use type + short message only — full traceback goes to server logs, not the UI
+                user_settings.sync_message = f"{type(exc).__name__}: {exc.args[0] if exc.args else 'unknown error'}"
                 db.commit()
         except Exception:
             pass
@@ -294,8 +304,9 @@ def _handle_oauth_callback(request: Request, db: Session, provider: str,
                             avatar_url: str | None) -> RedirectResponse:
     user = db.query(User).filter_by(provider=provider, provider_id=provider_id).first()
     if not user:
-        # Check if email already exists under a different provider
-        user = db.query(User).filter_by(email=email).first()
+        # Do NOT merge across providers by email — email ownership can transfer.
+        # Each (provider, provider_id) pair is a distinct identity.
+        pass
     if not user:
         user = User(email=email, name=name, provider=provider,
                     provider_id=provider_id, avatar_url=avatar_url)
@@ -371,13 +382,39 @@ async def clear_key(
     user = _require_user(request, db)
     if isinstance(user, RedirectResponse):
         return user
+    if key_type not in ("trading", "isa"):
+        from fastapi.responses import Response
+        return Response(status_code=400)
     user_settings = _get_or_create_settings(db, user.id)
     if key_type == "trading":
         user_settings.t212_api_key_enc = None
         user_settings.t212_api_secret_enc = None
-    elif key_type == "isa":
+    else:
         user_settings.t212_isa_api_key_enc = None
         user_settings.t212_isa_api_secret_enc = None
+    db.commit()
+    return _redirect("/settings", status_code=303)
+
+
+@app.post("/settings/clear-data")
+async def clear_data(request: Request, db: Session = Depends(get_session)):
+    """Delete all synced portfolio data for the current user and reset sync state."""
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+
+    uid = user.id
+    db.execute(text("DELETE FROM positions         WHERE user_id = :uid"), {"uid": uid})
+    db.execute(text("DELETE FROM orders            WHERE user_id = :uid"), {"uid": uid})
+    db.execute(text("DELETE FROM dividend_payments WHERE user_id = :uid"), {"uid": uid})
+    db.execute(text("DELETE FROM transactions      WHERE user_id = :uid"), {"uid": uid})
+    # Deleting pies cascades to pie_holdings via the FK ondelete="CASCADE"
+    db.execute(text("DELETE FROM pies              WHERE user_id = :uid"), {"uid": uid})
+    # Reset sync state
+    user_settings = _get_or_create_settings(db, uid)
+    user_settings.last_sync_at = None
+    user_settings.sync_status  = "idle"
+    user_settings.sync_message = "Data cleared."
     db.commit()
     return _redirect("/settings", status_code=303)
 
@@ -387,22 +424,29 @@ async def clear_key(
 @app.post("/sync")
 async def trigger_sync(
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_session),
 ):
     user = _require_user(request, db)
     if isinstance(user, RedirectResponse):
         return user
-    user_settings = _get_or_create_settings(db, user.id)
 
-    if user_settings.sync_status == "running":
-        return _redirect("/settings", status_code=303)
-
-    user_settings.sync_status = "running"
-    user_settings.sync_message = "Queued…"
+    # Atomically claim the "running" slot — only proceeds if current status is not "running"
+    result = db.execute(
+        text("""
+            UPDATE user_settings
+            SET sync_status = 'running', sync_message = 'Queued…'
+            WHERE user_id = :uid AND sync_status != 'running'
+        """),
+        {"uid": user.id},
+    )
     db.commit()
 
-    background_tasks.add_task(_run_sync, user.id)
+    if result.rowcount == 0:
+        # Another sync is already running for this user — ignore the duplicate request
+        return _redirect("/settings", status_code=303)
+
+    # Submit to dedicated thread pool — independent of the request lifecycle
+    _sync_executor.submit(_run_sync, user.id)
     return _redirect("/settings", status_code=303)
 
 
@@ -436,6 +480,7 @@ _COMBINED_SQL = text("""
         i.sector,
         i.industry,
         i.instrument_class,
+        i.country,
         CASE WHEN COUNT(DISTINCT p.account) > 1 THEN 'Both'
              ELSE MAX(p.account) END                           AS account,
         SUM(p.quantity)                                        AS quantity,
@@ -461,12 +506,15 @@ _COMBINED_SQL = text("""
             WHERE df.ticker = p.ticker
         ), 0)                                                   AS annual_rate_per_share,
         i.fcf_per_share_3y_avg,
-        i.eps_ttm
+        i.eps_ttm,
+        (SELECT COUNT(*)
+         FROM pie_holdings ph WHERE ph.ticker = p.ticker
+           AND ph.user_id = :user_id)                               AS pie_count
     FROM positions p
     JOIN instruments i ON p.ticker = i.ticker
     WHERE p.user_id = :user_id
     GROUP BY p.ticker, i.name, i.short_name, i.exchange, i.currency_code,
-             i.instrument_type, i.sector, i.industry, i.instrument_class,
+             i.instrument_type, i.sector, i.industry, i.instrument_class, i.country,
              i.fcf_per_share_3y_avg, i.eps_ttm
     ORDER BY SUM(p.quantity * COALESCE(p.current_price, p.average_price)) DESC NULLS LAST
 """)
@@ -482,6 +530,7 @@ _ACCOUNT_SQL = text("""
         i.sector,
         i.industry,
         i.instrument_class,
+        i.country,
         p.account,
         p.quantity,
         p.average_price,
@@ -504,7 +553,13 @@ _ACCOUNT_SQL = text("""
             WHERE df.ticker = p.ticker
         ), 0)                                                   AS annual_rate_per_share,
         i.fcf_per_share_3y_avg,
-        i.eps_ttm
+        i.eps_ttm,
+        (SELECT COUNT(*)
+         FROM pie_holdings ph
+         JOIN pies pie ON pie.pk = ph.pie_id
+         WHERE ph.ticker = p.ticker
+           AND ph.user_id = :user_id
+           AND (pie.account = :account OR pie.account IS NULL))     AS pie_count
     FROM positions p
     JOIN instruments i ON p.ticker = i.ticker
     WHERE p.user_id = :user_id AND p.account = :account
@@ -526,10 +581,11 @@ def _load_pies(db: Session, user_id: int, account: str) -> list[dict]:
         params = {"user_id": user_id}
 
     rows = db.execute(text(f"""
-        SELECT DISTINCT pie.id, pie.name
+        SELECT DISTINCT pie.pk AS id, pie.name
         FROM pies pie
-        JOIN pie_holdings ph ON ph.pie_id = pie.id
+        JOIN pie_holdings ph ON ph.pie_id = pie.pk
         JOIN positions pos ON pos.ticker = ph.ticker AND pos.user_id = :user_id
+        WHERE pie.user_id = :user_id
         {account_filter}
         ORDER BY pie.name
     """), params).fetchall()
@@ -560,8 +616,9 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
                 pie.account                  AS pie_account,
                 SUM(ph.owned_quantity)       AS quantity
             FROM pie_holdings ph
-            JOIN pies pie ON pie.id = ph.pie_id
+            JOIN pies pie ON pie.pk = ph.pie_id
             WHERE ph.pie_id IN ({safe_ids})
+              AND ph.user_id = :user_id
             GROUP BY ph.ticker, pie.account
         ),
         div_totals AS (
@@ -581,6 +638,7 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
             i.sector,
             i.industry,
             i.instrument_class,
+            i.country,
             {account_col}                                          AS account,
             SUM(pa.quantity)                                       AS quantity,
             SUM(pa.quantity * pos.average_price)
@@ -607,7 +665,10 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
                 WHERE df.ticker = pa.ticker
             ), 0)                                                   AS annual_rate_per_share,
             i.fcf_per_share_3y_avg,
-            i.eps_ttm
+            i.eps_ttm,
+            (SELECT COUNT(*) FROM pie_holdings ph2
+             WHERE ph2.ticker = pa.ticker
+               AND ph2.user_id = :user_id)                          AS pie_count
         FROM pie_agg pa
         JOIN instruments i ON pa.ticker = i.ticker
         JOIN positions pos ON pos.ticker = pa.ticker AND pos.user_id = :user_id
@@ -615,13 +676,14 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
         LEFT JOIN div_totals dt ON dt.ticker = pa.ticker AND dt.account = pos.account
         GROUP BY pa.ticker,
                  i.name, i.short_name, i.exchange, i.currency_code, i.instrument_type,
-                 i.sector, i.industry, i.instrument_class, i.fcf_per_share_3y_avg, i.eps_ttm
+                 i.sector, i.industry, i.instrument_class, i.country, i.fcf_per_share_3y_avg, i.eps_ttm
         ORDER BY SUM(pa.quantity * pos.current_price) DESC NULLS LAST
     """
 
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, account: str = "combined", pies: str = "",
+          country: str = "", sector: str = "",
           db: Session = Depends(get_session)):
     user = _get_current_user(request, db)
     if not user:
@@ -668,6 +730,19 @@ def index(request: Request, account: str = "combined", pies: str = "",
                     p[col] = round(float(p[col]) / 100, 2)
             p["currency"] = "GBP"
 
+    # Apply hidden country / sector filters (activated from the Analysis page)
+    if country:
+        if country == "Unknown":
+            positions = [p for p in positions if not (p.get("country") or "").strip()]
+        else:
+            positions = [p for p in positions if (p.get("country") or "").strip() == country]
+
+    if sector:
+        def _eff_sector(p):
+            s = (p.get("sector") or "").strip()
+            return s if s else p["display_class"]
+        positions = [p for p in positions if _eff_sector(p) == sector]
+
     totals: dict[str, dict] = {}
     for p in positions:
         ccy = p["currency"]
@@ -707,6 +782,358 @@ def index(request: Request, account: str = "combined", pies: str = "",
         "available_pies": available_pies,
         "selected_pie_ids": {str(i) for i in selected_pie_ids},
         "pies_param": pies,
+        "country_filter": country,
+        "sector_filter": sector,
+        "fmt": _fmt,
+        "cfmt": _cfmt,
+    })
+
+
+# ── Transactions page ──────────────────────────────────────────────────────
+
+_INTERNAL_TICKERS = {"PSRU_EQ", "PSEU_EQ", "PSUSA_EQ"}
+
+
+@app.get("/transactions", response_class=HTMLResponse)
+def transactions_page(request: Request, show_internal: bool = False,
+                      db: Session = Depends(get_session)):
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+
+    rows = db.execute(text("""
+        SELECT
+            o.filled_at,
+            o.ticker,
+            COALESCE(NULLIF(i.name, ''), i.short_name, o.ticker)  AS name,
+            COALESCE(NULLIF(i.short_name, ''), o.ticker)           AS short_name,
+            o.account,
+            o.side,
+            o.order_type,
+            o.filled_quantity                                       AS quantity,
+            o.fill_price,
+            COALESCE(i.currency_code, 'GBP')                       AS currency
+        FROM orders o
+        LEFT JOIN instruments i ON i.ticker = o.ticker
+        WHERE o.user_id = :user_id AND o.status = 'FILLED'
+        ORDER BY o.filled_at DESC
+    """), {"user_id": user.id}).fetchall()
+
+    orders = [dict(r._mapping) for r in rows]
+
+    if not show_internal:
+        orders = [o for o in orders if o["ticker"] not in _INTERNAL_TICKERS]
+
+    currencies = {o["currency"] for o in orders if o["currency"]}
+    fx = _get_fx_rates_to_gbp(currencies)
+
+    for o in orders:
+        ccy = o["currency"] or "GBP"
+        if ccy == "GBX":
+            price_gbp = float(o["fill_price"] or 0) * 0.01
+        else:
+            price_gbp = float(o["fill_price"] or 0) * fx.get(ccy, 1.0)
+        o["fill_price_gbp"] = price_gbp
+        o["value_gbp"] = float(o["quantity"] or 0) * price_gbp
+
+    total_buy_gbp  = sum(o["value_gbp"] for o in orders if o["side"] == "BUY")
+    total_sell_gbp = sum(o["value_gbp"] for o in orders if o["side"] == "SELL")
+
+    last_synced = db.execute(text(
+        "SELECT MAX(last_synced_at) FROM positions WHERE user_id = :uid"
+    ), {"uid": user.id}).scalar()
+
+    return templates.TemplateResponse(request, "transactions.html", {
+        "user": user,
+        "orders": orders,
+        "total_buy_gbp": total_buy_gbp,
+        "total_sell_gbp": total_sell_gbp,
+        "show_internal": show_internal,
+        "last_synced": last_synced,
+        "fmt": _fmt,
+        "cfmt": _cfmt,
+    })
+
+
+# ── Dividends page ──────────────────────────────────────────────────────────
+
+@app.get("/dividends", response_class=HTMLResponse)
+def dividends_page(request: Request, month: str = "", account: str = "",
+                   db: Session = Depends(get_session)):
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+
+    # Validate params
+    import re as _re
+    if month and not _re.match(r"^\d{4}-\d{2}$", month):
+        month = ""
+    if account not in ("ISA", "Trading"):
+        account = ""
+
+    # Build filter clauses
+    month_clause   = "AND TO_CHAR(dp.paid_on, 'YYYY-MM') = :month"   if month   else ""
+    account_clause = "AND dp.account = :account"                       if account else ""
+    params: dict = {"user_id": user.id}
+    if month:
+        params["month"] = month
+    if account:
+        params["account"] = account
+
+    rows = db.execute(text(f"""
+        SELECT
+            dp.paid_on,
+            dp.ticker,
+            COALESCE(NULLIF(i.name, ''), i.short_name, dp.ticker)  AS name,
+            COALESCE(NULLIF(i.short_name, ''), dp.ticker)           AS short_name,
+            dp.account,
+            dp.amount,
+            dp.quantity,
+            dp.gross_amount_per_share,
+            dp.type
+        FROM dividend_payments dp
+        LEFT JOIN instruments i ON i.ticker = dp.ticker
+        WHERE dp.user_id = :user_id
+          {month_clause}
+          {account_clause}
+        ORDER BY dp.paid_on DESC
+    """), params).fetchall()
+
+    payments = [dict(r._mapping) for r in rows]
+    total_gbp = sum(float(p["amount"] or 0) for p in payments)
+
+    # Available months scoped to the active account filter so the dropdown
+    # only shows months that actually have payments for the selected account
+    month_params: dict = {"user_id": user.id}
+    month_account_clause = ""
+    if account:
+        month_account_clause = "AND dp.account = :account"
+        month_params["account"] = account
+    month_rows = db.execute(text(f"""
+        SELECT DISTINCT
+            TO_CHAR(dp.paid_on, 'YYYY-MM')   AS month_val,
+            TO_CHAR(dp.paid_on, 'Mon YYYY')  AS month_label
+        FROM dividend_payments dp
+        WHERE dp.user_id = :user_id
+          AND dp.paid_on IS NOT NULL
+          {month_account_clause}
+        ORDER BY 1 DESC
+    """), month_params).fetchall()
+    available_months = [{"val": r.month_val, "label": r.month_label} for r in month_rows]
+
+    last_synced = db.execute(text(
+        "SELECT MAX(last_synced_at) FROM positions WHERE user_id = :uid"
+    ), {"uid": user.id}).scalar()
+
+    return templates.TemplateResponse(request, "dividends.html", {
+        "user": user,
+        "payments": payments,
+        "total_gbp": total_gbp,
+        "month_filter": month,
+        "account_filter": account,
+        "available_months": available_months,
+        "last_synced": last_synced,
+        "fmt": _fmt,
+        "cfmt": _cfmt,
+    })
+
+
+# ── Portfolio Analysis ─────────────────────────────────────────────────────
+
+_PALETTE = [
+    '#00c896', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6',
+    '#06b6d4', '#f97316', '#84cc16', '#ec4899', '#6b7280',
+    '#14b8a6', '#a855f7', '#eab308', '#f43f5e', '#0ea5e9',
+]
+
+_ANALYSIS_COMBINED_SQL = text("""
+    SELECT
+        p.ticker,
+        COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
+        COALESCE(i.currency_code, 'GBP')                       AS currency,
+        COALESCE(i.instrument_type, '')                        AS instrument_type,
+        i.sector, i.industry, i.instrument_class, i.country,
+        SUM(p.quantity * COALESCE(p.current_price, p.average_price)) AS value
+    FROM positions p
+    JOIN instruments i ON p.ticker = i.ticker
+    WHERE p.user_id = :user_id
+    GROUP BY p.ticker, i.name, i.short_name, i.currency_code,
+             i.instrument_type, i.sector, i.industry, i.instrument_class, i.country
+""")
+
+_ANALYSIS_ACCOUNT_SQL = text("""
+    SELECT
+        p.ticker,
+        COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
+        COALESCE(i.currency_code, 'GBP')                       AS currency,
+        COALESCE(i.instrument_type, '')                        AS instrument_type,
+        i.sector, i.industry, i.instrument_class, i.country,
+        p.quantity * COALESCE(p.current_price, p.average_price) AS value
+    FROM positions p
+    JOIN instruments i ON p.ticker = i.ticker
+    WHERE p.user_id = :user_id AND p.account = :account
+""")
+
+
+def _analysis_pie_query(pie_ids: list[int], account: str) -> str:
+    safe_ids = ", ".join(str(int(i)) for i in pie_ids)
+    pos_account_filter = "AND pos.account = :account" if account in ("ISA", "Trading") else ""
+    return f"""
+        WITH pie_agg AS (
+            SELECT ph.ticker, SUM(ph.owned_quantity) AS quantity
+            FROM pie_holdings ph
+            WHERE ph.pie_id IN ({safe_ids})
+              AND ph.user_id = :user_id
+            GROUP BY ph.ticker
+        )
+        SELECT
+            pa.ticker,
+            COALESCE(NULLIF(i.name, ''), i.short_name, pa.ticker) AS name,
+            COALESCE(i.currency_code, 'GBP')  AS currency,
+            COALESCE(i.instrument_type, '')    AS instrument_type,
+            i.sector, i.industry, i.instrument_class, i.country,
+            SUM(pa.quantity * COALESCE(pos.current_price, pos.average_price)) AS value
+        FROM pie_agg pa
+        JOIN instruments i ON pa.ticker = i.ticker
+        JOIN positions pos ON pos.ticker = pa.ticker AND pos.user_id = :user_id
+            {pos_account_filter}
+        GROUP BY pa.ticker, i.name, i.short_name, i.currency_code,
+                 i.instrument_type, i.sector, i.industry, i.instrument_class, i.country
+    """
+
+
+@app.get("/analysis", response_class=HTMLResponse)
+def portfolio_analysis(request: Request, account: str = "combined", pies: str = "",
+                       db: Session = Depends(get_session)):
+    user = _get_current_user(request, db)
+    if not user:
+        return _redirect("/login")
+
+    if account not in ("ISA", "Trading"):
+        account = "combined"
+
+    available_pies = _load_pies(db, user.id, account)
+    all_pie_ids = {p["id"] for p in available_pies}
+
+    if pies == "all":
+        selected_pie_ids = sorted(all_pie_ids)
+    elif pies:
+        selected_pie_ids = [int(p) for p in pies.split(",")
+                            if p.strip().isdigit() and int(p) in all_pie_ids]
+    else:
+        selected_pie_ids = []
+
+    params: dict = {"user_id": user.id}
+    if selected_pie_ids:
+        if account in ("ISA", "Trading"):
+            params["account"] = account
+        rows = db.execute(text(_analysis_pie_query(selected_pie_ids, account)), params).fetchall()
+    elif account in ("ISA", "Trading"):
+        params["account"] = account
+        rows = db.execute(_ANALYSIS_ACCOUNT_SQL, params).fetchall()
+    else:
+        rows = db.execute(_ANALYSIS_COMBINED_SQL, params).fetchall()
+
+    positions = [dict(r._mapping) for r in rows]
+
+    currencies = {p["currency"] for p in positions if p.get("currency")}
+    fx = _get_fx_rates_to_gbp(currencies)
+
+    geo: dict[str, float] = {}
+    sector_agg: dict[str, float] = {}
+
+    for p in positions:
+        ccy = p.get("currency") or "GBP"
+        value_gbp = float(p.get("value") or 0) * fx.get(ccy, 1.0)
+
+        country = (p.get("country") or "").strip() or "Unknown"
+        geo[country] = geo.get(country, 0) + value_gbp
+
+        s = (p.get("sector") or "").strip()
+        if not s:
+            s = _classify(
+                p.get("instrument_type") or "",
+                p.get("sector") or "",
+                p.get("industry") or "",
+                p.get("name") or "",
+                p.get("instrument_class"),
+            )
+        sector_agg[s] = sector_agg.get(s, 0) + value_gbp
+
+    total_value = sum(geo.values())
+
+    def _build_rows(d: dict[str, float]) -> list[dict]:
+        total = sum(d.values()) or 1
+        rows_ = sorted(
+            [{"label": k, "value": v, "pct": v / total * 100} for k, v in d.items()],
+            key=lambda x: -x["value"],
+        )
+        for i, row in enumerate(rows_):
+            row["color"] = _PALETTE[i % len(_PALETTE)]
+        return rows_
+
+    def _build_chart_json(rows_: list[dict], max_slices: int = 12) -> str:
+        top = list(rows_[:max_slices])
+        rest = rows_[max_slices:]
+        if rest:
+            other_val = sum(r["value"] for r in rest)
+            other_pct = sum(r["pct"] for r in rest)
+            top.append({"label": "Other", "value": other_val, "pct": other_pct,
+                        "color": _PALETTE[len(top) % len(_PALETTE)]})
+        return json.dumps({
+            "labels": [r["label"] for r in top],
+            "values": [round(r["value"], 2) for r in top],
+            "pcts":   [round(r["pct"], 2) for r in top],
+            "colors": [r["color"] for r in top],
+        })
+
+    geo_table    = _build_rows(geo)
+    sector_table = _build_rows(sector_agg)
+
+    # Add click-through hrefs — rows link to main portfolio with that filter applied
+    _base = {"account": account}
+    if pies:
+        _base["pies"] = pies
+    for row in geo_table:
+        row["href"] = "/?" + urlencode({**_base, "country": row["label"]})
+    for row in sector_table:
+        row["href"] = "/?" + urlencode({**_base, "sector": row["label"]})
+
+    # ── Dividends by month ────────────────────────────────────────────────
+    # Fetch the last 24 months of dividend payments, scoped to the current
+    # account filter. Amounts are already stored in GBP by T212.
+    div_account_filter = "AND dp.account = :account" if account in ("ISA", "Trading") else ""
+    div_rows = db.execute(text(f"""
+        SELECT
+            TO_CHAR(DATE_TRUNC('month', dp.paid_on), 'Mon YYYY') AS month_label,
+            DATE_TRUNC('month', dp.paid_on)                       AS month_dt,
+            SUM(dp.amount)                                        AS total
+        FROM dividend_payments dp
+        WHERE dp.user_id = :user_id
+          {div_account_filter}
+          AND dp.paid_on >= NOW() - INTERVAL '24 months'
+        GROUP BY DATE_TRUNC('month', dp.paid_on)
+        ORDER BY DATE_TRUNC('month', dp.paid_on)
+    """), {"user_id": user.id, **({} if account == "combined" else {"account": account})}).fetchall()
+
+    div_by_month = json.dumps({
+        "labels": [r.month_label for r in div_rows],
+        "values": [round(float(r.total), 2) for r in div_rows],
+        "total":  round(sum(float(r.total) for r in div_rows), 2),
+    })
+
+    return templates.TemplateResponse(request, "analysis.html", {
+        "user": user,
+        "account_filter": account,
+        "available_pies": available_pies,
+        "selected_pie_ids": [str(i) for i in selected_pie_ids],
+        "pies_param": pies,
+        "total_value": total_value,
+        "geo_table": geo_table,
+        "sector_table": sector_table,
+        "geo_data": _build_chart_json(geo_table),
+        "sector_data": _build_chart_json(sector_table),
+        "div_by_month": div_by_month,
         "fmt": _fmt,
         "cfmt": _cfmt,
     })
@@ -811,6 +1238,19 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         .all()
     )
 
+    # Pies containing this ticker — scoped to the current user
+    pie_rows = db.execute(text("""
+        SELECT pie.id, pie.name, pie.account,
+               ph.owned_quantity, ph.current_share, ph.expected_share
+        FROM pies pie
+        JOIN pie_holdings ph ON ph.pie_id = pie.pk
+        WHERE ph.ticker = :ticker
+          AND pie.user_id = :user_id
+          AND (:account = 'combined' OR pie.account = :account OR pie.account IS NULL)
+        ORDER BY pie.name
+    """), {"ticker": ticker, "account": account, "user_id": user.id}).fetchall()
+    pies_in = [dict(r._mapping) for r in pie_rows]
+
     return templates.TemplateResponse(request, "holding.html", {
         "user": user,
         "instrument": instrument,
@@ -840,6 +1280,7 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         "div_payments": div_payments,
         "hist_divs": hist_divs,
         "forecast_divs": forecast_divs,
+        "pies_in": pies_in,
         "fmt": _fmt,
         "cfmt": _cfmt,
     })

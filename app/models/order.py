@@ -1,15 +1,17 @@
 import datetime
-from sqlalchemy import Column, String, Float, DateTime, Integer, ForeignKey
+from sqlalchemy import Column, String, Float, DateTime, Integer, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.models.base import Base
 
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (UniqueConstraint("user_id", "id", name="uq_orders_user_t212"),)
 
-    id = Column(String, primary_key=True)
+    pk = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, nullable=False)   # T212 order ID
     ticker = Column(String, ForeignKey("instruments.ticker"))
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
     account = Column(String(20))
     quantity = Column(Float)
     filled_quantity = Column(Float)

@@ -6,8 +6,11 @@ from app.models.base import Base
 
 class Pie(Base):
     __tablename__ = "pies"
+    __table_args__ = (UniqueConstraint("user_id", "id", name="uq_pies_user_t212"),)
 
-    id = Column(Integer, primary_key=True)
+    pk = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(Integer, nullable=False)   # T212 pie ID
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     name = Column(String, nullable=False)
     account = Column(String(20))   # "ISA" or "Trading" — set at sync time
     icon = Column(String)
@@ -25,10 +28,11 @@ class Pie(Base):
 
 class PieHolding(Base):
     __tablename__ = "pie_holdings"
-    __table_args__ = (UniqueConstraint("pie_id", "ticker", name="uq_pie_holdings_pie_ticker"),)
+    __table_args__ = (UniqueConstraint("user_id", "pie_id", "ticker", name="uq_pie_holdings_user_pie_ticker"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    pie_id = Column(Integer, ForeignKey("pies.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    pie_id = Column(Integer, ForeignKey("pies.pk", ondelete="CASCADE"), nullable=False)
     ticker = Column(String, ForeignKey("instruments.ticker"), nullable=False)
 
     expected_share = Column(Float)

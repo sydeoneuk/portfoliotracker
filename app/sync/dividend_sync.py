@@ -187,9 +187,18 @@ class DividendSync:
             )
             self.session.add(forecast)
 
-        # ── 5. Mark instrument as synced ──────────────────────────────────
+        # ── 5. Update instrument metadata and mark as synced ─────────────
         instrument.yf_ticker = yf_ticker
         instrument.last_dividend_synced_at = now
+        if outlook.description:
+            instrument.description = outlook.description
+        if outlook.sector:
+            instrument.sector = outlook.sector
+        if outlook.industry:
+            instrument.industry = outlook.industry
+        if outlook.country:
+            instrument.country = outlook.country
+        instrument.last_enriched_at = now
 
         self.session.commit()
         logger.info(

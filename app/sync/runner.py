@@ -18,9 +18,11 @@ class SyncRunner:
 
     def sync_all(self):
         print(f"Starting full sync for account: {self.account}...")
-        self.sync_instruments()
+        # Positions and pies first so we know which tickers are held before
+        # fetching the T212 instrument catalogue (avoids storing all 16k+ rows).
         self.sync_positions()
         self.sync_pies()
+        self.sync_instruments()
         self.sync_open_orders()
         try:
             self.sync_order_history()
@@ -28,22 +30,48 @@ class SyncRunner:
             print(f"  Order history sync failed (non-fatal): {exc}")
         self.sync_transactions()
         self.sync_dividend_payments()
+        self.sync_instrument_metadata()
         print("Sync complete.")
 
     def sync_instruments(self):
-        # Instruments change rarely — skip if synced within the last 24 hours.
+        """Sync T212 instrument metadata for held tickers only.
+
+        Fetches the full T212 catalogue (one API call) but only upserts rows for
+        tickers the user currently holds in positions or pies. Skips if all held
+        instruments were updated within the last 24 hours.
+        """
         from sqlalchemy import text as _text
+
+        # Collect tickers the user holds (positions already synced at this point)
+        held_tickers = {
+            r[0] for r in self.session.query(Position.ticker)
+            .filter(Position.user_id == self.user_id).all()
+        } | {
+            r[0] for r in self.session.query(PieHolding.ticker)
+            .filter(PieHolding.user_id == self.user_id).all()
+        }
+
+        if not held_tickers:
+            print("  No held positions found, skipping instrument sync.")
+            return
+
+        # Skip if all held instruments were refreshed within the last 24 hours
         last = self.session.execute(
-            _text("SELECT MAX(updated_at) FROM instruments")
+            _text("SELECT MIN(updated_at) FROM instruments WHERE ticker = ANY(:tickers)"),
+            {"tickers": list(held_tickers)},
         ).scalar()
         if last and (datetime.datetime.utcnow() - last).total_seconds() < 86400:
             print("  Instruments up to date (synced < 24h ago), skipping.")
             return
-        print("Syncing instruments...")
+
+        print(f"Syncing instruments for {len(held_tickers)} held tickers...")
         data = self.client.get_instruments()
         now = datetime.datetime.utcnow()
 
-        for item in data:
+        # Filter catalogue to held tickers only
+        relevant = [item for item in data if item["ticker"] in held_tickers]
+
+        for item in relevant:
             stmt = (
                 insert(Instrument)
                 .values(
@@ -74,7 +102,7 @@ class SyncRunner:
             self.session.execute(stmt)
 
         self.session.commit()
-        print(f"  Synced {len(data)} instruments.")
+        print(f"  Synced {len(relevant)} instruments (filtered from {len(data)} in catalogue).")
 
     def sync_positions(self):
         print("Syncing positions...")
@@ -136,9 +164,9 @@ class SyncRunner:
         latest_pie = self.session.execute(
             _text(
                 "SELECT MAX(last_synced_at) FROM pies "
-                "WHERE account = :acc OR account IS NULL"
+                "WHERE user_id = :uid AND (account = :acc OR account IS NULL)"
             ),
-            {"acc": self.account},
+            {"uid": self.user_id, "acc": self.account},
         ).scalar()
         if latest_pie and (datetime.datetime.utcnow() - latest_pie).total_seconds() < 14400:
             print("  Pies up to date (synced < 4h ago), skipping.")
@@ -169,6 +197,7 @@ class SyncRunner:
                 insert(Pie)
                 .values(
                     id=pie_id,
+                    user_id=self.user_id,
                     name=s.get("name"),
                     account=self.account,
                     icon=s.get("icon"),
@@ -181,7 +210,8 @@ class SyncRunner:
                     created_at=now,
                 )
                 .on_conflict_do_update(
-                    index_elements=["id"],
+                    # Unique constraint is (user_id, id) — each user owns their own pie row
+                    index_elements=["user_id", "id"],
                     set_={
                         "name": s.get("name"),
                         "account": self.account,
@@ -190,8 +220,10 @@ class SyncRunner:
                         "last_synced_at": now,
                     },
                 )
+                .returning(Pie.pk)
             )
-            self.session.execute(stmt)
+            # Get the surrogate PK back — pie_holdings.pie_id references pies.pk, not pies.id
+            surrogate_pie_pk = self.session.execute(stmt).scalar()
             self.session.flush()
 
             # Ensure every ticker referenced by this pie exists in instruments.
@@ -214,12 +246,15 @@ class SyncRunner:
             if pie_tickers - existing:
                 print(f"  Inserted {len(pie_tickers - existing)} instrument stub(s) for out-of-region tickers.")
 
-            # Replace all holdings for this pie
-            self.session.query(PieHolding).filter_by(pie_id=pie_id).delete()
+            # Replace all holdings for this user+pie using the surrogate PK
+            self.session.query(PieHolding).filter_by(
+                user_id=self.user_id, pie_id=surrogate_pie_pk
+            ).delete()
             for item in instruments:
                 result = item.get("result", {})
                 holding = PieHolding(
-                    pie_id=pie_id,
+                    user_id=self.user_id,
+                    pie_id=surrogate_pie_pk,
                     ticker=item["ticker"],
                     expected_share=item.get("expectedShare"),
                     current_share=item.get("currentShare"),
@@ -240,13 +275,18 @@ class SyncRunner:
         data = self.client.get_open_orders()
         now = datetime.datetime.utcnow()
 
-        self.session.query(Order).filter(Order.status == "LOCAL_OPEN").delete()
+        self.session.query(Order).filter(
+            Order.status == "LOCAL_OPEN",
+            Order.user_id == self.user_id,
+        ).delete()
 
         for item in data:
             stmt = (
                 insert(Order)
                 .values(
                     id=str(item["id"]),
+                    user_id=self.user_id,
+                    account=self.account,
                     ticker=item.get("ticker"),
                     quantity=item.get("quantity"),
                     filled_quantity=item.get("filledQuantity"),
@@ -261,8 +301,9 @@ class SyncRunner:
                     synced_at=now,
                 )
                 .on_conflict_do_update(
-                    index_elements=["id"],
+                    index_elements=["user_id", "id"],
                     set_={
+                        "account": self.account,
                         "status": item.get("status", "LOCAL_OPEN"),
                         "filled_quantity": item.get("filledQuantity"),
                         "fill_price": item.get("fillPrice"),
@@ -349,14 +390,13 @@ class SyncRunner:
                         synced_at=now,
                     )
                     .on_conflict_do_update(
-                        index_elements=["id"],
+                        index_elements=["user_id", "id"],
                         set_={
                             "status": order.get("status"),
                             "filled_quantity": order.get("filledQuantity") or fill.get("quantity"),
                             "fill_price": fill_price,
                             "filled_at": _parse_dt(fill.get("filledAt")),
                             "side": order.get("side"),
-                            "user_id": self.user_id,
                             "account": self.account,
                             "synced_at": now,
                         },
@@ -382,7 +422,8 @@ class SyncRunner:
 
         from sqlalchemy import text as _text
         latest = self.session.execute(
-            _text("SELECT MAX(date_time) FROM transactions")
+            _text("SELECT MAX(date_time) FROM transactions WHERE user_id = :uid"),
+            {"uid": self.user_id},
         ).scalar()
         # Subtract 60s buffer to avoid missing records on timestamp boundaries
         if latest:
@@ -415,6 +456,7 @@ class SyncRunner:
                     insert(Transaction)
                     .values(
                         id=str(item.get("reference", item.get("id", ""))),
+                        user_id=self.user_id,
                         type=item.get("type"),
                         amount=item.get("amount"),
                         date_time=_parse_dt(item.get("dateTime")),
@@ -422,7 +464,10 @@ class SyncRunner:
                         notes=item.get("notes"),
                         synced_at=now,
                     )
-                    .on_conflict_do_nothing(index_elements=["id"])
+                    .on_conflict_do_update(
+                        index_elements=["user_id", "id"],
+                        set_={"synced_at": now},
+                    )
                 )
                 self.session.execute(stmt)
 
@@ -511,8 +556,8 @@ class SyncRunner:
                         synced_at=now,
                     )
                     .on_conflict_do_update(
-                        index_elements=["reference"],
-                        set_={"user_id": self.user_id, "synced_at": now},
+                        index_elements=["user_id", "reference"],
+                        set_={"synced_at": now},
                     )
                 )
                 self.session.execute(stmt)
@@ -525,6 +570,140 @@ class SyncRunner:
 
         self.session.commit()
         print(f"  Synced {total} dividend payments.")
+
+    def sync_instrument_metadata(self):
+        """Enrich held instruments with metadata from yfinance (primary) and FMP (fallback).
+
+        Fetches description, sector, industry and country. Only processes instruments
+        where last_enriched_at IS NULL or older than 7 days so subsequent syncs are fast.
+        """
+        import yfinance as yf
+        from app.config import settings as _settings
+        from app.enrichment.ticker_mapper import derive_yf_ticker
+        from app.enrichment.fmp_enricher import FmpDividendEnricher
+        from app.enrichment.claude_enricher import ClaudeDescriptionEnricher
+
+        fmp = FmpDividendEnricher(_settings.fmp_api_key) if _settings.fmp_api_key else None
+        claude = ClaudeDescriptionEnricher(_settings.anthropic_api_key) if _settings.anthropic_api_key else None
+
+        # Only enrich instruments this user currently holds
+        held_tickers = {
+            r[0] for r in self.session.query(Position.ticker)
+            .filter(Position.user_id == self.user_id).all()
+        }
+        if not held_tickers:
+            return
+
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+        instruments = (
+            self.session.query(Instrument)
+            .filter(Instrument.ticker.in_(held_tickers))
+            .filter(
+                (Instrument.last_enriched_at == None) |  # noqa: E711
+                (Instrument.last_enriched_at < cutoff)
+            )
+            .all()
+        )
+
+        if not instruments:
+            print("  Instrument metadata up to date, skipping.")
+            return
+
+        print(f"Enriching metadata for {len(instruments)} instruments...")
+        now = datetime.datetime.utcnow()
+        enriched = 0
+
+        for instrument in instruments:
+            yf_ticker = instrument.yf_ticker or derive_yf_ticker(
+                instrument.ticker, instrument.short_name, instrument.exchange
+            )
+            if not yf_ticker:
+                continue
+            try:
+                info = yf.Ticker(yf_ticker).info
+                if info.get("longBusinessSummary"):
+                    instrument.description = info["longBusinessSummary"]
+                if info.get("sector"):
+                    instrument.sector = info["sector"]
+                if info.get("industry"):
+                    instrument.industry = info["industry"]
+                if info.get("country"):
+                    instrument.country = info["country"]
+                instrument.yf_ticker = yf_ticker
+                instrument.last_enriched_at = now
+
+                # Fall back to FMP for description if yfinance came up empty
+                if not instrument.description and fmp:
+                    fmp_desc = fmp.get_description(yf_ticker, instrument.instrument_type or "")
+                    if fmp_desc:
+                        instrument.description = fmp_desc
+                        print(f"  {instrument.ticker}: description from FMP")
+
+                # Try Claude API if still no description
+                if not instrument.description and claude:
+                    display_name = instrument.name or instrument.short_name or instrument.ticker
+                    claude_desc = claude.get_description(display_name)
+                    if claude_desc:
+                        instrument.description = claude_desc
+                        print(f"  {instrument.ticker}: description from Claude")
+
+                # Last resort: synthesise a description from available metadata
+                if not instrument.description:
+                    instrument.description = _synthesise_description(instrument)
+                    if instrument.description:
+                        print(f"  {instrument.ticker}: description synthesised from metadata")
+
+                enriched += 1
+                print(f"  Enriched {instrument.ticker} ({yf_ticker})")
+            except Exception as exc:
+                print(f"  Failed to enrich {instrument.ticker}: {exc}")
+
+        self.session.commit()
+        print(f"  Metadata enrichment complete ({enriched}/{len(instruments)} instruments).")
+
+
+def _synthesise_description(instrument) -> str | None:
+    """Build a basic description from instrument metadata when no external source has one."""
+    name = instrument.name or instrument.short_name
+    if not name:
+        return None
+
+    parts = []
+
+    # Instrument class (REIT, ETF, Investment Trust, BDC, etc.)
+    iclass = (instrument.instrument_class or "").strip()
+    itype  = (instrument.instrument_type or "").upper()
+
+    if iclass and iclass not in ("Stock", "—"):
+        parts.append(f"{name} is a {iclass}")
+    elif itype == "ETF":
+        parts.append(f"{name} is an Exchange-Traded Fund (ETF)")
+    else:
+        parts.append(f"{name} is a publicly listed company")
+
+    # Country
+    country = (instrument.country or "").strip()
+    if country:
+        parts[-1] += f" based in {country}"
+
+    # Exchange
+    exchange = (instrument.exchange or "").strip()
+    if exchange and exchange != "—":
+        parts[-1] += f", listed on {exchange}"
+
+    parts[-1] += "."
+
+    # Sector / industry
+    sector   = (instrument.sector or "").strip()
+    industry = (instrument.industry or "").strip()
+    if sector and industry and sector.lower() != industry.lower():
+        parts.append(f"It operates in the {industry} industry within the {sector} sector.")
+    elif sector:
+        parts.append(f"It operates in the {sector} sector.")
+    elif industry:
+        parts.append(f"It operates in the {industry} industry.")
+
+    return " ".join(parts) if parts else None
 
 
 def _parse_dt(value: str | None) -> datetime.datetime | None:

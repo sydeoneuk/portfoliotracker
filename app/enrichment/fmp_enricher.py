@@ -69,6 +69,61 @@ class FmpDividendEnricher:
         logger.info("  [fmp] %s: %d historical dividends fetched", symbol, len(results))
         return results
 
+    def get_description(self, symbol: str, instrument_type: str = "") -> Optional[str]:
+        """Fetch a description for a symbol, trying ETF info then company profile.
+
+        Args:
+            symbol: yfinance-style symbol, e.g. 'VWRP.L' or 'AAPL'
+            instrument_type: T212 instrument type hint ('ETF', 'STOCK', etc.)
+        """
+        # Try ETF endpoint first for ETFs/funds, or as fallback for unknowns
+        is_etf = (instrument_type or "").upper() in ("ETF", "FUND", "")
+        if is_etf:
+            desc = self._fetch_etf_description(symbol)
+            if desc:
+                return desc
+
+        # Try company profile (works for stocks and sometimes ETFs too)
+        desc = self._fetch_profile_description(symbol)
+        if desc:
+            return desc
+
+        # Last resort: ETF endpoint even if type suggests stock
+        if not is_etf:
+            return self._fetch_etf_description(symbol)
+
+        return None
+
+    def _fetch_etf_description(self, symbol: str) -> Optional[str]:
+        url = f"{FMP_BASE}/etf-info"
+        try:
+            resp = self._session.get(url, params={"symbol": symbol, "apikey": self.api_key}, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                desc = (item.get("description") or "").strip()
+                if desc:
+                    return desc
+        except Exception as exc:
+            logger.debug("  [fmp] ETF description %s failed: %s", symbol, exc)
+        return None
+
+    def _fetch_profile_description(self, symbol: str) -> Optional[str]:
+        url = f"{FMP_BASE}/profile/{symbol}"
+        try:
+            resp = self._session.get(url, params={"apikey": self.api_key}, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                desc = (item.get("description") or "").strip()
+                if desc:
+                    return desc
+        except Exception as exc:
+            logger.debug("  [fmp] profile description %s failed: %s", symbol, exc)
+        return None
+
     def get_calendar(
         self,
         from_date: Optional[datetime.date] = None,

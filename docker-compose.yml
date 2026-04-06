@@ -15,25 +15,6 @@ services:
       timeout: 5s
       retries: 5
 
-  app:
-    build: .
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      T212_API_KEY: ${T212_API_KEY}
-      T212_API_SECRET: ${T212_API_SECRET}
-      T212_BASE_URL: ${T212_BASE_URL:-https://live.trading212.com/api/v0}
-      FMP_API_KEY: ${FMP_API_KEY:-}
-      POSTGRES_DB: ${POSTGRES_DB:-trading212}
-      POSTGRES_USER: ${POSTGRES_USER:-trading212}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_HOST: db
-      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-    volumes:
-      - .:/app
-    command: python scripts/sync.py
-
   web:
     build: .
     depends_on:
@@ -45,6 +26,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: db
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-change-me-in-production-must-be-fernet-key}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8001}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
     volumes:
       - .:/app
     ports:

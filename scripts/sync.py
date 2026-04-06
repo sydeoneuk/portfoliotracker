@@ -59,6 +59,12 @@ def main():
         action="store_true",
         help="Re-fetch dividends even if recently synced",
     )
+    parser.add_argument(
+        "--user-id",
+        type=int,
+        required=True,
+        help="Database user ID to associate synced data with (required for multi-user safety)",
+    )
     args = parser.parse_args()
 
     if args.migrate:
@@ -75,7 +81,8 @@ def main():
         if not args.dividends_only:
             for account_label, api_key, api_secret in accounts:
                 runner = SyncRunner(session, account=account_label,
-                                    api_key=api_key, api_secret=api_secret)
+                                    api_key=api_key, api_secret=api_secret,
+                                    user_id=args.user_id)
                 runner.sync_all()
 
         if args.dividends or args.dividends_only:

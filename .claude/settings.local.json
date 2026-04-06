@@ -66,7 +66,10 @@
       "Bash(cmd.exe /c \"tasklist /FI \"\"PID eq 11344\"\"\")",
       "Bash(python -c \"import os, signal; os.kill\\(11344, signal.SIGTERM\\)\")",
       "Bash(find C:/development/trading212 -name \"*.pyc\" -delete)",
-      "Bash(find C:/development/trading212 -name \"__pycache__\" -type d -exec rm -rf {} +)"
+      "Bash(find C:/development/trading212 -name \"__pycache__\" -type d -exec rm -rf {} +)",
+      "Bash(pip show:*)",
+      "Bash(grep -n \"user_id\\\\|user_id\\\\|class.*Base\" C:developmenttrading212appmodels*.py)",
+      "Bash(xargs grep:*)"
     ]
   }
 }
