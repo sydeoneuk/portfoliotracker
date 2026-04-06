@@ -61,7 +61,12 @@
       "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 8001 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; ''killed''\")",
       "Bash(curl -s http://localhost:8001/login)",
       "Bash(powershell -Command \":*)",
-      "Bash(curl -s \"http://localhost:8001/?account=ISA\" -L)"
+      "Bash(curl -s \"http://localhost:8001/?account=ISA\" -L)",
+      "Bash(taskkill /PID 11344 /F)",
+      "Bash(cmd.exe /c \"tasklist /FI \"\"PID eq 11344\"\"\")",
+      "Bash(python -c \"import os, signal; os.kill\\(11344, signal.SIGTERM\\)\")",
+      "Bash(find C:/development/trading212 -name \"*.pyc\" -delete)",
+      "Bash(find C:/development/trading212 -name \"__pycache__\" -type d -exec rm -rf {} +)"
     ]
   }
 }

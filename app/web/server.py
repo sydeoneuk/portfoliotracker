@@ -21,6 +21,22 @@ from app.auth.oauth import oauth
 app = FastAPI(title="Trading 212 Dashboard")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
 
+
+@app.on_event("startup")
+def _reset_stuck_syncs():
+    """Clear any sync_status='running' left over from a previous server crash/restart."""
+    db = SessionLocal()
+    try:
+        stuck = db.query(UserSettings).filter_by(sync_status="running").all()
+        for s in stuck:
+            s.sync_status = "idle"
+            s.sync_message = "Sync was interrupted by a server restart."
+        if stuck:
+            db.commit()
+            print(f"  Reset {len(stuck)} stuck sync(s) to idle on startup.")
+    finally:
+        db.close()
+
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 _sync_executor = ThreadPoolExecutor(max_workers=4)
@@ -411,6 +427,7 @@ def sync_status(request: Request, db: Session = Depends(get_session)):
 
 _COMBINED_SQL = text("""
     SELECT
+        p.ticker                                               AS ticker,
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
         COALESCE(NULLIF(i.short_name, ''), p.ticker)           AS short_name,
         COALESCE(i.exchange, '—')                              AS exchange,
@@ -456,6 +473,7 @@ _COMBINED_SQL = text("""
 
 _ACCOUNT_SQL = text("""
     SELECT
+        p.ticker                                               AS ticker,
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
         COALESCE(NULLIF(i.short_name, ''), p.ticker)           AS short_name,
         COALESCE(i.exchange, '—')                              AS exchange,
@@ -554,6 +572,7 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
             GROUP BY ticker, account
         )
         SELECT
+            pa.ticker                                              AS ticker,
             COALESCE(NULLIF(i.name, ''), i.short_name, pa.ticker)  AS name,
             COALESCE(NULLIF(i.short_name, ''), pa.ticker)           AS short_name,
             COALESCE(i.exchange, '—')                              AS exchange,
@@ -688,6 +707,139 @@ def index(request: Request, account: str = "combined", pies: str = "",
         "available_pies": available_pies,
         "selected_pie_ids": {str(i) for i in selected_pie_ids},
         "pies_param": pies,
+        "fmt": _fmt,
+        "cfmt": _cfmt,
+    })
+
+
+# ── Holding detail ─────────────────────────────────────────────────────────
+
+@app.get("/holding/{ticker:path}", response_class=HTMLResponse)
+def holding_detail(ticker: str, request: Request, account: str = "combined",
+                   db: Session = Depends(get_session)):
+    from app.models.instrument import Instrument
+    from app.models.position import Position
+    from app.models.dividend_payment import DividendPayment
+    from app.models.dividend import DividendHistory, DividendForecast
+    from app.models.order import Order
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+
+    instrument = db.query(Instrument).filter_by(ticker=ticker).first()
+    if not instrument:
+        return HTMLResponse("Instrument not found", status_code=404)
+
+    # Positions for this user/ticker, optionally filtered by account
+    q = db.query(Position).filter_by(ticker=ticker, user_id=user.id)
+    if account in ("ISA", "Trading"):
+        q = q.filter_by(account=account)
+    positions_list = q.all()
+    if not positions_list and account in ("ISA", "Trading"):
+        # Fallback: show all accounts if none found for selected
+        positions_list = db.query(Position).filter_by(ticker=ticker, user_id=user.id).all()
+
+    currency = instrument.currency_code or "GBP"
+    gbx = (currency == "GBX")
+    price_mult = 0.01 if gbx else 1.0
+    fx = _get_fx_rates_to_gbp({"GBP"} if gbx else {currency}).get("GBP" if gbx else currency, 1.0)
+    # For GBX instruments fx=1.0 (GBP→GBP), price_mult=0.01 does the pence→pounds conversion
+
+    total_quantity = sum(float(p.quantity or 0) for p in positions_list)
+    total_cost_native = sum(float(p.quantity or 0) * float(p.average_price or 0) for p in positions_list)
+    avg_price_native = total_cost_native / total_quantity if total_quantity else 0
+    current_price_native = float(positions_list[0].current_price or 0) if positions_list else 0
+
+    avg_price_gbp = avg_price_native * price_mult * fx
+    current_price_gbp = current_price_native * price_mult * fx
+    cost_gbp = total_cost_native * price_mult * fx
+    value_gbp = total_quantity * current_price_native * price_mult * fx
+    cap_pnl_gbp = value_gbp - cost_gbp
+    cap_pnl_pct = (cap_pnl_gbp / cost_gbp * 100) if cost_gbp else 0
+
+    # Actual dividends received by user
+    div_q = db.query(DividendPayment).filter_by(ticker=ticker, user_id=user.id)
+    if account in ("ISA", "Trading"):
+        div_q = div_q.filter_by(account=account)
+    div_payments = div_q.order_by(DividendPayment.paid_on.desc()).all()
+    total_divs_gbp = sum(float(dp.amount or 0) for dp in div_payments)
+
+    total_pnl_gbp = cap_pnl_gbp + total_divs_gbp
+    total_pnl_pct = (total_pnl_gbp / cost_gbp * 100) if cost_gbp else 0
+    actual_yield = (total_divs_gbp / cost_gbp * 100) if cost_gbp else 0
+
+    # Forward dividend metrics
+    annual_rate = db.execute(
+        text("SELECT MAX(annual_rate) FROM dividend_forecast WHERE ticker = :t"),
+        {"t": ticker},
+    ).scalar() or 0
+    fwd_div_gbp = float(annual_rate) * total_quantity * price_mult * fx
+    fwd_yield = (fwd_div_gbp / cost_gbp * 100) if cost_gbp else 0
+
+    # Valuation / coverage
+    eps_ttm = float(instrument.eps_ttm or 0)
+    annual_dps = float(annual_rate)
+    pe_ratio = (current_price_native / eps_ttm) if (eps_ttm > 0 and current_price_native) else None
+    fcf_ps = float(instrument.fcf_per_share_3y_avg or 0)
+    fcf_cov = (annual_dps / fcf_ps * 100) if (fcf_ps > 0 and annual_dps > 0) else None
+    div_cov = (eps_ttm / annual_dps) if (eps_ttm > 0 and annual_dps > 0) else None
+
+    # Trade history (filled orders)
+    orders_q = (
+        db.query(Order)
+        .filter(Order.ticker == ticker, Order.user_id == user.id, Order.status == "FILLED")
+    )
+    if account in ("ISA", "Trading"):
+        orders_q = orders_q.filter(Order.account == account)
+    trade_history = orders_q.order_by(Order.filled_at.desc()).all()
+
+    # Historical per-share dividends
+    hist_divs = (
+        db.query(DividendHistory)
+        .filter_by(ticker=ticker)
+        .order_by(DividendHistory.ex_date.desc())
+        .limit(24)
+        .all()
+    )
+
+    # Upcoming dividend forecast
+    forecast_divs = (
+        db.query(DividendForecast)
+        .filter_by(ticker=ticker)
+        .order_by(DividendForecast.ex_date.asc())
+        .all()
+    )
+
+    return templates.TemplateResponse(request, "holding.html", {
+        "user": user,
+        "instrument": instrument,
+        "ticker": ticker,
+        "account_filter": account,
+        "positions": positions_list,
+        "total_quantity": total_quantity,
+        "avg_price_gbp": avg_price_gbp,
+        "current_price_gbp": current_price_gbp,
+        "cost_gbp": cost_gbp,
+        "value_gbp": value_gbp,
+        "cap_pnl_gbp": cap_pnl_gbp,
+        "cap_pnl_pct": cap_pnl_pct,
+        "total_divs_gbp": total_divs_gbp,
+        "total_pnl_gbp": total_pnl_gbp,
+        "total_pnl_pct": total_pnl_pct,
+        "actual_yield": actual_yield,
+        "fwd_div_gbp": fwd_div_gbp,
+        "fwd_yield": fwd_yield,
+        "pe_ratio": pe_ratio,
+        "fcf_cov": fcf_cov,
+        "div_cov": div_cov,
+        "annual_dps": annual_dps,
+        "eps_ttm": eps_ttm,
+        "fcf_ps": fcf_ps,
+        "trade_history": trade_history,
+        "div_payments": div_payments,
+        "hist_divs": hist_divs,
+        "forecast_divs": forecast_divs,
         "fmt": _fmt,
         "cfmt": _cfmt,
     })

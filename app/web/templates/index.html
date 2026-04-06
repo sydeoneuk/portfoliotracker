@@ -55,7 +55,7 @@
       border: none;
       white-space: nowrap;
     }
-    #positions-table tbody tr:hover { background: #f0fbf7; }
+    #positions-table tbody tr:hover { background: #f0fbf7; cursor: pointer; }
     #positions-table td { vertical-align: middle; border-color: #f0f2f5; }
 
     .badge-exchange {
@@ -264,7 +264,7 @@
           {% set value_gbp = (p.quantity or 0)|float * (p.current_price or 0)|float * fx %}
           {% set divs_gbp = (p.total_dividends or 0)|float %}
           {% set total_pnl_pct = (((value_gbp - cost_gbp) + divs_gbp) / cost_gbp * 100) if cost_gbp != 0 else 0 %}
-          <tr>
+          <tr onclick="window.location.href='/holding/{{ p.ticker }}?account={{ account_filter }}'" style="cursor:pointer">
             <td>{{ p.name }}</td>
             <td><code>{{ p.short_name }}</code></td>
             <td>{{ p.currency }}</td>

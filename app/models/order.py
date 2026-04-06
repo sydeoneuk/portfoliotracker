@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, String, Float, DateTime, ForeignKey
+from sqlalchemy import Column, String, Float, DateTime, Integer, ForeignKey
 from sqlalchemy.orm import relationship
 from app.models.base import Base
 
@@ -9,9 +9,12 @@ class Order(Base):
 
     id = Column(String, primary_key=True)
     ticker = Column(String, ForeignKey("instruments.ticker"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    account = Column(String(20))
     quantity = Column(Float)
     filled_quantity = Column(Float)
     order_type = Column(String(20))
+    side = Column(String(10))    # BUY | SELL
     status = Column(String(20))
     limit_price = Column(Float)
     stop_price = Column(Float)
