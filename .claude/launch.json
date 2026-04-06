@@ -1,0 +1,43 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "install",
+      "runtimeExecutable": "pip",
+      "runtimeArgs": ["install", "-r", "requirements.txt"]
+    },
+    {
+      "name": "postgres",
+      "runtimeExecutable": "wsl",
+      "runtimeArgs": ["-e", "bash", "-c", "cd /mnt/c/development/trading212 && docker compose up db"],
+      "port": 5432
+    },
+    {
+      "name": "full-stack",
+      "runtimeExecutable": "wsl",
+      "runtimeArgs": ["-e", "bash", "-c", "cd /mnt/c/development/trading212 && docker compose up"],
+      "port": 5432
+    },
+    {
+      "name": "sync",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "pip install -r requirements.txt && python scripts/sync.py"]
+    },
+    {
+      "name": "sync-migrate-dividends",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "pip install -r requirements.txt && python scripts/sync.py --migrate --dividends"]
+    },
+    {
+      "name": "alembic-migrate",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "pip install -r requirements.txt && alembic upgrade head"]
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "set PYTHONPATH=. && pip install -r requirements.txt && python scripts/serve.py"],
+      "port": 8001
+    }
+  ]
+}

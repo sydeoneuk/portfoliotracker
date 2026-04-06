@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trading212}
+      POSTGRES_USER: ${POSTGRES_USER:-trading212}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trading212}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      T212_API_KEY: ${T212_API_KEY}
+      T212_API_SECRET: ${T212_API_SECRET}
+      T212_BASE_URL: ${T212_BASE_URL:-https://live.trading212.com/api/v0}
+      FMP_API_KEY: ${FMP_API_KEY:-}
+      POSTGRES_DB: ${POSTGRES_DB:-trading212}
+      POSTGRES_USER: ${POSTGRES_USER:-trading212}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+    volumes:
+      - .:/app
+    command: python scripts/sync.py
+
+  web:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trading212}
+      POSTGRES_USER: ${POSTGRES_USER:-trading212}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+    volumes:
+      - .:/app
+    ports:
+      - "8001:8001"
+    command: python scripts/serve.py
+
+volumes:
+  postgres_data:
