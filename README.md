@@ -290,4 +290,4 @@ docker compose -f docker-compose.prod.yml exec web alembic upgrade head
 
 ## License
 
-MIT
+APACHE 2.0
