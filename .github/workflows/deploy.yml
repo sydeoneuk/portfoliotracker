@@ -31,9 +31,6 @@ jobs:
             echo "--- Building and restarting containers ---"
             docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
 
-            echo "--- Running database migrations ---"
-            docker compose -f docker-compose.prod.yml exec -T web alembic upgrade head
-
             echo "--- Removing unused Docker images ---"
             docker image prune -f
 

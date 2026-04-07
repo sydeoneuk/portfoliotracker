@@ -39,8 +39,6 @@ services:
       FMP_API_KEY: ${FMP_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     # No ports exposed to host — Caddy talks to this container directly
-    command: >
-      sh -c "alembic upgrade head && python scripts/serve.py"
 
   caddy:
     image: caddy:2-alpine

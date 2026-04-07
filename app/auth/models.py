@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Float
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey, Text, Float
 from sqlalchemy.orm import relationship
 from app.models.base import Base
 
@@ -35,5 +35,6 @@ class UserSettings(Base):
     free_cash_isa = Column(Float)       # uninvested GBP cash in ISA account (outside pies)
     pie_cash_trading = Column(Float)    # uninvested cash sitting inside pies, Trading account
     pie_cash_isa = Column(Float)        # uninvested cash sitting inside pies, ISA account
+    auto_sync_enabled = Column(Boolean, default=True, nullable=False, server_default="true")
 
     user = relationship("User", back_populates="settings")

@@ -6,6 +6,9 @@ from urllib.parse import quote, urlencode
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
 import yfinance as yf
 from fastapi import FastAPI, Depends, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -31,8 +34,9 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-def _reset_stuck_syncs():
-    """Clear any sync_status='running' left over from a previous server crash/restart."""
+def _on_startup():
+    """Reset stuck syncs from a previous crash, then start the background scheduler."""
+    # ── Reset any syncs left in 'running' state by a previous server crash ──
     db = SessionLocal()
     try:
         stuck = db.query(UserSettings).filter_by(sync_status="running").all()
@@ -45,11 +49,29 @@ def _reset_stuck_syncs():
     finally:
         db.close()
 
+    # ── Start the nightly scheduler (03:00 UTC daily) ───────────────────────
+    _scheduler.add_job(
+        _scheduled_sync_all_users,
+        CronTrigger(hour=3, minute=0, timezone="UTC"),
+        id="nightly_sync",
+        replace_existing=True,
+    )
+    _scheduler.start()
+    print("  Scheduler started — nightly sync scheduled at 03:00 UTC.")
+
+
+@app.on_event("shutdown")
+def _on_shutdown():
+    """Cleanly stop the background scheduler on server exit."""
+    _scheduler.shutdown(wait=False)
+    print("  Scheduler stopped.")
+
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.filters["urlencode_val"] = lambda v: quote(str(v or ""), safe="")
 templates.env.globals["now"] = datetime.datetime.utcnow
 
 _sync_executor = ThreadPoolExecutor(max_workers=4)  # used directly for sync tasks
+_scheduler = BackgroundScheduler(timezone="UTC")
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────
@@ -251,6 +273,40 @@ def _run_sync(user_id: int) -> None:
         db.close()
 
 
+# ── Nightly scheduled sync ────────────────────────────────────────────────
+
+def _scheduled_sync_all_users() -> None:
+    """Run at 03:00 UTC daily — sync every user who has API keys and hasn't opted out."""
+    now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    print(f"[scheduler] Nightly sync triggered at {now_str} UTC")
+    db = SessionLocal()
+    try:
+        all_settings = (
+            db.query(UserSettings)
+            .filter(
+                UserSettings.auto_sync_enabled.is_(True),
+                UserSettings.sync_status != "running",
+            )
+            .all()
+        )
+        queued = 0
+        for us in all_settings:
+            has_key = bool(us.t212_api_key_enc or us.t212_isa_api_key_enc)
+            if not has_key:
+                continue
+            # Mark as queued so the UI shows something immediately
+            us.sync_status = "running"
+            us.sync_message = "Scheduled nightly sync…"
+            _sync_executor.submit(_run_sync, us.user_id)
+            queued += 1
+        db.commit()
+        print(f"[scheduler] Queued nightly sync for {queued} user(s).")
+    except Exception:
+        traceback.print_exc()
+    finally:
+        db.close()
+
+
 # ── Auth routes ────────────────────────────────────────────────────────────
 
 @app.get("/login", response_class=HTMLResponse)
@@ -353,6 +409,7 @@ def settings_page(request: Request, db: Session = Depends(get_session)):
         "has_trading_secret": bool(user_settings.t212_api_secret_enc),
         "has_isa_key": bool(user_settings.t212_isa_api_key_enc),
         "has_isa_secret": bool(user_settings.t212_isa_api_secret_enc),
+        "auto_sync_enabled": user_settings.auto_sync_enabled if user_settings.auto_sync_enabled is not None else True,
     })
 
 
@@ -455,6 +512,21 @@ async def clear_data(request: Request, db: Session = Depends(get_session)):
 
 
 # ── Sync routes ────────────────────────────────────────────────────────────
+
+@app.post("/settings/auto-sync")
+async def save_auto_sync(
+    request: Request,
+    db: Session = Depends(get_session),
+    auto_sync_enabled: str = Form(default="off"),
+):
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    user_settings = _get_or_create_settings(db, user.id)
+    user_settings.auto_sync_enabled = (auto_sync_enabled == "on")
+    db.commit()
+    return _redirect("/settings")
+
 
 @app.post("/sync")
 async def trigger_sync(

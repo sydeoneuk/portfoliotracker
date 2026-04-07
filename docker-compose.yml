@@ -37,7 +37,6 @@ services:
       - .:/app
     ports:
       - "8001:8001"
-    command: python scripts/serve.py
 
 volumes:
   postgres_data:
