@@ -16,22 +16,33 @@ class SyncRunner:
         self.user_id = user_id
         self.client = Trading212Client(api_key=api_key, api_secret=api_secret)
 
+    def _run_step(self, fn, fatal: bool = True):
+        """Run a single sync step, rolling back the session on failure.
+
+        If fatal=True (default) the exception is re-raised after rollback so
+        the whole sync aborts. If fatal=False the error is logged and skipped.
+        """
+        try:
+            fn()
+        except Exception as exc:
+            self.session.rollback()
+            print(f"  {fn.__name__} failed: {exc}")
+            if fatal:
+                raise
+
     def sync_all(self):
         print(f"Starting full sync for account: {self.account}...")
         # Positions and pies first so we know which tickers are held before
         # fetching the T212 instrument catalogue (avoids storing all 16k+ rows).
-        self.sync_positions()
-        self.sync_pies()
-        self.sync_account_cash()
-        self.sync_instruments()
-        self.sync_open_orders()
-        try:
-            self.sync_order_history()
-        except Exception as exc:
-            print(f"  Order history sync failed (non-fatal): {exc}")
-        self.sync_transactions()
-        self.sync_dividend_payments()
-        self.sync_instrument_metadata()
+        self._run_step(self.sync_positions)
+        self._run_step(self.sync_pies)
+        self._run_step(self.sync_account_cash, fatal=False)
+        self._run_step(self.sync_instruments)
+        self._run_step(self.sync_open_orders)
+        self._run_step(self.sync_order_history, fatal=False)
+        self._run_step(self.sync_transactions)
+        self._run_step(self.sync_dividend_payments)
+        self._run_step(self.sync_instrument_metadata, fatal=False)
         print("Sync complete.")
 
     def sync_instruments(self):
