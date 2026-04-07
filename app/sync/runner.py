@@ -126,6 +126,25 @@ class SyncRunner:
             dq.delete()
             print(f"  Removed {len(closed)} closed positions.")
 
+        # Ensure all position tickers exist in instruments before inserting.
+        # Positions may reference tickers not yet in the catalogue (e.g. out-of-region
+        # instruments like EEIl_EQ). Insert minimal stubs so the FK constraint is satisfied;
+        # sync_instruments will enrich them afterwards.
+        position_tickers = {item["ticker"] for item in data}
+        existing_tickers = {
+            r[0] for r in self.session.query(Instrument.ticker)
+            .filter(Instrument.ticker.in_(position_tickers)).all()
+        }
+        for missing in position_tickers - existing_tickers:
+            self.session.execute(
+                insert(Instrument)
+                .values(ticker=missing, created_at=now, updated_at=now)
+                .on_conflict_do_nothing(index_elements=["ticker"])
+            )
+        if position_tickers - existing_tickers:
+            self.session.flush()
+            print(f"  Inserted {len(position_tickers - existing_tickers)} instrument stub(s) for positions.")
+
         for item in data:
             stmt = (
                 insert(Position)
