@@ -12,6 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 import yfinance as yf
 from fastapi import FastAPI, Depends, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -24,6 +25,11 @@ from app.auth.crypto import encrypt, decrypt
 from app.auth.oauth import oauth
 
 app = FastAPI(title="Trading 212 Dashboard")
+app.mount(
+    "/static",
+    StaticFiles(directory=str(Path(__file__).parent / "static")),
+    name="static",
+)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,

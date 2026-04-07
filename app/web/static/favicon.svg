@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Background rounded square -->
+  <rect width="32" height="32" rx="7" fill="#0f1923"/>
+  <!-- Rising chart line -->
+  <polyline
+    points="4,24 10,18 16,20 22,10 28,6"
+    fill="none"
+    stroke="#00c896"
+    stroke-width="2.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <!-- Dot at the peak -->
+  <circle cx="28" cy="6" r="2.2" fill="#00c896"/>
+</svg>
