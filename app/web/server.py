@@ -771,6 +771,25 @@ def index(request: Request, account: str = "combined", pies: str = "",
         "SELECT MAX(last_synced_at) FROM positions WHERE user_id = :uid"
     ), {"uid": user.id}).scalar()
 
+    # Cash positions: free cash per account + uninvested cash sitting in pies
+    # Both values come from the account cash endpoint stored on UserSettings at sync time.
+    from app.auth.models import UserSettings as _UserSettings
+    user_settings = db.query(_UserSettings).filter_by(user_id=user.id).first()
+    free_cash_trading = float(user_settings.free_cash_trading or 0) if user_settings else 0.0
+    free_cash_isa = float(user_settings.free_cash_isa or 0) if user_settings else 0.0
+    pie_cash_trading = float(user_settings.pie_cash_trading or 0) if user_settings else 0.0
+    pie_cash_isa = float(user_settings.pie_cash_isa or 0) if user_settings else 0.0
+
+    if account == "ISA":
+        free_cash = free_cash_isa
+        total_pie_cash = pie_cash_isa
+    elif account == "Trading":
+        free_cash = free_cash_trading
+        total_pie_cash = pie_cash_trading
+    else:
+        free_cash = free_cash_trading + free_cash_isa
+        total_pie_cash = pie_cash_trading + pie_cash_isa
+
     return templates.TemplateResponse(request, "index.html", {
         "user": user,
         "positions": positions,
@@ -784,6 +803,8 @@ def index(request: Request, account: str = "combined", pies: str = "",
         "pies_param": pies,
         "country_filter": country,
         "sector_filter": sector,
+        "free_cash": free_cash,
+        "total_pie_cash": total_pie_cash,
         "fmt": _fmt,
         "cfmt": _cfmt,
     })

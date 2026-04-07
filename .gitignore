@@ -1,5 +1,12 @@
 .env
 __pycache__/
+
+# Terraform
+terraform/terraform.tfvars
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
 *.py[cod]
 *.egg-info/
 .venv/

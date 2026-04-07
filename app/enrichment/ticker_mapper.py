@@ -13,6 +13,54 @@ Yahoo Finance expects:
 """
 
 # Known T212 exchange identifiers → Yahoo Finance suffix
+EXCHANGE_COUNTRY_MAP: dict[str, str] = {
+    # United Kingdom
+    "LSE": "United Kingdom",
+    "XLON": "United Kingdom",
+    # United States
+    "NASDAQ": "United States",
+    "NYSE": "United States",
+    "BATS": "United States",
+    "ARCA": "United States",
+    "AMEX": "United States",
+    # Germany
+    "XETR": "Germany",
+    "FRA": "Germany",
+    # France
+    "XPAR": "France",
+    # Netherlands
+    "XAMS": "Netherlands",
+    # Spain
+    "XMAD": "Spain",
+    # Italy
+    "XMIL": "Italy",
+    # Switzerland
+    "XSWX": "Switzerland",
+    # Sweden
+    "XSTO": "Sweden",
+    # Denmark
+    "XCSE": "Denmark",
+    # Norway
+    "XOSL": "Norway",
+    # Canada
+    "TSX": "Canada",
+    "TSXV": "Canada",
+    # Australia
+    "ASX": "Australia",
+    # Hong Kong
+    "HKEX": "Hong Kong",
+    "XHKG": "Hong Kong",
+    # Japan
+    "TSE": "Japan",
+    # India
+    "NSE": "India",
+    "BSE": "India",
+    # Brazil
+    "BVMF": "Brazil",
+    # Singapore
+    "SGX": "Singapore",
+}
+
 EXCHANGE_SUFFIX_MAP: dict[str, str] = {
     # United Kingdom
     "LSE": ".L",

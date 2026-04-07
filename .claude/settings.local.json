@@ -69,7 +69,8 @@
       "Bash(find C:/development/trading212 -name \"__pycache__\" -type d -exec rm -rf {} +)",
       "Bash(pip show:*)",
       "Bash(grep -n \"user_id\\\\|user_id\\\\|class.*Base\" C:developmenttrading212appmodels*.py)",
-      "Bash(xargs grep:*)"
+      "Bash(xargs grep:*)",
+      "WebFetch(domain:community.trading212.com)"
     ]
   }
 }

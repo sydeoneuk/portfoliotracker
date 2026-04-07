@@ -22,6 +22,7 @@ class SyncRunner:
         # fetching the T212 instrument catalogue (avoids storing all 16k+ rows).
         self.sync_positions()
         self.sync_pies()
+        self.sync_account_cash()
         self.sync_instruments()
         self.sync_open_orders()
         try:
@@ -193,6 +194,9 @@ class SyncRunner:
                 else None
             )
 
+            result_data = detail.get("result", {})
+            pie_cash = result_data.get("cash")
+
             stmt = (
                 insert(Pie)
                 .values(
@@ -206,6 +210,7 @@ class SyncRunner:
                     end_date=end_date,
                     initial_investment=s.get("initialInvestment"),
                     dividend_cash_action=s.get("dividendCashAction"),
+                    cash=pie_cash,
                     last_synced_at=now,
                     created_at=now,
                 )
@@ -217,6 +222,7 @@ class SyncRunner:
                         "account": self.account,
                         "goal": s.get("goal"),
                         "end_date": end_date,
+                        "cash": pie_cash,
                         "last_synced_at": now,
                     },
                 )
@@ -269,6 +275,44 @@ class SyncRunner:
 
         self.session.commit()
         print(f"  Synced {len(pie_list)} pies.")
+
+    def sync_account_cash(self):
+        """Fetch current cash position and store on UserSettings.
+
+        T212 returns either a flat structure {free, pieCash, ...} or a nested
+        structure {cash: {free, inPies, ...}}. Both shapes are handled.
+        """
+        print("Syncing account cash...")
+        try:
+            data = self.client.get_account_cash()
+        except Exception as exc:
+            print(f"  Account cash sync failed (non-fatal): {exc}")
+            return
+
+        print(f"  Account cash response: {data}")
+
+        # Handle nested {cash: {free, inPies}} and flat {free, pieCash} shapes
+        cash_block = data.get("cash", data)
+        free = cash_block.get("free") or data.get("free")
+        pie_cash = cash_block.get("inPies") or data.get("pieCash")
+
+        if self.user_id is None:
+            return
+
+        from app.auth.models import UserSettings
+        settings_row = self.session.query(UserSettings).filter_by(user_id=self.user_id).first()
+        if settings_row is None:
+            return
+
+        if self.account == "ISA":
+            settings_row.free_cash_isa = free
+            settings_row.pie_cash_isa = pie_cash
+        else:
+            settings_row.free_cash_trading = free
+            settings_row.pie_cash_trading = pie_cash
+
+        self.session.commit()
+        print(f"  Stored cash for {self.account}: free={free}, in_pies={pie_cash}")
 
     def sync_open_orders(self):
         print("Syncing open orders...")
@@ -451,6 +495,10 @@ class SyncRunner:
             if not items:
                 break
 
+            if page == 1:
+                import json as _json
+                print("  Sample transaction items:", _json.dumps(items[:3], indent=2, default=str))
+
             for item in items:
                 stmt = (
                     insert(Transaction)
@@ -579,7 +627,7 @@ class SyncRunner:
         """
         import yfinance as yf
         from app.config import settings as _settings
-        from app.enrichment.ticker_mapper import derive_yf_ticker
+        from app.enrichment.ticker_mapper import derive_yf_ticker, EXCHANGE_COUNTRY_MAP
         from app.enrichment.fmp_enricher import FmpDividendEnricher
         from app.enrichment.claude_enricher import ClaudeDescriptionEnricher
 
@@ -593,6 +641,25 @@ class SyncRunner:
         }
         if not held_tickers:
             return
+
+        # Back-fill country from exchange for already-enriched instruments that are missing it.
+        # This fixes instruments that were enriched before the exchange fallback was added.
+        backfill_instruments = (
+            self.session.query(Instrument)
+            .filter(Instrument.ticker.in_(held_tickers))
+            .filter(Instrument.country == None)  # noqa: E711
+            .filter(Instrument.exchange != None)  # noqa: E711
+            .all()
+        )
+        backfilled = 0
+        for inst in backfill_instruments:
+            inferred = EXCHANGE_COUNTRY_MAP.get((inst.exchange or "").upper())
+            if inferred:
+                inst.country = inferred
+                backfilled += 1
+        if backfilled:
+            self.session.commit()
+            print(f"  Back-filled country from exchange for {backfilled} instrument(s).")
 
         cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=7)
         instruments = (
@@ -629,6 +696,11 @@ class SyncRunner:
                     instrument.industry = info["industry"]
                 if info.get("country"):
                     instrument.country = info["country"]
+                elif not instrument.country:
+                    # yfinance didn't return a country — infer from exchange
+                    instrument.country = EXCHANGE_COUNTRY_MAP.get(
+                        (instrument.exchange or "").upper()
+                    )
                 instrument.yf_ticker = yf_ticker
                 instrument.last_enriched_at = now
 

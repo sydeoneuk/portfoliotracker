@@ -19,6 +19,7 @@ class Pie(Base):
     end_date = Column(DateTime)
     initial_investment = Column(Float)
     dividend_cash_action = Column(String(20))
+    cash = Column(Float)   # uninvested cash sitting in the pie, not yet deployed
 
     last_synced_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
