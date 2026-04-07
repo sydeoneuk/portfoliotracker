@@ -189,7 +189,17 @@
             <td><span class="badge-exchange">{{ p.account }}</span></td>
             <td><span class="badge-exchange">{{ (p.type or '—').replace('_', ' ').title() }}</span></td>
             <td class="text-end">{{ fmt(p.quantity, 4) }}</td>
-            <td class="text-end">{{ cfmt(p.gross_amount_per_share, "GBP", 4) if p.gross_amount_per_share else '—' }}</td>
+            {% set ccy = p.currency if p.currency else 'GBP' %}
+            {% set gps = p.gross_amount_per_share %}
+            {% if gps %}
+              {% if ccy == 'GBX' %}
+                <td class="text-end">{{ cfmt(gps / 100, 'GBP', 4) }}</td>
+              {% else %}
+                <td class="text-end">{{ cfmt(gps, ccy, 4) }}</td>
+              {% endif %}
+            {% else %}
+              <td class="text-end">—</td>
+            {% endif %}
             <td data-order="{{ p.amount or 0 }}" class="text-end fw-semibold">{{ cfmt(p.amount, "GBP") if p.amount else '—' }}</td>
           </tr>
           {% endfor %}

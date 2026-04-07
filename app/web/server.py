@@ -397,6 +397,31 @@ async def clear_key(
     return _redirect("/settings", status_code=303)
 
 
+@app.post("/settings/delete-account")
+async def delete_account(request: Request, db: Session = Depends(get_session)):
+    """Permanently delete all user data and the account itself, then force logout."""
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+
+    uid = user.id
+
+    # Delete all portfolio data
+    db.execute(text("DELETE FROM positions         WHERE user_id = :uid"), {"uid": uid})
+    db.execute(text("DELETE FROM orders            WHERE user_id = :uid"), {"uid": uid})
+    db.execute(text("DELETE FROM dividend_payments WHERE user_id = :uid"), {"uid": uid})
+    db.execute(text("DELETE FROM transactions      WHERE user_id = :uid"), {"uid": uid})
+    db.execute(text("DELETE FROM pies              WHERE user_id = :uid"), {"uid": uid})
+    # Delete user settings (API keys, sync state) and the user record itself
+    db.execute(text("DELETE FROM user_settings     WHERE user_id = :uid"), {"uid": uid})
+    db.execute(text("DELETE FROM users             WHERE id       = :uid"), {"uid": uid})
+    db.commit()
+
+    # Clear the session so the user is fully logged out
+    request.session.clear()
+    return _redirect("/login", status_code=303)
+
+
 @app.post("/settings/clear-data")
 async def clear_data(request: Request, db: Session = Depends(get_session)):
     """Delete all synced portfolio data for the current user and reset sync state."""
@@ -912,7 +937,8 @@ def dividends_page(request: Request, month: str = "", account: str = "",
             dp.amount,
             dp.quantity,
             dp.gross_amount_per_share,
-            dp.type
+            dp.type,
+            COALESCE(i.currency_code, 'GBP')                        AS currency
         FROM dividend_payments dp
         LEFT JOIN instruments i ON i.ticker = dp.ticker
         WHERE dp.user_id = :user_id

@@ -160,21 +160,6 @@
       </div>
     </div>
 
-    <!-- Clear data -->
-    <div class="card mb-4 border border-danger-subtle">
-      <div class="card-body">
-        <h6 class="card-title mb-1 text-danger">Clear Portfolio Data</h6>
-        <p class="text-muted mb-3" style="font-size:.85rem;">
-          Removes all synced positions, orders, transactions, dividend payments and pies for your account.
-          Instrument metadata and dividend history are not affected.
-          Your API keys and login are preserved. Run a sync afterwards to repopulate.
-        </p>
-        <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#clearDataModal">
-          Clear All Data
-        </button>
-      </div>
-    </div>
-
     <!-- Sync -->
     <div class="card mb-4">
       <div class="card-body">
@@ -219,6 +204,37 @@
       </div>
     </div>
 
+    <!-- Clear data -->
+    <div class="card mb-4 border border-danger-subtle">
+      <div class="card-body">
+        <h6 class="card-title mb-1 text-danger">Clear Portfolio Data</h6>
+        <p class="text-muted mb-3" style="font-size:.85rem;">
+          Removes all synced positions, orders, transactions, dividend payments and pies for your account.
+          Instrument metadata and dividend history are not affected.
+          Your API keys and login are preserved. Run a sync afterwards to repopulate.
+        </p>
+        <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#clearDataModal">
+          Clear All Data
+        </button>
+      </div>
+    </div>
+
+    <!-- Delete account -->
+    <div class="card mb-4 border border-danger-subtle">
+      <div class="card-body">
+        <h6 class="card-title mb-1 text-danger">Delete Account</h6>
+        <p class="text-muted mb-3" style="font-size:.85rem;">
+          Permanently removes your account and all associated data — portfolio, dividends,
+          transactions, orders, API keys and login. This cannot be undone and you will be
+          logged out immediately.
+        </p>
+        <button type="button" class="btn btn-outline-danger btn-sm"
+                data-bs-toggle="modal" data-bs-target="#deleteAccountModal">
+          Delete My Account
+        </button>
+      </div>
+    </div>
+
   </div>
 
 <!-- ── Clear data confirmation modal ──────────────────────────────────── -->
@@ -247,6 +263,35 @@
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
         <form method="post" action="/settings/clear-data" class="d-inline">
           <button type="submit" class="btn btn-danger">Yes, delete everything</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete account confirmation modal ──────────────────────────────── -->
+<div class="modal fade" id="deleteAccountModal" tabindex="-1" aria-labelledby="deleteAccountModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold text-danger" id="deleteAccountModalLabel">⚠️ Delete Account?</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" style="font-size:.9rem;">
+        <p>This will <strong>permanently and irreversibly</strong> delete:</p>
+        <ul class="mb-3">
+          <li>Your <strong>login and identity</strong></li>
+          <li>All <strong>API keys</strong></li>
+          <li>All <strong>portfolio data</strong> — positions, orders, transactions, dividends, pies</li>
+        </ul>
+        <p class="mb-0 text-danger fw-semibold" style="font-size:.85rem;">
+          There is no recovery. You will be logged out immediately.
+        </p>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <form method="post" action="/settings/delete-account" class="d-inline">
+          <button type="submit" class="btn btn-danger">Yes, delete my account</button>
         </form>
       </div>
     </div>
