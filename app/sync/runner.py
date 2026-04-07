@@ -434,6 +434,25 @@ class SyncRunner:
             if not items:
                 break
 
+            # Ensure all tickers referenced by this page exist in instruments
+            batch_tickers = {
+                (item.get("order", {}).get("ticker")
+                 or (item.get("order", {}).get("instrument") or {}).get("ticker"))
+                for item in items
+            } - {None}
+            existing = {
+                r[0] for r in self.session.query(Instrument.ticker)
+                .filter(Instrument.ticker.in_(batch_tickers)).all()
+            }
+            for missing in batch_tickers - existing:
+                self.session.execute(
+                    insert(Instrument)
+                    .values(ticker=missing, created_at=now, updated_at=now)
+                    .on_conflict_do_nothing(index_elements=["ticker"])
+                )
+            if batch_tickers - existing:
+                self.session.flush()
+
             for item in items:
                 # T212 history orders API wraps data in nested "order" and "fill" objects
                 order = item.get("order", {})
@@ -524,10 +543,6 @@ class SyncRunner:
             items = response.get("items", [])
             if not items:
                 break
-
-            if page == 1:
-                import json as _json
-                print("  Sample transaction items:", _json.dumps(items[:3], indent=2, default=str))
 
             for item in items:
                 stmt = (
