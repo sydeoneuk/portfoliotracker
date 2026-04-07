@@ -70,7 +70,15 @@
       "Bash(pip show:*)",
       "Bash(grep -n \"user_id\\\\|user_id\\\\|class.*Base\" C:developmenttrading212appmodels*.py)",
       "Bash(xargs grep:*)",
-      "WebFetch(domain:community.trading212.com)"
+      "WebFetch(domain:community.trading212.com)",
+      "Bash(where npx:*)",
+      "Bash(where node:*)",
+      "Bash(aws --version)",
+      "Bash(git filter-repo:*)",
+      "Bash(pip3 install:*)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(python -m git_filter_repo --version)",
+      "Bash(python -m git_filter_repo --force --path terraform/.terraform/ --invert-paths --path terraform/terraform.tfstate --invert-paths --path terraform/terraform.tfstate.backup --invert-paths --path \"terraform/.terraform.lock.hcl\" --invert-paths --path .claude/ --invert-paths)"
     ]
   }
 }

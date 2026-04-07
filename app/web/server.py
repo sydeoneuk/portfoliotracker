@@ -47,6 +47,7 @@ def _reset_stuck_syncs():
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.filters["urlencode_val"] = lambda v: quote(str(v or ""), safe="")
+templates.env.globals["now"] = datetime.datetime.utcnow
 
 _sync_executor = ThreadPoolExecutor(max_workers=4)  # used directly for sync tasks
 

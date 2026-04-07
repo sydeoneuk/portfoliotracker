@@ -38,6 +38,12 @@
       "runtimeExecutable": "cmd",
       "runtimeArgs": ["/c", "set PYTHONPATH=. && pip install -r requirements.txt && python scripts/serve.py"],
       "port": 8001
+    },
+    {
+      "name": "sydeone-site",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "3456", "--directory", "C:/development/sydeone"],
+      "port": 3456
     }
   ]
 }
