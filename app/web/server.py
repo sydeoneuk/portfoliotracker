@@ -330,6 +330,14 @@ async def logout(request: Request):
     return _redirect("/login")
 
 
+# ── Help route ────────────────────────────────────────────────────────────
+
+@app.get("/help", response_class=HTMLResponse)
+def help_page(request: Request, db: Session = Depends(get_session)):
+    user = _get_current_user(request, db)  # public — no auth required
+    return templates.TemplateResponse(request, "help.html", {"user": user})
+
+
 # ── Settings routes ────────────────────────────────────────────────────────
 
 @app.get("/settings", response_class=HTMLResponse)

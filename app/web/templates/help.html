@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Help — Trading 212 Portfolio</title>
+
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-6145203907417515" crossorigin="anonymous"></script>
+
+  <style>
+    :root { --t212-green: #00c896; --t212-dark: #0f1923; }
+    body { background: #f4f6f9; font-size: 0.875rem; }
+
+    .side-nav .nav-link {
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      transition: background .15s;
+      font-size: .88rem;
+      letter-spacing: .3px;
+    }
+    .side-nav .nav-link:hover  { background: rgba(0,200,150,0.1);  color: var(--t212-green) !important; }
+    .side-nav .nav-link.active { background: rgba(0,200,150,0.15); color: var(--t212-green) !important; font-weight: 600; }
+
+    .top-bar {
+      background: var(--t212-dark); color: #fff;
+      padding: 1rem 1.5rem;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .top-bar .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: .5px; }
+    .top-bar .brand span { color: var(--t212-green); }
+    .top-bar .user-info { display: flex; align-items: center; gap: .75rem; font-size: .82rem; }
+    .top-bar .avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+
+    /* Section cards */
+    .help-card {
+      border: none; border-radius: 12px;
+      box-shadow: 0 1px 6px rgba(0,0,0,.07);
+      margin-bottom: 1.5rem;
+    }
+    .help-card .card-header {
+      background: var(--t212-dark); color: #fff;
+      border-radius: 12px 12px 0 0 !important;
+      padding: .85rem 1.25rem;
+      font-weight: 700; font-size: .95rem;
+      display: flex; align-items: center; gap: .6rem;
+    }
+    .help-card .card-body { padding: 1.25rem 1.5rem; }
+
+    /* Tip boxes */
+    .tip-box {
+      background: rgba(0,200,150,0.07);
+      border-left: 3px solid var(--t212-green);
+      border-radius: 0 6px 6px 0;
+      padding: .65rem 1rem;
+      margin-bottom: .6rem;
+      font-size: .83rem;
+    }
+    .tip-box strong { color: #0a7d5c; }
+
+    /* Step badges */
+    .step-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 24px; height: 24px; border-radius: 50%;
+      background: var(--t212-green); color: #fff;
+      font-size: .72rem; font-weight: 700;
+      flex-shrink: 0; margin-right: .5rem;
+    }
+
+    /* TOC */
+    .toc a { color: #495057; text-decoration: none; font-size: .83rem; display: block; padding: .2rem 0; }
+    .toc a:hover { color: var(--t212-green); }
+    .toc .toc-section { font-weight: 700; font-size: .78rem; text-transform: uppercase;
+                        letter-spacing: .6px; color: #adb5bd; margin-top: .75rem; }
+
+    /* Page nav pills */
+    .page-pill {
+      display: inline-block; background: #e9ecef; color: #495057;
+      border-radius: 999px; padding: .15rem .65rem; font-size: .75rem; font-weight: 600;
+      white-space: nowrap;
+    }
+
+    h5 { font-size: .9rem; font-weight: 700; margin-top: 1rem; margin-bottom: .4rem; }
+    ul { padding-left: 1.2rem; }
+    li { margin-bottom: .3rem; }
+
+    @media (max-width: 767px) {
+      .toc-col { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Side nav (offcanvas) ─────────────────────────────────── -->
+<div class="offcanvas offcanvas-start side-nav" tabindex="-1" id="sideNav"
+     style="width:210px; background:#0f1923; border-right:1px solid rgba(255,255,255,0.08);">
+  <div class="offcanvas-header pb-2">
+    <span class="text-white fw-bold" style="font-size:.95rem;">Trading 212 <span style="color:#00c896;">Portfolio</span></span>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas"></button>
+  </div>
+  <div class="offcanvas-body p-0">
+    <nav class="nav flex-column pt-1">
+      {% if user %}
+      <a class="nav-link text-white px-4 py-3" href="/">&#9;📊&nbsp; Portfolio</a>
+      <a class="nav-link text-white px-4 py-3" href="/transactions">&#9;🔄&nbsp; Transactions</a>
+      <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
+      <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
+      {% endif %}
+      <a class="nav-link text-white px-4 py-3 active" href="/help">&#9;❓&nbsp; Help</a>
+      {% if not user %}
+      <a class="nav-link text-white px-4 py-3" href="/login">&#9;🔑&nbsp; Sign in</a>
+      {% endif %}
+    </nav>
+  </div>
+</div>
+
+<!-- ── Top bar ─────────────────────────────────────────────── -->
+<div class="top-bar">
+  <div class="d-flex align-items-center gap-3">
+    {% if user %}
+    <button class="btn btn-link text-white p-0" data-bs-toggle="offcanvas" data-bs-target="#sideNav" aria-label="Menu">
+      <svg width="22" height="22" fill="currentColor" viewBox="0 0 16 16">
+        <path fill-rule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/>
+      </svg>
+    </button>
+    {% endif %}
+    <div class="brand">Trading 212 <span>Portfolio</span></div>
+  </div>
+  <div class="user-info">
+    {% if user %}
+      {% if user.avatar_url %}<img src="{{ user.avatar_url }}" class="avatar" alt="">{% endif %}
+      <span>{{ user.name or user.email }}</span>
+      <a href="/settings" class="btn btn-sm btn-outline-light">Settings</a>
+      <form method="post" action="/logout" class="d-inline">
+        <button class="btn btn-sm btn-outline-secondary">Sign out</button>
+      </form>
+    {% else %}
+      <a href="/login" class="btn btn-sm" style="background:var(--t212-green); color:#fff; font-weight:600; border:none;">Sign in</a>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── Content ──────────────────────────────────────────────── -->
+<div class="container-fluid px-4 py-4" style="max-width:1200px;">
+  <div class="row g-4">
+
+    <!-- Table of contents (sticky sidebar on desktop) -->
+    <div class="col-md-3 toc-col">
+      <div class="card help-card" style="position:sticky; top:1.5rem;">
+        <div class="card-body py-3 px-4">
+          <div class="fw-bold mb-2" style="font-size:.85rem;">Contents</div>
+          <nav class="toc">
+            <div class="toc-section">Overview</div>
+            <a href="#what-is-this">What is this app?</a>
+            <a href="#getting-started">Getting started</a>
+            <div class="toc-section">Pages</div>
+            <a href="#portfolio">📊 Portfolio</a>
+            <a href="#transactions">🔄 Transactions</a>
+            <a href="#dividends">💰 Dividends</a>
+            <a href="#analysis">📈 Analysis</a>
+            <a href="#holding">📌 Individual Holding</a>
+            <div class="toc-section">More</div>
+            <a href="#syncing">Syncing your data</a>
+            <a href="#tips">Hints &amp; tips</a>
+            <a href="#faq">FAQ</a>
+          </nav>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <div class="col-md-9">
+
+      <!-- What is this app? -->
+      <div class="help-card card" id="what-is-this">
+        <div class="card-header">❓ What is this app?</div>
+        <div class="card-body">
+          <p>
+            The <strong>Trading 212 Portfolio Tracker</strong> is a personal dashboard that connects to your
+            Trading 212 account(s) via their official API and gives you a richer, more analytical view of
+            your investments than the Trading 212 app itself provides.
+          </p>
+          <p>
+            It pulls in your <strong>positions</strong>, <strong>order history</strong>,
+            <strong>dividend payments</strong>, and <strong>cash balances</strong>, then enriches that data
+            with live market prices and additional company information to give you consolidated performance
+            metrics across your <strong>ISA</strong> and <strong>Trading</strong> accounts in one place.
+          </p>
+          <div class="tip-box">
+            <strong>Note:</strong> This is a technology demonstration provided for informational purposes only.
+            It is not financial advice and no liability is accepted for any errors in the data presented.
+            Always verify important figures directly in the Trading 212 app.
+          </div>
+        </div>
+      </div>
+
+      <!-- Getting started -->
+      <div class="help-card card" id="getting-started">
+        <div class="card-header">🚀 Getting started</div>
+        <div class="card-body">
+          <p>To connect the app to your Trading 212 account you need to generate API keys inside Trading 212 and paste them into <a href="/settings">Settings</a>. You can connect a <strong>Trading account</strong>, an <strong>ISA account</strong>, or both.</p>
+
+          <h5>Step-by-step</h5>
+          <div class="d-flex align-items-start mb-2">
+            <span class="step-badge">1</span>
+            <div>Log in to <strong>Trading 212</strong> on the web or mobile app and go to <em>Settings → API</em>.</div>
+          </div>
+          <div class="d-flex align-items-start mb-2">
+            <span class="step-badge">2</span>
+            <div>Create a new API key. Give it a descriptive name (e.g. "Portfolio Tracker"). Copy the key — <strong>you won't be able to see it again</strong>.</div>
+          </div>
+          <div class="d-flex align-items-start mb-2">
+            <span class="step-badge">3</span>
+            <div>Open <a href="/settings">Settings</a> in this app and paste the key into the appropriate field (Trading account or ISA). Repeat if you have both account types.</div>
+          </div>
+          <div class="d-flex align-items-start mb-2">
+            <span class="step-badge">4</span>
+            <div>Click <strong>Run Sync Now</strong> in the Data Sync card. The first sync may take a minute or two depending on how many transactions you have.</div>
+          </div>
+          <div class="d-flex align-items-start mb-2">
+            <span class="step-badge">5</span>
+            <div>Once the sync completes, navigate to <a href="/">Portfolio</a> to see your holdings.</div>
+          </div>
+
+          <div class="tip-box mt-3">
+            <strong>Tip:</strong> API keys are stored encrypted in the database — they are never stored in plain text.
+          </div>
+          <div class="tip-box">
+            <strong>Tip:</strong> If you only have one account type (e.g. just an ISA), you only need to enter that key. Leave the other field blank.
+          </div>
+        </div>
+      </div>
+
+      <!-- Portfolio page -->
+      <div class="help-card card" id="portfolio">
+        <div class="card-header">📊 Portfolio page</div>
+        <div class="card-body">
+          <p>The Portfolio page is your main dashboard — it gives you a <strong>snapshot of your entire portfolio at the current moment</strong>.</p>
+
+          <h5>Summary cards</h5>
+          <ul>
+            <li><strong>Total Value</strong> — the current market value of all your holdings converted to GBP.</li>
+            <li><strong>Total Cost</strong> — how much you originally paid for your current holdings (cost basis).</li>
+            <li><strong>Total P&amp;L</strong> — unrealised profit or loss: current value minus cost basis.</li>
+            <li><strong>Total Return %</strong> — P&amp;L expressed as a percentage of your cost basis.</li>
+            <li><strong>Free Cash / Pie Cash</strong> — uninvested cash sitting in your accounts, shown if non-zero.</li>
+          </ul>
+
+          <h5>Holdings table</h5>
+          <p>Each row represents one stock or ETF you currently hold. Columns include:</p>
+          <ul>
+            <li><strong>Ticker / Name</strong> — click any row to open the detailed <a href="#holding">Holding page</a> for that instrument.</li>
+            <li><strong>Account</strong> — ISA or Trading.</li>
+            <li><strong>Quantity</strong> — shares held (can be fractional).</li>
+            <li><strong>Avg Cost</strong> — your average purchase price per share in GBP.</li>
+            <li><strong>Current Price</strong> — latest price fetched from Yahoo Finance, in GBP.</li>
+            <li><strong>Value (GBP)</strong> — quantity × current price.</li>
+            <li><strong>P&amp;L (GBP) / %</strong> — unrealised gain or loss for this holding.</li>
+          </ul>
+
+          <h5>Pie filter</h5>
+          <p>If you use Trading 212 Pies, a filter bar at the top of the table lets you narrow down holdings to a specific pie or view all pies together.</p>
+
+          <div class="tip-box">
+            <strong>Tip:</strong> Prices are fetched live from Yahoo Finance each time the page loads. If a price looks stale or unusual, try a manual sync from <a href="/settings">Settings</a>.
+          </div>
+        </div>
+      </div>
+
+      <!-- Transactions page -->
+      <div class="help-card card" id="transactions">
+        <div class="card-header">🔄 Transactions page</div>
+        <div class="card-body">
+          <p>The Transactions page shows a <strong>complete history of every buy and sell order</strong> that has been executed across your accounts.</p>
+
+          <h5>Summary cards</h5>
+          <ul>
+            <li><strong>Total Bought</strong> — cumulative GBP value of all BUY orders.</li>
+            <li><strong>Total Sold</strong> — cumulative GBP value of all SELL orders.</li>
+            <li><strong>Net Invested</strong> — total bought minus total sold: the net capital you have deployed.</li>
+            <li><strong>Total Transactions</strong> — count of all orders in the table.</li>
+          </ul>
+
+          <h5>Transactions table</h5>
+          <p>Columns include the date, ticker, account, side (BUY/SELL), order type, quantity, fill price per share, and total value — all in GBP.</p>
+
+          <h5>T212 cash fund transactions</h5>
+          <p>By default, internal Trading 212 cash fund movements are hidden. Click <strong>Show T212 cash fund transactions</strong> to include them if you want to see a fully complete history.</p>
+
+          <div class="tip-box">
+            <strong>Tip:</strong> Use the <strong>Filter</strong> box above the table to quickly search by ticker, name, or account. The table is fully sortable — click any column header.
+          </div>
+          <div class="tip-box">
+            <strong>Tip:</strong> Click any row to jump straight to that stock's <a href="#holding">Holding page</a>.
+          </div>
+        </div>
+      </div>
+
+      <!-- Dividends page -->
+      <div class="help-card card" id="dividends">
+        <div class="card-header">💰 Dividends page</div>
+        <div class="card-body">
+          <p>The Dividends page shows all <strong>dividend and income payments</strong> received across your accounts.</p>
+
+          <h5>Filtering</h5>
+          <ul>
+            <li><strong>Account buttons</strong> (All / ISA / Trading) — filter by which account received the dividend.</li>
+            <li><strong>Month dropdown</strong> — filter to a specific calendar month to see income for that period.</li>
+            <li>Combine both filters to see, for example, ISA dividends in March 2025.</li>
+            <li>Click <strong>✕ Clear filters</strong> to return to the full list.</li>
+          </ul>
+
+          <h5>Summary cards</h5>
+          <p>The total GBP dividend income and payment count update automatically to reflect the active filters.</p>
+
+          <h5>Dividends table</h5>
+          <p>Shows each payment with its date, ticker, account, payment type, quantity of shares held at the time, per-share gross amount (in the instrument's native currency), and the total GBP amount received.</p>
+
+          <div class="tip-box">
+            <strong>Tip:</strong> Per-share amounts are shown in the instrument's own currency (USD, EUR, GBP, etc.) so you can easily cross-reference with published dividend announcements. The <strong>Amount (GBP)</strong> column always shows what you actually received after Trading 212 converted it.
+          </div>
+          <div class="tip-box">
+            <strong>Tip:</strong> Use the month filter at year-end to add up your annual dividend income for ISA allowance or tax reporting purposes.
+          </div>
+        </div>
+      </div>
+
+      <!-- Analysis page -->
+      <div class="help-card card" id="analysis">
+        <div class="card-header">📈 Analysis page</div>
+        <div class="card-body">
+          <p>The Analysis page provides <strong>visual breakdowns of your portfolio composition</strong> to help you understand where your money is concentrated.</p>
+
+          <h5>Charts included</h5>
+          <ul>
+            <li><strong>Allocation by Holding</strong> — a pie/donut chart showing each stock's share of your total portfolio value. Useful for spotting over-concentration.</li>
+            <li><strong>Allocation by Sector</strong> — groups your holdings by industry sector (Technology, Financials, Healthcare, etc.).</li>
+            <li><strong>Allocation by Geography / Country</strong> — shows how your portfolio is split across different countries and regions.</li>
+            <li><strong>Account Split</strong> — compares the value held in your ISA versus your Trading account.</li>
+          </ul>
+
+          <h5>Pie filter</h5>
+          <p>As with the Portfolio page, you can filter charts to show only the holdings within a specific Trading 212 Pie.</p>
+
+          <div class="tip-box">
+            <strong>Tip:</strong> Sector and country data is sourced from Yahoo Finance. For some smaller or non-US stocks this data may occasionally be missing or approximate.
+          </div>
+          <div class="tip-box">
+            <strong>Tip:</strong> Use the geography chart to check whether your portfolio is overly concentrated in one market — a common risk for UK-based investors who hold mostly US tech.
+          </div>
+        </div>
+      </div>
+
+      <!-- Individual holding page -->
+      <div class="help-card card" id="holding">
+        <div class="card-header">📌 Individual Holding page</div>
+        <div class="card-body">
+          <p>Clicking any ticker or row across the app takes you to the <strong>Holding page</strong> for that instrument — a deep-dive into a single stock or ETF.</p>
+
+          <h5>What you'll find</h5>
+          <ul>
+            <li><strong>Summary cards</strong> — current value, total cost, unrealised P&amp;L, return %, average cost per share, and total shares held.</li>
+            <li><strong>Company info</strong> — sector, industry, country, and a brief business description sourced from Yahoo Finance.</li>
+            <li><strong>Order history</strong> — every buy and sell for this instrument, with dates, quantities, prices, and values.</li>
+            <li><strong>Dividend history</strong> — all dividend payments received for this stock, with per-share amounts and totals.</li>
+          </ul>
+
+          <div class="tip-box">
+            <strong>Tip:</strong> The holding page is the best place to review the full cost basis of a position and understand your entry points over time.
+          </div>
+        </div>
+      </div>
+
+      <!-- Syncing -->
+      <div class="help-card card" id="syncing">
+        <div class="card-header">🔄 Syncing your data</div>
+        <div class="card-body">
+          <p>Data is <strong>not</strong> updated in real time — it is pulled from Trading 212 on demand when you trigger a sync.</p>
+
+          <h5>How to sync</h5>
+          <p>Go to <a href="/settings">Settings</a> and click <strong>Run Sync Now</strong> in the Data Sync card. The page will refresh every few seconds and show the sync status. Once complete it will show the time of the last successful sync.</p>
+
+          <h5>What gets synced</h5>
+          <ul>
+            <li>Current positions and quantities from both accounts</li>
+            <li>Full order (buy/sell) history</li>
+            <li>All dividend payment records</li>
+            <li>Account cash balances (free cash and cash held in Pies)</li>
+            <li>Pie structure and membership</li>
+            <li>Company metadata (sector, country, description) via Yahoo Finance</li>
+          </ul>
+
+          <h5>Live prices</h5>
+          <p>Current market prices are <strong>fetched live from Yahoo Finance each time you load a page</strong> — they are not stored and do not require a sync. This means your portfolio value is always as up to date as Yahoo Finance's data allows.</p>
+
+          <div class="tip-box">
+            <strong>Tip:</strong> Run a sync after making trades in Trading 212 to ensure your order history and position quantities are up to date.
+          </div>
+          <div class="tip-box">
+            <strong>Tip:</strong> The "Last synced" timestamp in the top bar tells you when the most recent successful sync completed. If it looks old, head to Settings to trigger a fresh one.
+          </div>
+        </div>
+      </div>
+
+      <!-- Hints and tips -->
+      <div class="help-card card" id="tips">
+        <div class="card-header">💡 Hints &amp; tips</div>
+        <div class="card-body">
+          <div class="tip-box"><strong>Search anywhere:</strong> Every table has a Filter box. Type a company name, ticker, or account type to instantly narrow results — no need to scroll through long lists.</div>
+          <div class="tip-box"><strong>Sort any column:</strong> Click any column header in the tables to sort ascending or descending. Hold <kbd>Shift</kbd> and click a second column to sort by multiple columns.</div>
+          <div class="tip-box"><strong>Navigate from tables:</strong> Clicking any row in the Portfolio, Transactions, or Dividends tables takes you directly to that holding's detail page.</div>
+          <div class="tip-box"><strong>Both accounts in one view:</strong> If you hold the same stock in both your ISA and Trading account they will appear as separate rows, letting you track the cost basis and P&amp;L for each independently.</div>
+          <div class="tip-box"><strong>Currency handling:</strong> All values are normalised to GBP. Stocks traded in USD, EUR, or GBX (pence) are automatically converted using live FX rates.</div>
+          <div class="tip-box"><strong>Fractional shares:</strong> Quantities are displayed to 4 decimal places so fractional share positions (common with Trading 212 Pies) are shown accurately.</div>
+          <div class="tip-box"><strong>ISA allowance tracking:</strong> Filter the Dividends page to the current tax year months to keep track of income received inside your ISA.</div>
+          <div class="tip-box"><strong>Change page size:</strong> The "Show ___ transactions" dropdown at the bottom of each table lets you display 25, 50, 100, or all rows at once.</div>
+        </div>
+      </div>
+
+      <!-- FAQ -->
+      <div class="help-card card" id="faq">
+        <div class="card-header">❓ Frequently asked questions</div>
+        <div class="card-body">
+
+          <h5>Why does a price look wrong or show as zero?</h5>
+          <p>Prices come from Yahoo Finance and are occasionally unavailable for less common tickers, or for stocks that have been delisted. Check the ticker directly on Yahoo Finance. Running a sync will also attempt to refresh company metadata which may resolve lookup issues.</p>
+
+          <h5>Why is my portfolio value different from the Trading 212 app?</h5>
+          <p>Prices are sourced from Yahoo Finance rather than Trading 212's own feed, and are subject to the normal 15-minute delay for most exchanges. Small discrepancies due to FX rates and price timing are normal. This app is for informational analysis — always rely on the Trading 212 app for definitive account values.</p>
+
+          <h5>My sector or country shows as "Unknown" — why?</h5>
+          <p>Yahoo Finance does not always carry sector or country data for non-US listed stocks. Where possible the app falls back to a mapping based on the exchange the stock trades on (e.g. LSE → United Kingdom). If it still shows as Unknown, the data is genuinely unavailable from our sources.</p>
+
+          <h5>Can I connect both an ISA and a Trading account?</h5>
+          <p>Yes — enter API keys for both in <a href="/settings">Settings</a>. Data from both accounts will be merged into a single view, with each holding labelled by account type.</p>
+
+          <h5>Is my API key safe?</h5>
+          <p>API keys are encrypted before being stored in the database using AES encryption. They are never logged or transmitted anywhere other than directly to the Trading 212 API. That said, treat your API key like a password — if you suspect it has been compromised, revoke it in Trading 212 immediately and generate a new one.</p>
+
+          <h5>How do I remove my data?</h5>
+          <p>Go to <a href="/settings">Settings</a>. You can either <strong>Clear Portfolio Data</strong> (removes all synced trading data but keeps your account) or <strong>Delete Account</strong> (permanently removes everything including your login).</p>
+
+          <h5>Why are T212 cash fund transactions hidden by default?</h5>
+          <p>Trading 212 routes uninvested cash through an internal money market instrument. These show up as BUY/SELL orders but are not real equity investments. Hiding them by default keeps the transaction history focused on your actual stock trades.</p>
+
+        </div>
+      </div>
+
+    </div><!-- /col -->
+  </div><!-- /row -->
+</div>
+
+<!-- AdSense -->
+<div style="max-width:1400px; margin:0 auto; padding:.5rem 1.5rem 1rem;">
+  <ins class="adsbygoogle"
+       style="display:block"
+       data-ad-client="ca-pub-6145203907417515"
+       data-ad-slot="auto"
+       data-ad-format="auto"
+       data-full-width-responsive="true"></ins>
+  <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+</div>
+
+<!-- Disclaimer footer -->
+<footer style="background:#0f1923; color:#8a9bb0; font-size:.72rem; text-align:center; padding:.9rem 1.5rem; margin-top:1rem; line-height:1.6;">
+  <strong style="color:#c8d6e5;">Disclaimer:</strong>
+  This application is a <strong style="color:#c8d6e5;">technology demonstration only</strong> and is provided strictly for informational purposes.
+  It does <strong style="color:#c8d6e5;">not</strong> constitute financial advice, investment recommendations, or any form of regulated financial service.
+  We make no guarantee as to the accuracy, completeness, or timeliness of any figures, valuations, or data presented.
+  You should <strong style="color:#c8d6e5;">not</strong> rely on this application when making investment decisions — always consult a qualified financial adviser.
+  No liability is accepted for any loss or damage arising directly or indirectly from the use of, or reliance on, this application.
+  <br><span style="color:#4a5a6a; margin-top:.4rem; display:inline-block;">&copy; {{ now().year }} <a href="https://www.sydeone.co.uk" target="_blank" rel="noopener noreferrer" style="color:#8a9bb0; text-decoration:underline;">Sydeone Ltd</a>. All rights reserved.</span>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
