@@ -409,11 +409,11 @@ class SyncRunner:
             {"uid": self.user_id, "acc": self.account},
         ).scalar()
         if latest:
-            newer_than = latest.strftime("%Y-%m-%dT%H:%M:%S")
+            newer_than = latest.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
             print(f"  Fetching orders newer than {newer_than}")
         else:
             cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=365)
-            newer_than = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+            newer_than = cutoff.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
             print(f"  First sync — fetching orders from the last 12 months ({newer_than})")
 
         page = 0
@@ -502,7 +502,7 @@ class SyncRunner:
         # Subtract 60s buffer to avoid missing records on timestamp boundaries
         if latest:
             cursor_dt = latest - datetime.timedelta(seconds=60)
-            newer_than = cursor_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            newer_than = cursor_dt.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
             print(f"  Fetching transactions newer than {newer_than}")
         else:
             newer_than = None
@@ -576,7 +576,7 @@ class SyncRunner:
         ).scalar()
         if latest:
             cursor_dt = latest - datetime.timedelta(seconds=60)
-            newer_than = cursor_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            newer_than = cursor_dt.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
             print(f"  Fetching dividend payments newer than {newer_than}")
         else:
             newer_than = None
