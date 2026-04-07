@@ -11,7 +11,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 import yfinance as yf
 from fastapi import FastAPI, Depends, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -78,6 +78,9 @@ templates.env.globals["now"] = datetime.datetime.utcnow
 
 _sync_executor = ThreadPoolExecutor(max_workers=4)  # used directly for sync tasks
 _scheduler = BackgroundScheduler(timezone="UTC")
+
+# In-memory state for the admin force-enrich job (single global — only one runs at a time)
+_enrich_state: dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────
@@ -476,11 +479,12 @@ def admin_instruments_page(request: Request, db: Session = Depends(get_session))
         ORDER BY i.name NULLS LAST
     """)).mappings().all()
 
-    total         = len(rows)
-    missing_yf    = sum(1 for r in rows if not r["yf_ticker"])
-    missing_sector= sum(1 for r in rows if not r["sector"])
-    missing_country=sum(1 for r in rows if not r["country"])
-    never_enriched= sum(1 for r in rows if not r["last_enriched_at"])
+    total            = len(rows)
+    missing_yf       = sum(1 for r in rows if not r["yf_ticker"])
+    missing_sector   = sum(1 for r in rows if not r["sector"])
+    missing_country  = sum(1 for r in rows if not r["country"])
+    missing_currency = sum(1 for r in rows if not r["currency_code"])
+    never_enriched   = sum(1 for r in rows if not r["last_enriched_at"])
 
     return templates.TemplateResponse(request, "admin_instruments.html", {
         "user": user,
@@ -489,8 +493,49 @@ def admin_instruments_page(request: Request, db: Session = Depends(get_session))
         "missing_yf": missing_yf,
         "missing_sector": missing_sector,
         "missing_country": missing_country,
+        "missing_currency": missing_currency,
         "never_enriched": never_enriched,
     })
+
+
+def _run_force_enrich() -> None:
+    """Background task: enrich all instruments, updating _enrich_state as it goes."""
+    global _enrich_state
+    db = SessionLocal()
+    try:
+        from app.sync.runner import SyncRunner
+        runner = SyncRunner(db, user_id=None)
+
+        def _progress(done, total, ticker):
+            _enrich_state.update({"done": done, "total": total, "current": ticker})
+
+        _enrich_state.update({"status": "running", "done": 0, "total": 0, "current": "", "result": None})
+        result = runner.enrich_all_instruments(progress_callback=_progress)
+        _enrich_state.update({"status": "done", "result": result})
+    except Exception as exc:
+        traceback.print_exc()
+        _enrich_state.update({"status": "error", "result": {"error": str(exc)}})
+    finally:
+        db.close()
+
+
+@app.post("/admin/instruments/enrich")
+def trigger_force_enrich(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    if _enrich_state["status"] == "running":
+        return JSONResponse({"error": "Enrichment already running"}, status_code=409)
+    _sync_executor.submit(_run_force_enrich)
+    return JSONResponse({"queued": True})
+
+
+@app.get("/admin/instruments/enrich/status")
+def force_enrich_status(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    return JSONResponse(_enrich_state)
 
 
 # ── Help route ────────────────────────────────────────────────────────────

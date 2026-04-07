@@ -61,6 +61,54 @@ EXCHANGE_COUNTRY_MAP: dict[str, str] = {
     "SGX": "Singapore",
 }
 
+EXCHANGE_CURRENCY_MAP: dict[str, str] = {
+    # United Kingdom — LSE stocks trade in pence (GBX), not pounds
+    "LSE":    "GBX",
+    "XLON":   "GBX",
+    # United States
+    "NASDAQ": "USD",
+    "NYSE":   "USD",
+    "BATS":   "USD",
+    "ARCA":   "USD",
+    "AMEX":   "USD",
+    # Germany
+    "XETR":   "EUR",
+    "FRA":    "EUR",
+    # France
+    "XPAR":   "EUR",
+    # Netherlands
+    "XAMS":   "EUR",
+    # Spain
+    "XMAD":   "EUR",
+    # Italy
+    "XMIL":   "EUR",
+    # Switzerland
+    "XSWX":   "CHF",
+    # Sweden
+    "XSTO":   "SEK",
+    # Denmark
+    "XCSE":   "DKK",
+    # Norway
+    "XOSL":   "NOK",
+    # Canada
+    "TSX":    "CAD",
+    "TSXV":   "CAD",
+    # Australia
+    "ASX":    "AUD",
+    # Hong Kong
+    "HKEX":   "HKD",
+    "XHKG":   "HKD",
+    # Japan
+    "TSE":    "JPY",
+    # India
+    "NSE":    "INR",
+    "BSE":    "INR",
+    # Brazil
+    "BVMF":   "BRL",
+    # Singapore
+    "SGX":    "SGD",
+}
+
 EXCHANGE_SUFFIX_MAP: dict[str, str] = {
     # United Kingdom
     "LSE": ".L",

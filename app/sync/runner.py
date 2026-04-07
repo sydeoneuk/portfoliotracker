@@ -1,5 +1,6 @@
 import datetime
 import time
+from sqlalchemy import literal_column
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
 
@@ -80,20 +81,25 @@ class SyncRunner:
         data = self.client.get_instruments()
         now = datetime.datetime.utcnow()
 
+        from app.enrichment.ticker_mapper import EXCHANGE_CURRENCY_MAP
+
         # Filter catalogue to held tickers only
         relevant = [item for item in data if item["ticker"] in held_tickers]
 
         for item in relevant:
+            exchange = item.get("exchange") or ""
+            # Use T212-supplied currency; fall back to exchange map if absent
+            currency = item.get("currencyCode") or EXCHANGE_CURRENCY_MAP.get(exchange.upper())
             stmt = (
                 insert(Instrument)
                 .values(
                     ticker=item["ticker"],
                     name=item.get("name"),
                     short_name=item.get("shortName"),
-                    currency_code=item.get("currencyCode"),
+                    currency_code=currency,
                     isin=item.get("isin"),
                     instrument_type=item.get("type"),
-                    exchange=item.get("exchange"),
+                    exchange=exchange or None,
                     min_trade_quantity=item.get("minTradeQuantity"),
                     max_open_quantity=item.get("maxOpenQuantity"),
                     created_at=now,
@@ -104,14 +110,35 @@ class SyncRunner:
                     set_={
                         "name": item.get("name"),
                         "short_name": item.get("shortName"),
-                        "currency_code": item.get("currencyCode"),
+                        # Never overwrite a known currency with NULL —
+                        # EXCLUDED.currency_code is the incoming value;
+                        # fall back to the existing row value if it is NULL
+                        "currency_code": literal_column(
+                            "COALESCE(EXCLUDED.currency_code, instruments.currency_code)"
+                        ),
                         "isin": item.get("isin"),
-                        "exchange": item.get("exchange"),
+                        "exchange": exchange or None,
                         "updated_at": now,
                     },
                 )
             )
             self.session.execute(stmt)
+
+        # Back-fill NULL currency for any held instruments using the exchange map
+        backfill = (
+            self.session.query(Instrument)
+            .filter(
+                Instrument.ticker.in_(held_tickers),
+                Instrument.currency_code.is_(None),
+                Instrument.exchange.isnot(None),
+            )
+            .all()
+        )
+        for inst in backfill:
+            derived = EXCHANGE_CURRENCY_MAP.get((inst.exchange or "").upper())
+            if derived:
+                inst.currency_code = derived
+                print(f"  Back-filled currency {derived} for {inst.ticker} (exchange={inst.exchange})")
 
         self.session.commit()
         print(f"  Synced {len(relevant)} instruments (filtered from {len(data)} in catalogue).")
@@ -777,6 +804,121 @@ class SyncRunner:
 
         self.session.commit()
         print(f"  Metadata enrichment complete ({enriched}/{len(instruments)} instruments).")
+
+    def enrich_all_instruments(self, progress_callback=None) -> dict:
+        """Force-enrich every instrument in the database, ignoring the 7-day cache.
+
+        Unlike sync_instrument_metadata this is not scoped to a single user's
+        holdings — it processes every row in the instruments table.
+
+        Each field is only written if the external source returns a non-empty
+        value, so existing good data is never overwritten by a lookup failure.
+
+        Args:
+            progress_callback: optional callable(done, total, ticker) for progress tracking.
+
+        Returns:
+            dict with keys: total, enriched, failed, skipped (no yf_ticker derivable)
+        """
+        import yfinance as yf
+        from app.config import settings as _settings
+        from app.enrichment.ticker_mapper import (
+            derive_yf_ticker, EXCHANGE_COUNTRY_MAP, EXCHANGE_CURRENCY_MAP
+        )
+        from app.enrichment.fmp_enricher import FmpDividendEnricher
+        from app.enrichment.claude_enricher import ClaudeDescriptionEnricher
+
+        fmp    = FmpDividendEnricher(_settings.fmp_api_key) if _settings.fmp_api_key else None
+        claude = ClaudeDescriptionEnricher(_settings.anthropic_api_key) if _settings.anthropic_api_key else None
+
+        instruments = self.session.query(Instrument).order_by(Instrument.ticker).all()
+        total    = len(instruments)
+        enriched = 0
+        failed   = 0
+        skipped  = 0
+        now      = datetime.datetime.utcnow()
+
+        print(f"[force-enrich] Starting enrichment of all {total} instruments...")
+
+        for idx, instrument in enumerate(instruments, 1):
+            # Resolve yfinance ticker — use stored value first, then derive
+            yf_ticker = instrument.yf_ticker or derive_yf_ticker(
+                instrument.ticker, instrument.short_name, instrument.exchange
+            )
+
+            if progress_callback:
+                progress_callback(idx, total, instrument.ticker)
+
+            if not yf_ticker:
+                print(f"  [{idx}/{total}] {instrument.ticker}: no yf_ticker derivable — skipped")
+                skipped += 1
+                continue
+
+            # Always store the derived yf_ticker so future lookups work
+            if not instrument.yf_ticker:
+                instrument.yf_ticker = yf_ticker
+
+            # Back-fill currency from exchange map if still NULL
+            if not instrument.currency_code and instrument.exchange:
+                derived_ccy = EXCHANGE_CURRENCY_MAP.get((instrument.exchange or "").upper())
+                if derived_ccy:
+                    instrument.currency_code = derived_ccy
+
+            try:
+                import time as _time
+                _time.sleep(0.5)  # be polite to yfinance rate limits
+                info = yf.Ticker(yf_ticker).info
+
+                # Only write if the source returned something useful — never overwrite with empty
+                if info.get("longBusinessSummary"):
+                    instrument.description = info["longBusinessSummary"]
+                if info.get("sector"):
+                    instrument.sector = info["sector"]
+                if info.get("industry"):
+                    instrument.industry = info["industry"]
+                if info.get("country"):
+                    instrument.country = info["country"]
+                if info.get("marketCap"):
+                    instrument.market_cap = info["marketCap"]
+
+                # Country fallback from exchange if yfinance didn't return one
+                if not instrument.country and instrument.exchange:
+                    inferred = EXCHANGE_COUNTRY_MAP.get((instrument.exchange or "").upper())
+                    if inferred:
+                        instrument.country = inferred
+
+                instrument.last_enriched_at = now
+
+                # Description fallbacks: FMP → Claude → synthesised
+                if not instrument.description and fmp:
+                    fmp_desc = fmp.get_description(yf_ticker, instrument.instrument_type or "")
+                    if fmp_desc:
+                        instrument.description = fmp_desc
+
+                if not instrument.description and claude:
+                    display_name = instrument.name or instrument.short_name or instrument.ticker
+                    claude_desc = claude.get_description(display_name)
+                    if claude_desc:
+                        instrument.description = claude_desc
+
+                if not instrument.description:
+                    instrument.description = _synthesise_description(instrument)
+
+                enriched += 1
+                print(f"  [{idx}/{total}] {instrument.ticker} ({yf_ticker}): OK")
+
+            except Exception as exc:
+                failed += 1
+                print(f"  [{idx}/{total}] {instrument.ticker} ({yf_ticker}): FAILED — {exc}")
+
+            # Commit in batches of 20 so progress is saved incrementally
+            if idx % 20 == 0:
+                self.session.commit()
+
+        self.session.commit()
+        result = {"total": total, "enriched": enriched, "failed": failed, "skipped": skipped}
+        print(f"[force-enrich] Complete — {enriched} enriched, {failed} failed, {skipped} skipped.")
+        return result
 
 
 def _synthesise_description(instrument) -> str | None:
