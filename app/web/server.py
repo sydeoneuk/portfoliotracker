@@ -135,7 +135,8 @@ _FX_TTL = 3600
 def _get_fx_rates_to_gbp(currencies: set[str]) -> dict[str, float]:
     global _fx_cache, _fx_cache_ts
 
-    needed = currencies - {"GBP", "GBX"}
+    # Filter out NULL placeholders and known non-currency values before FX lookup
+    needed = {c for c in currencies if c and c not in {"GBP", "GBX", "—", "-"}}
     now = time.time()
 
     if now - _fx_cache_ts < _FX_TTL and needed.issubset(_fx_cache):
