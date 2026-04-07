@@ -205,6 +205,21 @@ def _require_user(request: Request, db: Session) -> User | RedirectResponse:
     return user
 
 
+def _is_admin(user: User) -> bool:
+    """Return True if the user's email is in the ADMIN_EMAILS config list."""
+    return user.email.lower() in settings.admin_email_set
+
+
+def _require_admin(request: Request, db: Session) -> User | RedirectResponse:
+    """Require an authenticated admin user, redirecting to / if not authorised."""
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    if not _is_admin(user):
+        return _redirect("/")
+    return user
+
+
 def _redirect(url: str, status_code: int = 302):
     return RedirectResponse(url, status_code=status_code)
 
@@ -392,6 +407,92 @@ async def logout(request: Request):
     return _redirect("/login")
 
 
+# ── Admin routes ──────────────────────────────────────────────────────────
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+
+    # Gather all users with their settings and basic stats
+    rows = db.execute(text("""
+        SELECT
+            u.id,
+            u.email,
+            u.name,
+            u.provider,
+            u.created_at,
+            u.last_login_at,
+            s.sync_status,
+            s.last_sync_at,
+            s.auto_sync_enabled,
+            (s.t212_api_key_enc IS NOT NULL AND s.t212_api_key_enc != '') AS has_trading_key,
+            (s.t212_isa_api_key_enc IS NOT NULL AND s.t212_isa_api_key_enc != '') AS has_isa_key,
+            (SELECT COUNT(*) FROM positions p WHERE p.user_id = u.id) AS position_count,
+            (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS order_count,
+            (SELECT COUNT(*) FROM dividend_payments dp WHERE dp.user_id = u.id) AS dividend_count
+        FROM users u
+        LEFT JOIN user_settings s ON s.user_id = u.id
+        ORDER BY u.created_at DESC
+    """)).mappings().all()
+
+    return templates.TemplateResponse(request, "admin.html", {
+        "user": user,
+        "users": rows,
+        "admin_emails": sorted(settings.admin_email_set),
+    })
+
+
+@app.get("/admin/instruments", response_class=HTMLResponse)
+def admin_instruments_page(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+
+    rows = db.execute(text("""
+        SELECT
+            i.ticker,
+            i.short_name,
+            i.name,
+            i.currency_code,
+            i.isin,
+            i.instrument_type,
+            i.exchange,
+            i.yf_ticker,
+            i.sector,
+            i.industry,
+            i.country,
+            i.market_cap,
+            i.instrument_class,
+            i.last_enriched_at,
+            i.last_dividend_synced_at,
+            i.created_at,
+            i.updated_at,
+            COUNT(DISTINCT p.user_id) AS holder_count
+        FROM instruments i
+        LEFT JOIN positions p ON p.ticker = i.ticker
+        GROUP BY i.ticker
+        ORDER BY i.name NULLS LAST
+    """)).mappings().all()
+
+    total         = len(rows)
+    missing_yf    = sum(1 for r in rows if not r["yf_ticker"])
+    missing_sector= sum(1 for r in rows if not r["sector"])
+    missing_country=sum(1 for r in rows if not r["country"])
+    never_enriched= sum(1 for r in rows if not r["last_enriched_at"])
+
+    return templates.TemplateResponse(request, "admin_instruments.html", {
+        "user": user,
+        "instruments": rows,
+        "total": total,
+        "missing_yf": missing_yf,
+        "missing_sector": missing_sector,
+        "missing_country": missing_country,
+        "never_enriched": never_enriched,
+    })
+
+
 # ── Help route ────────────────────────────────────────────────────────────
 
 @app.get("/help", response_class=HTMLResponse)
@@ -416,6 +517,7 @@ def settings_page(request: Request, db: Session = Depends(get_session)):
         "has_isa_key": bool(user_settings.t212_isa_api_key_enc),
         "has_isa_secret": bool(user_settings.t212_isa_api_secret_enc),
         "auto_sync_enabled": user_settings.auto_sync_enabled if user_settings.auto_sync_enabled is not None else True,
+        "is_admin": _is_admin(user),
     })
 
 

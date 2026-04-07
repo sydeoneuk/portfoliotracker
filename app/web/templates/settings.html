@@ -71,6 +71,7 @@
       <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
       <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
       <a class="nav-link text-white px-4 py-3" href="/help">&#9;❓&nbsp; Help</a>
+      <a class="nav-link text-white px-4 py-3 active" href="/settings">&#9;⚙️&nbsp; Settings</a>
     </nav>
   </div>
 </div>
@@ -204,10 +205,10 @@
         {% else %}
         <form method="post" action="/sync">
           <button type="submit" class="btn btn-t212"
-                  {% if not has_trading_key %}disabled title="Configure an API key first"{% endif %}>
+                  {% if not has_trading_key and not has_isa_key %}disabled title="Configure an API key first"{% endif %}>
             Sync Now
           </button>
-          {% if not has_trading_key %}
+          {% if not has_trading_key and not has_isa_key %}
           <span class="text-muted ms-2" style="font-size:.82rem">Add an API key above to enable sync.</span>
           {% endif %}
         </form>
@@ -250,6 +251,20 @@
         </button>
       </div>
     </div>
+
+    <!-- Admin panel link — only shown to admin users -->
+    {% if is_admin %}
+    <div class="card mb-4" style="border: 1px solid rgba(0,200,150,0.4);">
+      <div class="card-body">
+        <h6 class="card-title mb-1" style="color:var(--t212-green);">⚙️ Administration</h6>
+        <p class="text-muted mb-3" style="font-size:.85rem;">
+          You have administrator access. View and manage all registered users, sync status,
+          and application health.
+        </p>
+        <a href="/admin" class="btn btn-sm btn-t212">Open Admin Panel</a>
+      </div>
+    </div>
+    {% endif %}
 
     <!-- Delete account -->
     <div class="card mb-4 border border-danger-subtle">

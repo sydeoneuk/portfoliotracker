@@ -116,7 +116,9 @@
       <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
       {% endif %}
       <a class="nav-link text-white px-4 py-3 active" href="/help">&#9;❓&nbsp; Help</a>
-      {% if not user %}
+      {% if user %}
+      <a class="nav-link text-white px-4 py-3" href="/settings">&#9;⚙️&nbsp; Settings</a>
+      {% else %}
       <a class="nav-link text-white px-4 py-3" href="/login">&#9;🔑&nbsp; Sign in</a>
       {% endif %}
     </nav>
@@ -139,7 +141,6 @@
     {% if user %}
       {% if user.avatar_url %}<img src="{{ user.avatar_url }}" class="avatar" alt="">{% endif %}
       <span>{{ user.name or user.email }}</span>
-      <a href="/settings" class="btn btn-sm btn-outline-light">Settings</a>
       <form method="post" action="/logout" class="d-inline">
         <button class="btn btn-sm btn-outline-secondary">Sign out</button>
       </form>
@@ -170,6 +171,7 @@
             <a href="#holding">📌 Individual Holding</a>
             <div class="toc-section">More</div>
             <a href="#syncing">Syncing your data</a>
+            <a href="#auto-sync">Automatic daily sync</a>
             <a href="#tips">Hints &amp; tips</a>
             <a href="#faq">FAQ</a>
           </nav>
@@ -384,10 +386,23 @@
       <div class="help-card card" id="syncing">
         <div class="card-header">🔄 Syncing your data</div>
         <div class="card-body">
-          <p>Data is <strong>not</strong> updated in real time — it is pulled from Trading 212 on demand when you trigger a sync.</p>
+          <p>Data is <strong>not</strong> updated in real time — it is pulled from Trading 212 when a sync runs, either automatically on a schedule or triggered manually.</p>
 
-          <h5>How to sync</h5>
-          <p>Go to <a href="/settings">Settings</a> and click <strong>Run Sync Now</strong> in the Data Sync card. The page will refresh every few seconds and show the sync status. Once complete it will show the time of the last successful sync.</p>
+          <h5>Automatic daily sync</h5>
+          <p>
+            By default the app automatically syncs all your accounts once a day at <strong>03:00 UTC</strong>.
+            This time is chosen because all major Western markets (US, UK, Europe) are closed, so prices
+            and positions have fully settled for the day.
+          </p>
+          <p>
+            You can turn this off at any time using the <strong>Automatic Daily Sync</strong> toggle in the
+            Data Sync card on <a href="/settings">Settings</a>. The toggle takes effect immediately — no
+            restart required.
+          </p>
+
+          <h5>Manual sync</h5>
+          <p>You can also trigger a sync at any time by going to <a href="/settings">Settings</a> and clicking <strong>Sync Now</strong> in the Data Sync card. The page will refresh every few seconds and show the sync status. Once complete it will show the time of the last successful sync.</p>
+          <p>Run a manual sync whenever you want your data to reflect recent trades without waiting for the overnight run.</p>
 
           <h5>What gets synced</h5>
           <ul>
@@ -403,10 +418,10 @@
           <p>Current market prices are <strong>fetched live from Yahoo Finance each time you load a page</strong> — they are not stored and do not require a sync. This means your portfolio value is always as up to date as Yahoo Finance's data allows.</p>
 
           <div class="tip-box">
-            <strong>Tip:</strong> Run a sync after making trades in Trading 212 to ensure your order history and position quantities are up to date.
+            <strong>Tip:</strong> If you make trades during the day and want to see them reflected immediately, use <strong>Sync Now</strong> — don't wait for the overnight run.
           </div>
           <div class="tip-box">
-            <strong>Tip:</strong> The "Last synced" timestamp in the top bar tells you when the most recent successful sync completed. If it looks old, head to Settings to trigger a fresh one.
+            <strong>Tip:</strong> The "Last synced" timestamp in the top bar tells you when the most recent sync completed — whether automatic or manual. If it looks unexpectedly old, check the sync status in <a href="/settings">Settings</a>.
           </div>
         </div>
       </div>
@@ -448,6 +463,12 @@
 
           <h5>How do I remove my data?</h5>
           <p>Go to <a href="/settings">Settings</a>. You can either <strong>Clear Portfolio Data</strong> (removes all synced trading data but keeps your account) or <strong>Delete Account</strong> (permanently removes everything including your login).</p>
+
+          <h5 id="auto-sync">Can I disable the automatic daily sync?</h5>
+          <p>Yes — go to <a href="/settings">Settings</a> and use the <strong>Automatic Daily Sync</strong> toggle in the Data Sync card. When disabled, your data will only update when you manually click <strong>Sync Now</strong>. You might prefer this if you want full control over when syncs run, or if you are not actively using the app.</p>
+
+          <h5>Why does the automatic sync run at 03:00 UTC?</h5>
+          <p>03:00 UTC is after the US markets close (~21:00 UK time) and before Asian markets are fully open, making it the point in the day when all major Western market prices have fully settled. This means your overnight snapshot reflects a complete and stable picture of your portfolio.</p>
 
           <h5>Why are T212 cash fund transactions hidden by default?</h5>
           <p>Trading 212 routes uninvested cash through an internal money market instrument. These show up as BUY/SELL orders but are not real equity investments. Hiding them by default keeps the transaction history focused on your actual stock trades.</p>

@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     # Set to True when running behind HTTPS in production
     https_only: bool = False
 
+    # Comma-separated list of email addresses granted admin access
+    # e.g. ADMIN_EMAILS=paul@sydeone.co.uk,other@example.com
+    admin_emails: str = ""
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        """Return the admin emails as a normalised lowercase set."""
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
+
     @property
     def database_url(self) -> str:
         return (

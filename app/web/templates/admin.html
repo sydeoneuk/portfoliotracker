@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-QN3KWW2EFD"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-QN3KWW2EFD');
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin — Trading 212 Portfolio</title>
+
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  <style>
+    :root { --t212-green: #00c896; --t212-dark: #0f1923; }
+    body { background: #f4f6f9; font-size: 0.875rem; }
+
+    .side-nav .nav-link {
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      transition: background .15s; font-size: .88rem; letter-spacing: .3px;
+    }
+    .side-nav .nav-link:hover  { background: rgba(0,200,150,0.1);  color: var(--t212-green) !important; }
+    .side-nav .nav-link.active { background: rgba(0,200,150,0.15); color: var(--t212-green) !important; font-weight: 600; }
+
+    .top-bar {
+      background: var(--t212-dark); color: #fff;
+      padding: 1rem 1.5rem; display: flex; align-items: center; justify-content: space-between;
+    }
+    .top-bar .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: .5px; }
+    .top-bar .brand span { color: var(--t212-green); }
+    .top-bar .user-info { display: flex; align-items: center; gap: .75rem; font-size: .82rem; }
+    .top-bar .avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+
+    .stat-card {
+      border: none; border-radius: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    }
+    .stat-card .label { font-size: .7rem; text-transform: uppercase; letter-spacing: .8px; color: #6c757d; }
+    .stat-card .amount { font-size: 1.5rem; font-weight: 700; }
+
+    .admin-card {
+      border: none; border-radius: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      margin-bottom: 1.5rem;
+    }
+    .admin-card .card-header {
+      background: var(--t212-dark); color: #fff;
+      border-radius: 10px 10px 0 0 !important;
+      padding: .75rem 1.25rem; font-weight: 700; font-size: .9rem;
+    }
+
+    .users-table thead th {
+      background: var(--t212-dark); color: #c8d6e5;
+      font-size: .72rem; text-transform: uppercase; letter-spacing: .6px;
+      border: none; white-space: nowrap;
+    }
+    .users-table td { vertical-align: middle; border-color: #f0f2f5; }
+
+    .sync-badge { display: inline-block; padding: .2rem .55rem; border-radius: 999px;
+                  font-size: .72rem; font-weight: 600; white-space: nowrap; }
+    .sync-idle    { background: #e9ecef; color: #495057; }
+    .sync-running { background: #fff3cd; color: #856404; }
+    .sync-done    { background: #d1e7dd; color: #0a3622; }
+    .sync-error   { background: #f8d7da; color: #58151c; }
+
+    .provider-badge { background: #e9ecef; color: #495057; font-size: .68rem;
+                      font-weight: 500; border-radius: 4px; padding: 2px 6px; }
+    .key-yes { color: #0fa968; font-weight: 600; }
+    .key-no  { color: #adb5bd; }
+
+    .admin-pill {
+      display: inline-block; background: rgba(0,200,150,0.15);
+      color: var(--t212-green); font-size: .68rem; font-weight: 700;
+      border-radius: 4px; padding: 1px 6px; letter-spacing: .3px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Side nav ──────────────────────────────────────────────────────────── -->
+<div class="offcanvas offcanvas-start side-nav" tabindex="-1" id="sideNav"
+     style="width:210px; background:#0f1923; border-right:1px solid rgba(255,255,255,0.08);">
+  <div class="offcanvas-header pb-2">
+    <span class="text-white fw-bold" style="font-size:.95rem;">Trading 212 <span style="color:#00c896;">Portfolio</span></span>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas"></button>
+  </div>
+  <div class="offcanvas-body p-0">
+    <nav class="nav flex-column pt-1">
+      <a class="nav-link text-white px-4 py-3" href="/">&#9;📊&nbsp; Portfolio</a>
+      <a class="nav-link text-white px-4 py-3" href="/transactions">&#9;🔄&nbsp; Transactions</a>
+      <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
+      <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
+      <a class="nav-link text-white px-4 py-3" href="/help">&#9;❓&nbsp; Help</a>
+      <a class="nav-link text-white px-4 py-3" href="/settings">&#9;⚙️&nbsp; Settings</a>
+      <a class="nav-link text-white px-4 py-3 active" href="/admin">&#9;🛡️&nbsp; Admin</a>
+    </nav>
+  </div>
+</div>
+
+<!-- ── Top bar ───────────────────────────────────────────────────────────── -->
+<div class="top-bar">
+  <div class="d-flex align-items-center gap-3">
+    <button class="btn btn-link text-white p-0" data-bs-toggle="offcanvas" data-bs-target="#sideNav" aria-label="Menu">
+      <svg width="22" height="22" fill="currentColor" viewBox="0 0 16 16">
+        <path fill-rule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/>
+      </svg>
+    </button>
+    <div class="brand">Trading 212 <span>Admin</span></div>
+  </div>
+  <div class="user-info">
+    {% if user.avatar_url %}<img src="{{ user.avatar_url }}" class="avatar" alt="">{% endif %}
+    <span>{{ user.name or user.email }}</span>
+    <form method="post" action="/logout" class="d-inline">
+      <button class="btn btn-sm btn-outline-secondary">Sign out</button>
+    </form>
+  </div>
+</div>
+
+<!-- ── Content ───────────────────────────────────────────────────────────── -->
+<div class="container-fluid px-4 py-3">
+
+  <!-- Summary stats -->
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+      <div class="card stat-card p-3" style="border-left: 3px solid var(--t212-green);">
+        <div class="label">Registered Users</div>
+        <div class="amount">{{ users | length }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card stat-card p-3" style="border-left: 3px solid #0fa968;">
+        <div class="label">With API Keys</div>
+        <div class="amount">{{ users | selectattr('has_trading_key') | list | length + users | selectattr('has_isa_key') | list | length - users | selectattr('has_trading_key') | selectattr('has_isa_key') | list | length }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card stat-card p-3" style="border-left: 3px solid #6c757d;">
+        <div class="label">Auto-Sync Enabled</div>
+        <div class="amount">{{ users | selectattr('auto_sync_enabled') | list | length }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card stat-card p-3" style="border-left: 3px solid #e0334c;">
+        <div class="label">Sync Errors</div>
+        <div class="amount">{{ users | selectattr('sync_status', 'equalto', 'error') | list | length }}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Configured admins -->
+  <div class="card admin-card mb-4">
+    <div class="card-header">⚙️ Configured Admins</div>
+    <div class="card-body py-2 px-3">
+      {% if admin_emails %}
+        {% for email in admin_emails %}
+        <span class="badge me-1 mb-1" style="background:rgba(0,200,150,0.15); color:var(--t212-green); font-size:.8rem; font-weight:500; border-radius:6px; padding:.3rem .7rem;">
+          {{ email }}
+        </span>
+        {% endfor %}
+        <p class="text-muted mt-2 mb-0" style="font-size:.78rem;">
+          Admin access is controlled via the <code>ADMIN_EMAILS</code> environment variable. Add or remove emails there and restart the app to update.
+        </p>
+      {% else %}
+        <p class="text-muted mb-0" style="font-size:.82rem;">No admin emails configured — set <code>ADMIN_EMAILS</code> in your <code>.env</code> file.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Quick links -->
+  <div class="d-flex gap-2 mb-4 flex-wrap">
+    <a href="/admin/instruments" class="btn btn-sm btn-outline-secondary">
+      🔍 Instruments &amp; Enrichment
+    </a>
+  </div>
+
+  <!-- Users table -->
+  <div class="card admin-card">
+    <div class="card-header">👥 Registered Users</div>
+    <div class="card-body p-0">
+      <table class="table table-hover users-table mb-0 w-100">
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Provider</th>
+            <th>Joined</th>
+            <th>Last Login</th>
+            <th>API Keys</th>
+            <th>Sync Status</th>
+            <th>Last Synced</th>
+            <th class="text-center">Auto</th>
+            <th class="text-end">Positions</th>
+            <th class="text-end">Orders</th>
+            <th class="text-end">Dividends</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td>
+              <div class="fw-semibold">{{ u.name or '—' }}</div>
+              <div class="text-muted" style="font-size:.78rem;">
+                {{ u.email }}
+                {% if u.email.lower() in admin_emails %}
+                <span class="admin-pill ms-1">ADMIN</span>
+                {% endif %}
+              </div>
+            </td>
+            <td><span class="provider-badge">{{ (u.provider or '—').title() }}</span></td>
+            <td style="white-space:nowrap; font-size:.8rem;">
+              {{ u.created_at.strftime('%d %b %Y') if u.created_at else '—' }}
+            </td>
+            <td style="white-space:nowrap; font-size:.8rem;">
+              {{ u.last_login_at.strftime('%d %b %Y') if u.last_login_at else '—' }}
+            </td>
+            <td style="font-size:.8rem;">
+              {% if u.has_trading_key %}<span class="key-yes">T</span>{% else %}<span class="key-no">T</span>{% endif %}
+              &nbsp;
+              {% if u.has_isa_key %}<span class="key-yes">ISA</span>{% else %}<span class="key-no">ISA</span>{% endif %}
+            </td>
+            <td>
+              {% set status = u.sync_status or 'idle' %}
+              <span class="sync-badge sync-{{ status }}">
+                {% if status == 'running' %}⟳ Running
+                {% elif status == 'done' %}✓ Done
+                {% elif status == 'error' %}✗ Error
+                {% else %}— Idle{% endif %}
+              </span>
+            </td>
+            <td style="white-space:nowrap; font-size:.8rem;">
+              {{ u.last_sync_at.strftime('%d %b %Y %H:%M') if u.last_sync_at else '—' }}
+            </td>
+            <td class="text-center" style="font-size:.85rem;">
+              {% if u.auto_sync_enabled %}
+                <span title="Daily sync enabled" style="color:var(--t212-green);">✓</span>
+              {% else %}
+                <span title="Daily sync disabled" style="color:#adb5bd;">✗</span>
+              {% endif %}
+            </td>
+            <td class="text-end">{{ u.position_count }}</td>
+            <td class="text-end">{{ u.order_count }}</td>
+            <td class="text-end">{{ u.dividend_count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<!-- Disclaimer footer -->
+<footer style="background:#0f1923; color:#8a9bb0; font-size:.72rem; text-align:center; padding:.9rem 1.5rem; margin-top:1rem; line-height:1.6;">
+  <strong style="color:#c8d6e5;">Disclaimer:</strong>
+  This application is a <strong style="color:#c8d6e5;">technology demonstration only</strong> and is provided strictly for informational purposes.
+  It does <strong style="color:#c8d6e5;">not</strong> constitute financial advice, investment recommendations, or any form of regulated financial service.
+  We make no guarantee as to the accuracy, completeness, or timeliness of any figures, valuations, or data presented.
+  No liability is accepted for any loss or damage arising directly or indirectly from the use of, or reliance on, this application.
+  <br><span style="color:#4a5a6a; margin-top:.4rem; display:inline-block;">&copy; {{ now().year }} <a href="https://www.sydeone.co.uk" target="_blank" rel="noopener noreferrer" style="color:#8a9bb0; text-decoration:underline;">Sydeone Ltd</a>. All rights reserved.</span>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

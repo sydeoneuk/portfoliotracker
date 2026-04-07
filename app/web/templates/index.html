@@ -160,6 +160,7 @@
       <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
       <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
       <a class="nav-link text-white px-4 py-3" href="/help">&#9;❓&nbsp; Help</a>
+      <a class="nav-link text-white px-4 py-3" href="/settings">&#9;⚙️&nbsp; Settings</a>
     </nav>
   </div>
 </div>
@@ -191,7 +192,6 @@
     <img src="{{ user.avatar_url }}" class="avatar" alt="">
     {% endif %}
     <span>{{ user.name or user.email }}</span>
-    <a href="/settings" class="btn btn-sm btn-outline-light">Settings</a>
     <form method="post" action="/logout" class="d-inline">
       <button class="btn btn-sm btn-outline-secondary">Sign out</button>
     </form>
