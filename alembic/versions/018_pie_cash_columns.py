@@ -18,8 +18,10 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column("user_settings", sa.Column("pie_cash_trading", sa.Float(), nullable=True))
-    op.add_column("user_settings", sa.Column("pie_cash_isa", sa.Float(), nullable=True))
+    # Use IF NOT EXISTS because migration 017 was amended after initial rollout
+    # and may already contain these columns on databases created from the updated 017.
+    op.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pie_cash_trading FLOAT")
+    op.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pie_cash_isa FLOAT")
 
 
 def downgrade():

@@ -13,18 +13,15 @@ systemctl enable --now docker
 usermod -aG docker ec2-user
 
 # ── Docker Compose plugin ────────────────────────────────────────────────────
-COMPOSE_VERSION=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest \
-  | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
 mkdir -p /usr/local/lib/docker/cli-plugins
 curl -fsSL \
-  "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+  "https://github.com/docker/compose/releases/download/v2.27.1/docker-compose-linux-x86_64" \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 # ── Clone application ────────────────────────────────────────────────────────
-APP_DIR=/opt/trading212
-git clone "${app_repo_url}" "$APP_DIR"
-chown -R ec2-user:ec2-user "$APP_DIR"
+git clone "${app_repo_url}" /opt/trading212
+chown -R ec2-user:ec2-user /opt/trading212
 
 # ── Systemd service — starts the app automatically on boot ──────────────────
 cat > /etc/systemd/system/trading212.service <<'EOF'
