@@ -2,7 +2,7 @@
 # Replace the domain placeholder — it's injected at runtime via the
 # DOMAIN_NAME environment variable in docker-compose.prod.yml.
 
-{$DOMAIN_NAME} {
+t212.sydeone.co.uk {
     reverse_proxy web:8001
 
     # Security headers
