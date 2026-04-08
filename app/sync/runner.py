@@ -47,11 +47,15 @@ class SyncRunner:
         print("Sync complete.")
 
     def sync_instruments(self):
-        """Sync T212 instrument metadata for held tickers only.
+        """Sync T212 instrument metadata for held tickers and any existing DB stubs.
 
-        Fetches the full T212 catalogue (one API call) but only upserts rows for
-        tickers the user currently holds in positions or pies. Skips if all held
-        instruments were updated within the last 24 hours.
+        Fetches the full T212 catalogue (one API call). Upserts rows for:
+        - Tickers the user currently holds (new rows inserted if missing)
+        - All instruments already in the DB (stubs from order/transaction history
+          get their T212 fields filled in — no extra API cost since the full
+          catalogue is downloaded anyway)
+
+        Skips if all held instruments were updated within the last 24 hours.
         """
         from sqlalchemy import text as _text
 
@@ -77,14 +81,19 @@ class SyncRunner:
             print("  Instruments up to date (synced < 24h ago), skipping.")
             return
 
-        print(f"Syncing instruments for {len(held_tickers)} held tickers...")
+        # Also refresh any instruments already in the DB (fills in stubs created for
+        # historical orders/transactions/dividends that are no longer held)
+        existing_tickers = {r[0] for r in self.session.query(Instrument.ticker).all()}
+        upsert_tickers = held_tickers | existing_tickers
+        stub_count = len(existing_tickers - held_tickers)
+
+        print(f"Syncing instruments: {len(held_tickers)} held + {stub_count} existing stubs...")
         data = self.client.get_instruments()
         now = datetime.datetime.utcnow()
 
         from app.enrichment.ticker_mapper import EXCHANGE_CURRENCY_MAP
 
-        # Filter catalogue to held tickers only
-        relevant = [item for item in data if item["ticker"] in held_tickers]
+        relevant = [item for item in data if item["ticker"] in upsert_tickers]
 
         for item in relevant:
             exchange = item.get("exchange") or ""
@@ -117,18 +126,21 @@ class SyncRunner:
                             "COALESCE(EXCLUDED.currency_code, instruments.currency_code)"
                         ),
                         "isin": item.get("isin"),
+                        "instrument_type": item.get("type"),
                         "exchange": exchange or None,
+                        "min_trade_quantity": item.get("minTradeQuantity"),
+                        "max_open_quantity": item.get("maxOpenQuantity"),
                         "updated_at": now,
                     },
                 )
             )
             self.session.execute(stmt)
 
-        # Back-fill NULL currency for any held instruments using the exchange map
+        # Back-fill NULL currency for all matching instruments using the exchange map
         backfill = (
             self.session.query(Instrument)
             .filter(
-                Instrument.ticker.in_(held_tickers),
+                Instrument.ticker.in_(upsert_tickers),
                 Instrument.currency_code.is_(None),
                 Instrument.exchange.isnot(None),
             )
@@ -141,7 +153,111 @@ class SyncRunner:
                 print(f"  Back-filled currency {derived} for {inst.ticker} (exchange={inst.exchange})")
 
         self.session.commit()
-        print(f"  Synced {len(relevant)} instruments (filtered from {len(data)} in catalogue).")
+        print(f"  Synced {len(relevant)} instruments from T212 catalogue ({len(data)} total in catalogue).")
+
+    def reload_all_instruments_from_t212(self, progress_callback=None) -> dict:
+        """Force-reload T212 base data for every instrument currently in the DB.
+
+        Downloads the T212 instruments catalogue once and upserts all rows that
+        match an instrument already in our database. Does NOT add new instruments
+        (sync_instruments handles that). Bypasses the 24h freshness check.
+
+        Instruments not present in the T212 catalogue (delisted, stubs for
+        non-T212 assets) are left as-is; their currency is back-filled from
+        the exchange map if still NULL.
+
+        Args:
+            progress_callback: optional callable(done, total, ticker)
+
+        Returns:
+            dict with keys: total_in_db, found_in_catalogue,
+                            not_in_catalogue, backfilled_currency
+        """
+        from app.enrichment.ticker_mapper import EXCHANGE_CURRENCY_MAP
+
+        existing_tickers = {r[0] for r in self.session.query(Instrument.ticker).all()}
+        total = len(existing_tickers)
+
+        print(f"[t212-reload] Fetching T212 catalogue to refresh {total} instruments...")
+        data = self.client.get_instruments()
+        now = datetime.datetime.utcnow()
+
+        relevant = [item for item in data if item["ticker"] in existing_tickers]
+        not_in_catalogue = len(existing_tickers) - len(relevant)
+
+        for idx, item in enumerate(relevant, 1):
+            if progress_callback:
+                progress_callback(idx, len(relevant), item["ticker"])
+
+            exchange = item.get("exchange") or ""
+            currency = item.get("currencyCode") or EXCHANGE_CURRENCY_MAP.get(exchange.upper())
+
+            stmt = (
+                insert(Instrument)
+                .values(
+                    ticker=item["ticker"],
+                    name=item.get("name"),
+                    short_name=item.get("shortName"),
+                    currency_code=currency,
+                    isin=item.get("isin"),
+                    instrument_type=item.get("type"),
+                    exchange=exchange or None,
+                    min_trade_quantity=item.get("minTradeQuantity"),
+                    max_open_quantity=item.get("maxOpenQuantity"),
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_update(
+                    index_elements=["ticker"],
+                    set_={
+                        "name": item.get("name"),
+                        "short_name": item.get("shortName"),
+                        "currency_code": literal_column(
+                            "COALESCE(EXCLUDED.currency_code, instruments.currency_code)"
+                        ),
+                        "isin": item.get("isin"),
+                        "instrument_type": item.get("type"),
+                        "exchange": exchange or None,
+                        "min_trade_quantity": item.get("minTradeQuantity"),
+                        "max_open_quantity": item.get("maxOpenQuantity"),
+                        "updated_at": now,
+                    },
+                )
+            )
+            self.session.execute(stmt)
+
+            if idx % 50 == 0:
+                self.session.commit()
+
+        # Back-fill NULL currency from exchange map for any instrument still missing it
+        backfill = (
+            self.session.query(Instrument)
+            .filter(
+                Instrument.currency_code.is_(None),
+                Instrument.exchange.isnot(None),
+            )
+            .all()
+        )
+        backfilled = 0
+        for inst in backfill:
+            derived = EXCHANGE_CURRENCY_MAP.get((inst.exchange or "").upper())
+            if derived:
+                inst.currency_code = derived
+                backfilled += 1
+
+        self.session.commit()
+
+        result = {
+            "total_in_db": total,
+            "found_in_catalogue": len(relevant),
+            "not_in_catalogue": not_in_catalogue,
+            "backfilled_currency": backfilled,
+        }
+        print(
+            f"[t212-reload] Complete — {len(relevant)} updated from catalogue, "
+            f"{not_in_catalogue} not in catalogue, {backfilled} currency back-filled."
+        )
+        return result
 
     def sync_positions(self):
         print("Syncing positions...")

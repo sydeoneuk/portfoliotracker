@@ -203,6 +203,37 @@
     </div>
   </div>
 
+  <!-- Force T212 reload panel -->
+  <div class="card mb-4" style="border:none; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,.08);">
+    <div class="card-body d-flex align-items-center justify-content-between flex-wrap gap-3">
+      <div>
+        <div class="fw-semibold" style="font-size:.9rem;">Force T212 Data Reload</div>
+        <div class="text-muted" style="font-size:.8rem;">
+          Re-fetches the Trading 212 instruments catalogue and updates base fields
+          (name, ISIN, exchange, currency, type) for every instrument currently in the
+          database — including stubs created from order/transaction history that may have
+          missing data. Uses your T212 API credentials. Run this to fix instruments
+          showing blank exchange or currency fields.
+        </div>
+      </div>
+      <div class="d-flex align-items-center gap-3 flex-shrink-0">
+        <div id="t212-status" style="font-size:.82rem; color:#6c757d; display:none;"></div>
+        <button id="t212-btn" class="btn btn-sm"
+                style="background:#0d6efd; color:#fff; font-weight:600; border:none; white-space:nowrap;"
+                onclick="startT212Reload()">
+          📥 Reload from T212
+        </button>
+      </div>
+    </div>
+    <div id="t212-progress-wrap" style="display:none; padding: 0 1.25rem 1rem;">
+      <div class="progress" style="height:6px; border-radius:3px;">
+        <div id="t212-progress-bar" class="progress-bar"
+             style="background:#0d6efd; width:0%; transition:width .3s;"></div>
+      </div>
+      <div id="t212-progress-text" class="text-muted mt-1" style="font-size:.75rem;"></div>
+    </div>
+  </div>
+
   <!-- Quick-filter buttons -->
   <div class="d-flex gap-2 mb-3 flex-wrap">
     <button class="btn btn-sm btn-outline-secondary filter-pill active" onclick="filterTable('all', this)">All</button>
@@ -434,6 +465,89 @@
         document.getElementById('enrich-btn').textContent = '⏳ Running…';
         document.getElementById('enrich-progress-wrap').style.display = 'block';
         enrichPollTimer = setInterval(pollEnrich, 2000);
+      }
+    });
+
+  // ── T212 reload ────────────────────────────────────────────────────────
+  var t212PollTimer = null;
+
+  function startT212Reload() {
+    var btn = document.getElementById('t212-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Starting…';
+    setT212Status('', '');
+    fetch('/admin/instruments/t212-reload', {method: 'POST'})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.error) {
+          setT212Status('✗ ' + d.error, 'text-danger');
+          btn.disabled = false;
+          btn.textContent = '📥 Reload from T212';
+        } else {
+          pollT212();
+          t212PollTimer = setInterval(pollT212, 2000);
+        }
+      })
+      .catch(function(e) {
+        setT212Status('Failed to start: ' + e, 'text-danger');
+        btn.disabled = false;
+        btn.textContent = '📥 Reload from T212';
+      });
+  }
+
+  function pollT212() {
+    fetch('/admin/instruments/t212-reload/status')
+      .then(function(r) { return r.json(); })
+      .then(function(s) {
+        var btn  = document.getElementById('t212-btn');
+        var wrap = document.getElementById('t212-progress-wrap');
+        var bar  = document.getElementById('t212-progress-bar');
+        var txt  = document.getElementById('t212-progress-text');
+
+        if (s.status === 'running') {
+          btn.textContent = '⏳ Running…';
+          wrap.style.display = 'block';
+          var pct = s.total > 0 ? Math.round(s.done / s.total * 100) : 0;
+          bar.style.width = pct + '%';
+          txt.textContent = s.done + ' / ' + s.total + (s.current ? ' — ' + s.current : '');
+          setT212Status(pct + '% complete', 'text-muted');
+
+        } else if (s.status === 'done') {
+          clearInterval(t212PollTimer);
+          bar.style.width = '100%';
+          var r = s.result || {};
+          txt.textContent = 'Complete — ' + (r.found_in_catalogue || 0) + ' updated from catalogue, ' +
+                            (r.not_in_catalogue || 0) + ' not in catalogue, ' +
+                            (r.backfilled_currency || 0) + ' currency back-filled.';
+          setT212Status('✓ Done — reload to see updated data', 'text-success');
+          btn.disabled = false;
+          btn.textContent = '📥 Reload from T212';
+
+        } else if (s.status === 'error') {
+          clearInterval(t212PollTimer);
+          var msg = (s.result && s.result.error) ? s.result.error : 'Unknown error';
+          setT212Status('✗ Error: ' + msg, 'text-danger');
+          btn.disabled = false;
+          btn.textContent = '📥 Reload from T212';
+        }
+      });
+  }
+
+  function setT212Status(msg, cls) {
+    var el = document.getElementById('t212-status');
+    el.style.display = msg ? 'block' : 'none';
+    el.className = cls;
+    el.textContent = msg;
+  }
+
+  fetch('/admin/instruments/t212-reload/status')
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      if (s.status === 'running') {
+        document.getElementById('t212-btn').disabled = true;
+        document.getElementById('t212-btn').textContent = '⏳ Running…';
+        document.getElementById('t212-progress-wrap').style.display = 'block';
+        t212PollTimer = setInterval(pollT212, 2000);
       }
     });
 

@@ -2,6 +2,7 @@ import datetime
 import json
 import time
 import traceback
+import urllib.request
 from urllib.parse import quote, urlencode
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -79,8 +80,9 @@ templates.env.globals["now"] = datetime.datetime.utcnow
 _sync_executor = ThreadPoolExecutor(max_workers=4)  # used directly for sync tasks
 _scheduler = BackgroundScheduler(timezone="UTC")
 
-# In-memory state for the admin force-enrich job (single global — only one runs at a time)
+# In-memory state for admin background jobs (single global each — only one of each runs at a time)
 _enrich_state: dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
+_t212_state:   dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────
@@ -538,6 +540,57 @@ def force_enrich_status(request: Request, db: Session = Depends(get_session)):
     return JSONResponse(_enrich_state)
 
 
+def _run_t212_reload(api_key: str, api_secret: str) -> None:
+    """Background task: reload T212 base data for all DB instruments."""
+    global _t212_state
+    db = SessionLocal()
+    try:
+        from app.sync.runner import SyncRunner
+        runner = SyncRunner(db, api_key=api_key, api_secret=api_secret, user_id=None)
+
+        def _progress(done, total, ticker):
+            _t212_state.update({"done": done, "total": total, "current": ticker})
+
+        _t212_state.update({"status": "running", "done": 0, "total": 0, "current": "", "result": None})
+        result = runner.reload_all_instruments_from_t212(progress_callback=_progress)
+        _t212_state.update({"status": "done", "result": result})
+    except Exception as exc:
+        traceback.print_exc()
+        _t212_state.update({"status": "error", "result": {"error": str(exc)}})
+    finally:
+        db.close()
+
+
+@app.post("/admin/instruments/t212-reload")
+def trigger_t212_reload(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    if _t212_state["status"] == "running":
+        return JSONResponse({"error": "T212 reload already running"}, status_code=409)
+
+    # Use the requesting admin's own T212 credentials to fetch the catalogue
+    user_settings = db.query(UserSettings).filter_by(user_id=user.id).first()
+    api_key    = decrypt(user_settings.t212_api_key_enc)    if user_settings and user_settings.t212_api_key_enc    else None
+    api_secret = decrypt(user_settings.t212_api_secret_enc) if user_settings and user_settings.t212_api_secret_enc else None
+    if not api_key:
+        api_key    = decrypt(user_settings.t212_isa_api_key_enc)    if user_settings and user_settings.t212_isa_api_key_enc    else None
+        api_secret = decrypt(user_settings.t212_isa_api_secret_enc) if user_settings and user_settings.t212_isa_api_secret_enc else None
+    if not api_key:
+        return JSONResponse({"error": "No T212 API credentials found for your account"}, status_code=400)
+
+    _sync_executor.submit(_run_t212_reload, api_key, api_secret)
+    return JSONResponse({"queued": True})
+
+
+@app.get("/admin/instruments/t212-reload/status")
+def t212_reload_status(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    return JSONResponse(_t212_state)
+
+
 # ── Help route ────────────────────────────────────────────────────────────
 
 @app.get("/help", response_class=HTMLResponse)
@@ -547,6 +600,22 @@ def help_page(request: Request, db: Session = Depends(get_session)):
 
 
 # ── Settings routes ────────────────────────────────────────────────────────
+
+_server_ip_cache: dict = {"ip": None, "fetched_at": 0}
+
+def _get_server_ip() -> str | None:
+    """Return the server's public IP, cached for 6 hours."""
+    if time.time() - _server_ip_cache["fetched_at"] < 21600 and _server_ip_cache["ip"]:
+        return _server_ip_cache["ip"]
+    try:
+        with urllib.request.urlopen("https://api.ipify.org", timeout=5) as resp:
+            ip = resp.read().decode().strip()
+        _server_ip_cache["ip"] = ip
+        _server_ip_cache["fetched_at"] = time.time()
+        return ip
+    except Exception:
+        return _server_ip_cache.get("ip")
+
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: Session = Depends(get_session)):
@@ -563,6 +632,7 @@ def settings_page(request: Request, db: Session = Depends(get_session)):
         "has_isa_secret": bool(user_settings.t212_isa_api_secret_enc),
         "auto_sync_enabled": user_settings.auto_sync_enabled if user_settings.auto_sync_enabled is not None else True,
         "is_admin": _is_admin(user),
+        "server_ip": _get_server_ip(),
     })
 
 
@@ -1522,7 +1592,7 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
 
     # Pies containing this ticker — scoped to the current user
     pie_rows = db.execute(text("""
-        SELECT pie.id, pie.name, pie.account,
+        SELECT pie.pk AS id, pie.name, pie.account,
                ph.owned_quantity, ph.current_share, ph.expected_share
         FROM pies pie
         JOIN pie_holdings ph ON ph.pie_id = pie.pk

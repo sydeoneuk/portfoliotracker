@@ -139,6 +139,25 @@
 
         <hr class="my-3">
 
+        <!-- Server IP callout -->
+        {% if server_ip %}
+        <div class="d-flex align-items-start gap-3 mb-3 p-3 rounded-3" style="background:rgba(0,200,150,0.07); border-left:3px solid #00c896;">
+          <div style="font-size:1.4rem; line-height:1;">🔒</div>
+          <div style="font-size:.84rem;">
+            <div class="fw-semibold mb-1">Restrict your API key for extra security</div>
+            <p class="mb-2 text-muted">
+              When creating your API key in Trading 212, you can limit it so it can <strong>only be used from this app</strong> — no one else could use it even if they somehow got hold of it.
+              To do this, paste the address below into the <em>IP restriction</em> field in Trading 212:
+            </p>
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <code class="px-3 py-2 rounded" style="background:#0f1923; color:#00c896; font-size:.95rem; letter-spacing:.04em;">{{ server_ip }}</code>
+              <button type="button" class="btn btn-sm btn-outline-secondary"
+                      onclick="navigator.clipboard.writeText('{{ server_ip }}').then(() => { this.textContent='Copied!'; setTimeout(() => this.textContent='Copy', 1500); })">Copy</button>
+            </div>
+          </div>
+        </div>
+        {% endif %}
+
         <!-- Update keys form -->
         <form method="post" action="/settings">
           <p class="fw-semibold mb-2">Trading Account</p>

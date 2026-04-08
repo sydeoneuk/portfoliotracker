@@ -218,8 +218,55 @@
           </div>
           <div class="d-flex align-items-start mb-2">
             <span class="step-badge">2</span>
-            <div>Create a new API key. Give it a descriptive name (e.g. "Portfolio Tracker"). Copy the key — <strong>you won't be able to see it again</strong>.</div>
+            <div>
+              Create a new API key. Give it a descriptive name (e.g. <em>"Portfolio Tracker"</em>). Copy the key — <strong>you won't be able to see it again</strong>.
+            </div>
           </div>
+
+          <div class="card mb-3 mt-1" style="border:1px solid #dee2e6; border-radius:8px;">
+            <div class="card-body py-3 px-4">
+              <div class="fw-bold mb-2" style="font-size:.85rem;">Recommended API key permissions</div>
+              <p class="mb-2" style="font-size:.83rem;">This app only <strong>reads</strong> your data — it never places orders or modifies your account. Enable all of the read permissions below, and leave all write permissions <strong>disabled</strong> to minimise risk.</p>
+              <div class="row g-2">
+                <div class="col-sm-6">
+                  <div class="fw-bold text-success mb-1" style="font-size:.8rem;">✔ Enable (read)</div>
+                  <ul class="mb-0" style="font-size:.82rem;">
+                    <li>Account — read account details &amp; balances</li>
+                    <li>Portfolio — read current positions</li>
+                    <li>Orders — read order / trade history</li>
+                    <li>Dividends — read dividend payments</li>
+                    <li>Pies — read pie structure &amp; membership</li>
+                    <li>Instruments — read instrument metadata</li>
+                    <li>Personal data — read profile information</li>
+                  </ul>
+                </div>
+                <div class="col-sm-6">
+                  <div class="fw-bold text-danger mb-1" style="font-size:.8rem;">✘ Leave disabled (write)</div>
+                  <ul class="mb-0" style="font-size:.82rem;">
+                    <li>Orders — place or cancel orders</li>
+                    <li>Pies — create or modify pies</li>
+                    <li>Any other write / execute permissions</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card mb-3" style="border:1px solid #dee2e6; border-radius:8px;">
+            <div class="card-body py-3 px-4">
+              <div class="fw-bold mb-2" style="font-size:.85rem;">IP restriction (optional but recommended)</div>
+              <p class="mb-0" style="font-size:.83rem;">
+                Trading 212 lets you restrict an API key to a specific IP address, so it can only be used from that IP.
+                Because this app is hosted on an AWS instance with an <strong>Elastic IP (EIP)</strong>, the IP is stable —
+                Elastic IPs remain fixed to your AWS account as long as you keep them allocated, even if the underlying EC2 instance is stopped and restarted.
+                You can safely enter the server's Elastic IP into the IP restriction field in Trading 212.
+              </p>
+              <p class="mt-2 mb-0" style="font-size:.83rem;">
+                <strong>When could it change?</strong> Only in unusual circumstances: if the Elastic IP is manually released or reassigned, if the instance is terminated and rebuilt with a new EIP, or if the hosting is moved to a different server. If the IP ever does change, you will need to update the restriction in Trading 212 (or temporarily remove it) before syncs will work again. For day-to-day use, IP restriction is a good extra layer of security and is unlikely to cause problems.
+              </p>
+            </div>
+          </div>
+
           <div class="d-flex align-items-start mb-2">
             <span class="step-badge">3</span>
             <div>Open <a href="/settings">Settings</a> in this app and paste the key into the appropriate field (Trading account or ISA). Repeat if you have both account types.</div>
