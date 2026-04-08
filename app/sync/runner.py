@@ -91,12 +91,14 @@ class SyncRunner:
         data = self.client.get_instruments()
         now = datetime.datetime.utcnow()
 
-        from app.enrichment.ticker_mapper import EXCHANGE_CURRENCY_MAP
+        from app.enrichment.ticker_mapper import EXCHANGE_CURRENCY_MAP, derive_exchange_from_ticker
 
         relevant = [item for item in data if item["ticker"] in upsert_tickers]
 
         for item in relevant:
-            exchange = item.get("exchange") or ""
+            # T212 does not include exchange in the API response; derive it from
+            # the ticker format (e.g. AAPL_US_EQ → "US", SAP_XETR_EQ → "XETR")
+            exchange = item.get("exchange") or derive_exchange_from_ticker(item["ticker"]) or ""
             # Use T212-supplied currency; fall back to exchange map if absent
             currency = item.get("currencyCode") or EXCHANGE_CURRENCY_MAP.get(exchange.upper())
             stmt = (
@@ -119,15 +121,18 @@ class SyncRunner:
                     set_={
                         "name": item.get("name"),
                         "short_name": item.get("shortName"),
-                        # Never overwrite a known currency with NULL —
-                        # EXCLUDED.currency_code is the incoming value;
-                        # fall back to the existing row value if it is NULL
+                        # Never overwrite a known currency with NULL
                         "currency_code": literal_column(
                             "COALESCE(EXCLUDED.currency_code, instruments.currency_code)"
                         ),
                         "isin": item.get("isin"),
                         "instrument_type": item.get("type"),
-                        "exchange": exchange or None,
+                        # Prefer the incoming derived exchange, but never overwrite a
+                        # more specific value (e.g. "NYSE" set by yfinance) with a
+                        # coarser one (e.g. "US") from the ticker parse
+                        "exchange": literal_column(
+                            "COALESCE(EXCLUDED.exchange, instruments.exchange)"
+                        ),
                         "min_trade_quantity": item.get("minTradeQuantity"),
                         "max_open_quantity": item.get("maxOpenQuantity"),
                         "updated_at": now,
@@ -173,7 +178,7 @@ class SyncRunner:
             dict with keys: total_in_db, found_in_catalogue,
                             not_in_catalogue, backfilled_currency
         """
-        from app.enrichment.ticker_mapper import EXCHANGE_CURRENCY_MAP
+        from app.enrichment.ticker_mapper import EXCHANGE_CURRENCY_MAP, derive_exchange_from_ticker
 
         existing_tickers = {r[0] for r in self.session.query(Instrument.ticker).all()}
         total = len(existing_tickers)
@@ -189,7 +194,7 @@ class SyncRunner:
             if progress_callback:
                 progress_callback(idx, len(relevant), item["ticker"])
 
-            exchange = item.get("exchange") or ""
+            exchange = item.get("exchange") or derive_exchange_from_ticker(item["ticker"]) or ""
             currency = item.get("currencyCode") or EXCHANGE_CURRENCY_MAP.get(exchange.upper())
 
             stmt = (
@@ -217,7 +222,9 @@ class SyncRunner:
                         ),
                         "isin": item.get("isin"),
                         "instrument_type": item.get("type"),
-                        "exchange": exchange or None,
+                        "exchange": literal_column(
+                            "COALESCE(EXCLUDED.exchange, instruments.exchange)"
+                        ),
                         "min_trade_quantity": item.get("minTradeQuantity"),
                         "max_open_quantity": item.get("maxOpenQuantity"),
                         "updated_at": now,
@@ -889,6 +896,16 @@ class SyncRunner:
                     instrument.country = EXCHANGE_COUNTRY_MAP.get(
                         (instrument.exchange or "").upper()
                     )
+
+                # Refine exchange: yfinance returns a human-readable fullExchangeName
+                # (e.g. "NYSE", "Nasdaq", "London") which is more specific than the
+                # coarse "US" we derive from the ticker. Always prefer it over "US";
+                # also fill in if exchange is still null.
+                yf_exchange = info.get("fullExchangeName")
+                if yf_exchange:
+                    if not instrument.exchange or instrument.exchange.upper() == "US":
+                        instrument.exchange = yf_exchange
+
                 instrument.yf_ticker = yf_ticker
                 instrument.last_enriched_at = now
 

@@ -18,6 +18,7 @@ EXCHANGE_COUNTRY_MAP: dict[str, str] = {
     "LSE": "United Kingdom",
     "XLON": "United Kingdom",
     # United States
+    "US": "United States",
     "NASDAQ": "United States",
     "NYSE": "United States",
     "BATS": "United States",
@@ -66,6 +67,7 @@ EXCHANGE_CURRENCY_MAP: dict[str, str] = {
     "LSE":    "GBX",
     "XLON":   "GBX",
     # United States
+    "US":     "USD",
     "NASDAQ": "USD",
     "NYSE":   "USD",
     "BATS":   "USD",
@@ -114,6 +116,7 @@ EXCHANGE_SUFFIX_MAP: dict[str, str] = {
     "LSE": ".L",
     "XLON": ".L",
     # United States
+    "US": "",
     "NASDAQ": "",
     "NYSE": "",
     "BATS": "",
@@ -156,6 +159,41 @@ EXCHANGE_SUFFIX_MAP: dict[str, str] = {
     # Singapore
     "SGX": ".SI",
 }
+
+
+def derive_exchange_from_ticker(t212_ticker: str) -> str | None:
+    """
+    Parse the exchange code directly from a T212 ticker string.
+
+    T212 does not include exchange in its API response, but encodes it in the
+    ticker format itself:
+
+      AAPL_US_EQ    → "US"   (US-listed; yfinance enrichment refines to NYSE/Nasdaq)
+      SAP_XETR_EQ   → "XETR"
+      NESN_XSWX_EQ  → "XSWX"
+      VWRPl_EQ      → "LSE"  (trailing lowercase 'l' before _EQ = London)
+      AIRl_EQ       → "LSE"
+    """
+    if not t212_ticker:
+        return None
+
+    # Trailing lowercase 'l' before _EQ = London Stock Exchange
+    # e.g. VWRPl_EQ, ARMGl_EQ — distinguish from tickers that happen to end in 'l'
+    if t212_ticker.endswith("l_EQ") and "_US_" not in t212_ticker:
+        return "LSE"
+
+    # Standard pattern: SYMBOL_EXCHANGE_TYPE
+    # The exchange code is always the second-to-last underscore-separated segment.
+    # e.g. AAPL_US_EQ → ["AAPL", "US", "EQ"] → candidate = "US"
+    #      SAP_XETR_EQ → ["SAP", "XETR", "EQ"] → candidate = "XETR"
+    #      BRK_B_US_EQ → ["BRK", "B", "US", "EQ"] → candidate = "US"
+    parts = t212_ticker.split("_")
+    if len(parts) >= 3:
+        candidate = parts[-2].upper()
+        if candidate in EXCHANGE_SUFFIX_MAP:
+            return candidate
+
+    return None
 
 
 def derive_yf_ticker(t212_ticker: str, short_name: str | None, exchange: str | None) -> str | None:
