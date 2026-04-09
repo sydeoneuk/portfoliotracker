@@ -186,7 +186,8 @@
         <div class="fw-semibold" style="font-size:.9rem;">Force Metadata Refresh</div>
         <div class="text-muted" style="font-size:.8rem;">
           Iterates every instrument and attempts to fetch fresh data from Yahoo Finance,
-          FMP, and Claude. Existing values are only overwritten if new data is found —
+          FMP, and Claude, then refreshes dividend history and forward forecasts.
+          Existing values are only overwritten if new data is found —
           a lookup failure will never blank out data you already have.
           This may take several minutes.
         </div>
@@ -658,8 +659,12 @@
           clearInterval(enrichPollTimer);
           bar.style.width = '100%';
           var r = s.result || {};
+          var dividendNote = r.dividends && r.dividends.requested
+            ? ' Dividend refresh requested for ' + r.dividends.requested + ' instrument(s).'
+            : '';
           txt.textContent = 'Complete — ' + (r.enriched || 0) + ' enriched, ' +
-                            (r.failed || 0) + ' failed, ' + (r.skipped || 0) + ' skipped.';
+                            (r.failed || 0) + ' failed, ' + (r.skipped || 0) + ' skipped.' +
+                            dividendNote;
           setEnrichStatus('✓ Done — reload to see updated data', 'text-success');
           btn.disabled = false;
           btn.textContent = '🔄 Run Enrichment';

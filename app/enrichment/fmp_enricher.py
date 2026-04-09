@@ -18,11 +18,12 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-FMP_BASE = "https://financialmodelingprep.com/api/v3"
+FMP_BASE = "https://financialmodelingprep.com/stable"
 
 
 @dataclass
 class FmpDividend:
+    symbol: Optional[str]
     ex_date: datetime.date
     pay_date: Optional[datetime.date]
     record_date: Optional[datetime.date]
@@ -39,29 +40,28 @@ class FmpDividendEnricher:
 
     def get_history(self, symbol: str) -> list[FmpDividend]:
         """Fetch historical dividends for a symbol (e.g. 'AAPL', 'VWRP.L')."""
-        url = f"{FMP_BASE}/historical-price-full/stock_dividend/{symbol}"
         try:
-            resp = self._session.get(url, params={"apikey": self.api_key}, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
+            items = self._get_json("/dividends", {"symbol": symbol})
         except Exception as exc:
             logger.warning("  [fmp] %s history failed: %s", symbol, exc)
             return []
 
-        historical = data.get("historical", [])
         cutoff = datetime.date.today() - datetime.timedelta(days=self.lookback_years * 365)
         results = []
 
-        for item in historical:
-            ex_date = _parse_date(item.get("date"))
+        for item in items:
+            ex_date = _parse_date(
+                item.get("date") or item.get("exDate") or item.get("exDividendDate")
+            )
             if ex_date and ex_date >= cutoff:
                 results.append(
                     FmpDividend(
+                        symbol=item.get("symbol") or symbol,
                         ex_date=ex_date,
-                        pay_date=_parse_date(item.get("paymentDate")),
+                        pay_date=_parse_date(item.get("paymentDate") or item.get("payDate")),
                         record_date=_parse_date(item.get("recordDate")),
                         declaration_date=_parse_date(item.get("declarationDate")),
-                        amount=float(item.get("dividend", 0)),
+                        amount=float(item.get("dividend", 0) or 0),
                         adj_amount=_try_float(item.get("adjDividend")),
                     )
                 )
@@ -95,11 +95,8 @@ class FmpDividendEnricher:
         return None
 
     def _fetch_etf_description(self, symbol: str) -> Optional[str]:
-        url = f"{FMP_BASE}/etf-info"
         try:
-            resp = self._session.get(url, params={"symbol": symbol, "apikey": self.api_key}, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._get_json("/etf/info", {"symbol": symbol})
             items = data if isinstance(data, list) else [data]
             for item in items:
                 desc = (item.get("description") or "").strip()
@@ -110,11 +107,8 @@ class FmpDividendEnricher:
         return None
 
     def _fetch_profile_description(self, symbol: str) -> Optional[str]:
-        url = f"{FMP_BASE}/profile/{symbol}"
         try:
-            resp = self._session.get(url, params={"apikey": self.api_key}, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._get_json("/profile", {"symbol": symbol})
             items = data if isinstance(data, list) else [data]
             for item in items:
                 desc = (item.get("description") or "").strip()
@@ -137,31 +131,29 @@ class FmpDividendEnricher:
         from_date = from_date or today
         to_date = to_date or (today + datetime.timedelta(days=90))
 
-        url = f"{FMP_BASE}/stock_dividend_calendar"
         try:
-            resp = self._session.get(
-                url,
-                params={
+            items = self._get_json(
+                "/dividends-calendar",
+                {
                     "from": from_date.isoformat(),
                     "to": to_date.isoformat(),
-                    "apikey": self.api_key,
                 },
-                timeout=10,
             )
-            resp.raise_for_status()
-            items = resp.json()
         except Exception as exc:
             logger.warning("  [fmp] calendar failed: %s", exc)
             return []
 
         results = []
         for item in items:
-            ex_date = _parse_date(item.get("date"))
-            if ex_date:
+            ex_date = _parse_date(
+                item.get("date") or item.get("exDate") or item.get("exDividendDate")
+            )
+            if ex_date and from_date <= ex_date <= to_date:
                 results.append(
                     FmpDividend(
+                        symbol=item.get("symbol"),
                         ex_date=ex_date,
-                        pay_date=_parse_date(item.get("paymentDate")),
+                        pay_date=_parse_date(item.get("paymentDate") or item.get("payDate")),
                         record_date=_parse_date(item.get("recordDate")),
                         declaration_date=_parse_date(item.get("declarationDate")),
                         amount=float(item.get("dividend", 0) or 0),
@@ -171,6 +163,28 @@ class FmpDividendEnricher:
 
         logger.info("  [fmp] calendar: %d upcoming dividends fetched", len(results))
         return results
+
+    def _get_json(self, path: str, params: dict | None = None):
+        """Call an FMP stable endpoint and normalise common response wrappers."""
+        url = f"{FMP_BASE}{path}"
+        resp = self._session.get(
+            url,
+            params={**(params or {}), "apikey": self.api_key},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        if isinstance(data, dict) and data.get("Error Message"):
+            raise ValueError(data["Error Message"])
+
+        if isinstance(data, dict):
+            for key in ("data", "historical", "dividends", "results"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return value
+
+        return data
 
 
 # ---------------------------------------------------------------------------

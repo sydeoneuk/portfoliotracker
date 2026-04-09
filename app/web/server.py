@@ -261,6 +261,8 @@ def _run_sync(user_id: int, full_catalogue: bool = False) -> None:
     db = SessionLocal()
     try:
         from app.sync.runner import SyncRunner
+        from app.sync.dividend_sync import DividendSync
+        from app.models import Position, PieHolding
 
         user_settings = db.query(UserSettings).filter_by(user_id=user_id).first()
         if not user_settings:
@@ -291,6 +293,20 @@ def _run_sync(user_id: int, full_catalogue: bool = False) -> None:
             runner = SyncRunner(db, account=account_label, api_key=key,
                                 api_secret=secret, user_id=user_id)
             runner.sync_all(full_catalogue=full_catalogue)
+
+        held_tickers = {
+            r[0] for r in db.query(Position.ticker).filter(Position.user_id == user_id).all()
+        } | {
+            r[0] for r in db.query(PieHolding.ticker).filter(PieHolding.user_id == user_id).all()
+        }
+        if held_tickers:
+            user_settings.sync_message = "Refreshing dividend history and forecasts…"
+            db.commit()
+            div_sync = DividendSync(
+                session=db,
+                fmp_api_key=settings.fmp_api_key,
+            )
+            div_sync.sync_all(tickers=sorted(held_tickers))
 
         user_settings.last_sync_at = datetime.datetime.utcnow()
         user_settings.sync_status = "done"
@@ -650,6 +666,8 @@ def _run_force_enrich() -> None:
     db = SessionLocal()
     try:
         from app.sync.runner import SyncRunner
+        from app.sync.dividend_sync import DividendSync
+        from app.models import Instrument
         runner = SyncRunner(db, user_id=None)
 
         def _progress(done, total, ticker):
@@ -657,6 +675,20 @@ def _run_force_enrich() -> None:
 
         _enrich_state.update({"status": "running", "done": 0, "total": 0, "current": "", "result": None})
         result = runner.enrich_all_instruments(progress_callback=_progress)
+        all_tickers = [r[0] for r in db.query(Instrument.ticker).order_by(Instrument.ticker).all()]
+        dividend_result = {"requested": len(all_tickers)}
+        if all_tickers:
+            _enrich_state.update({
+                "current": "Refreshing dividend history and forecasts…",
+                "done": len(all_tickers),
+                "total": len(all_tickers),
+            })
+            div_sync = DividendSync(
+                session=db,
+                fmp_api_key=settings.fmp_api_key,
+            )
+            div_sync.sync_all(tickers=all_tickers)
+        result["dividends"] = dividend_result
         _enrich_state.update({"status": "done", "result": result})
     except Exception as exc:
         traceback.print_exc()

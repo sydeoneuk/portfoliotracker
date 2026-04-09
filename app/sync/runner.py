@@ -62,13 +62,14 @@ class SyncRunner:
         for candidate in candidates:
             try:
                 time.sleep(0.5)
-                info = yf.Ticker(candidate).info or {}
+                ticker_obj = yf.Ticker(candidate)
+                info = ticker_obj.info or {}
             except Exception as exc:
                 last_exc = exc
                 continue
 
             if _is_useful_yf_info(info):
-                return candidate, info
+                return candidate, info, ticker_obj
 
         if last_exc:
             raise last_exc
@@ -932,7 +933,7 @@ class SyncRunner:
 
         for instrument in instruments:
             try:
-                yf_ticker, info = self._resolve_yfinance_metadata(instrument, yf)
+                yf_ticker, info, ticker_obj = self._resolve_yfinance_metadata(instrument, yf)
                 if not yf_ticker or not info:
                     continue
                 if info.get("longBusinessSummary"):
@@ -948,6 +949,14 @@ class SyncRunner:
                     instrument.country = EXCHANGE_COUNTRY_MAP.get(
                         normalize_exchange(instrument.exchange) or (instrument.exchange or "").upper()
                     )
+
+                if info.get("marketCap"):
+                    instrument.market_cap = info["marketCap"]
+                fundamentals = _extract_yf_fundamentals(ticker_obj, info)
+                if fundamentals.get("eps_ttm") is not None:
+                    instrument.eps_ttm = fundamentals["eps_ttm"]
+                if fundamentals.get("fcf_per_share_3y_avg") is not None:
+                    instrument.fcf_per_share_3y_avg = fundamentals["fcf_per_share_3y_avg"]
 
                 # Refine exchange: yfinance returns a human-readable fullExchangeName
                 # (e.g. "NasdaqGS", "London") which we normalise back to our
@@ -1142,7 +1151,7 @@ class SyncRunner:
 
         for instrument in instruments:
             try:
-                yf_ticker, info = self._resolve_yfinance_metadata(instrument, yf)
+                yf_ticker, info, ticker_obj = self._resolve_yfinance_metadata(instrument, yf)
             except Exception as exc:
                 print(f"  [enrich-batch] {instrument.ticker}: {exc}")
                 continue
@@ -1165,6 +1174,11 @@ class SyncRunner:
                     )
                 if info.get("marketCap"):
                     instrument.market_cap = info["marketCap"]
+                fundamentals = _extract_yf_fundamentals(ticker_obj, info)
+                if fundamentals.get("eps_ttm") is not None:
+                    instrument.eps_ttm = fundamentals["eps_ttm"]
+                if fundamentals.get("fcf_per_share_3y_avg") is not None:
+                    instrument.fcf_per_share_3y_avg = fundamentals["fcf_per_share_3y_avg"]
                 yf_exchange = _normalised_yf_exchange(info)
                 current_exchange = normalize_exchange(instrument.exchange)
                 if yf_exchange and (not current_exchange or current_exchange == "US"):
@@ -1229,7 +1243,7 @@ class SyncRunner:
         for idx, instrument in enumerate(instruments, 1):
             # Resolve yfinance ticker — use stored value first, then derive
             try:
-                yf_ticker, info = self._resolve_yfinance_metadata(instrument, yf)
+                yf_ticker, info, ticker_obj = self._resolve_yfinance_metadata(instrument, yf)
             except Exception as exc:
                 failed += 1
                 print(f"  [{idx}/{total}] {instrument.ticker}: FAILED - {exc}")
@@ -1268,6 +1282,11 @@ class SyncRunner:
                     instrument.country = info["country"]
                 if info.get("marketCap"):
                     instrument.market_cap = info["marketCap"]
+                fundamentals = _extract_yf_fundamentals(ticker_obj, info)
+                if fundamentals.get("eps_ttm") is not None:
+                    instrument.eps_ttm = fundamentals["eps_ttm"]
+                if fundamentals.get("fcf_per_share_3y_avg") is not None:
+                    instrument.fcf_per_share_3y_avg = fundamentals["fcf_per_share_3y_avg"]
 
                 # Country fallback from exchange if yfinance didn't return one
                 if not instrument.country and instrument.exchange:
@@ -1357,6 +1376,59 @@ def _normalised_yf_exchange(info: dict | None) -> str | None:
             return normalised
 
     return None
+
+
+def _extract_yf_fundamentals(ticker_obj, info: dict | None) -> dict[str, float]:
+    """Extract EPS TTM and trailing 3-year average FCF/share from Yahoo data."""
+    result: dict[str, float] = {}
+    if not ticker_obj:
+        return result
+
+    if isinstance(info, dict):
+        eps = info.get("trailingEps")
+        if eps is not None:
+            try:
+                result["eps_ttm"] = float(eps)
+            except (TypeError, ValueError):
+                pass
+
+    try:
+        cashflow = ticker_obj.cashflow
+    except Exception:
+        cashflow = None
+
+    if cashflow is None or getattr(cashflow, "empty", True):
+        return result
+
+    try:
+        if "Free Cash Flow" in cashflow.index:
+            fcf_series = cashflow.loc["Free Cash Flow"]
+        elif "Operating Cash Flow" in cashflow.index and "Capital Expenditure" in cashflow.index:
+            fcf_series = cashflow.loc["Operating Cash Flow"] + cashflow.loc["Capital Expenditure"]
+        else:
+            return result
+
+        fcf_series = fcf_series.dropna().sort_index(ascending=False)
+        if fcf_series.empty:
+            return result
+
+        shares = None
+        try:
+            shares = ticker_obj.fast_info.get("shares")
+        except Exception:
+            shares = None
+        if not shares and isinstance(info, dict):
+            shares = info.get("sharesOutstanding")
+        if not shares:
+            return result
+
+        fcf_ps = fcf_series / float(shares)
+        if not fcf_ps.empty:
+            result["fcf_per_share_3y_avg"] = float(fcf_ps.head(3).mean())
+    except Exception:
+        return result
+
+    return result
 
 
 def _synthesise_description(instrument) -> str | None:
