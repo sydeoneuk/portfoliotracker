@@ -154,9 +154,9 @@
         {% endif %}
       </div>
       <div class="meta">
-        {{ instrument.exchange or '—' }}
-        {% if instrument.sector %} · {{ instrument.sector }}{% endif %}
-        {% if instrument.industry %} · {{ instrument.industry }}{% endif %}
+        {% if instrument.sector %}{{ instrument.sector }}{% endif %}
+        {% if instrument.industry %}{% if instrument.sector %} · {% endif %}{{ instrument.industry }}{% endif %}
+        {% if instrument.exchange %}{% if instrument.sector or instrument.industry %} · {% endif %}{{ instrument.exchange }}{% else %}{% if not instrument.sector and not instrument.industry %}—{% endif %}{% endif %}
         {% if instrument.country %} · {{ instrument.country }}{% endif %}
       </div>
     </div>
