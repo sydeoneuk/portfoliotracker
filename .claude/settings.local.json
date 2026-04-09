@@ -79,7 +79,8 @@
       "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
       "Bash(python -m git_filter_repo --version)",
       "Bash(python -m git_filter_repo --force --path terraform/.terraform/ --invert-paths --path terraform/terraform.tfstate --invert-paths --path terraform/terraform.tfstate.backup --invert-paths --path \"terraform/.terraform.lock.hcl\" --invert-paths --path .claude/ --invert-paths)",
-      "Bash(grep -r \"instruments\" /c/development/trading212/alembic/versions/*.py)"
+      "Bash(grep -r \"instruments\" /c/development/trading212/alembic/versions/*.py)",
+      "Bash(dir C:\\\\development\\\\trading212\\\\app\\\\web\\\\static)"
     ]
   }
 }

@@ -948,6 +948,82 @@ class SyncRunner:
         self.session.commit()
         print(f"  Metadata enrichment complete ({enriched}/{len(instruments)} instruments).")
 
+    def enrich_instruments_openfigi(self, batch_size: int = 500) -> dict:
+        """Enrich instruments with FIGI, MIC code, and security type via OpenFIGI.
+
+        OpenFIGI is fast (batches of 100 ISINs per request) so we can process
+        a large batch in one run. Instruments that already have a FIGI and were
+        enriched within 30 days are skipped. Instruments without an ISIN fall
+        back to ticker-based lookup.
+
+        Returns a summary dict with counts.
+        """
+        from app.enrichment.openfigi_enricher import OpenFigiEnricher
+        from app.config import settings as _settings
+
+        enricher = OpenFigiEnricher(api_key=_settings.openfigi_api_key)
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=30)
+        now = datetime.datetime.utcnow()
+
+        instruments = (
+            self.session.query(Instrument)
+            .filter(
+                (Instrument.last_figi_enriched_at == None) |  # noqa: E711
+                (Instrument.last_figi_enriched_at < cutoff)
+            )
+            .order_by(Instrument.last_figi_enriched_at.asc().nullsfirst())
+            .limit(batch_size)
+            .all()
+        )
+
+        if not instruments:
+            print("[openfigi] All instruments up to date.")
+            return {"enriched": 0, "no_match": 0, "total": 0}
+
+        print(f"[openfigi] Looking up {len(instruments)} instruments...")
+        results = enricher.enrich(instruments)
+
+        enriched = no_match = 0
+        for instrument in instruments:
+            data = results.get(instrument.ticker)
+            instrument.last_figi_enriched_at = now
+
+            if not data:
+                no_match += 1
+                continue
+
+            # Write all returned fields — never overwrite with None
+            if data.get("figi"):
+                instrument.figi = data["figi"]
+            if data.get("composite_figi"):
+                instrument.composite_figi = data["composite_figi"]
+            if data.get("share_class_figi"):
+                instrument.share_class_figi = data["share_class_figi"]
+            if data.get("mic_code"):
+                instrument.mic_code = data["mic_code"]
+            if data.get("security_type"):
+                instrument.security_type = data["security_type"]
+            if data.get("security_type2"):
+                instrument.security_type2 = data["security_type2"]
+            if data.get("market_sector"):
+                instrument.market_sector = data["market_sector"]
+
+            # Use MIC code to refine exchange if still coarse (e.g. "US")
+            if data.get("mic_code") and (
+                not instrument.exchange or instrument.exchange.upper() in ("US",)
+            ):
+                from app.enrichment.openfigi_enricher import _MIC_TO_OUR_EXCHANGE
+                refined = _MIC_TO_OUR_EXCHANGE.get(data["mic_code"])
+                if refined:
+                    instrument.exchange = refined
+
+            enriched += 1
+
+        self.session.commit()
+        print(f"[openfigi] Done — enriched {enriched}, no match {no_match}, "
+              f"total processed {len(instruments)}.")
+        return {"enriched": enriched, "no_match": no_match, "total": len(instruments)}
+
     def enrich_stale_instruments_batch(self, batch_size: int = 300) -> int:
         """Progressively enrich uninitialised or stale instruments.
 

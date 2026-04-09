@@ -248,6 +248,27 @@
       </div>
     </div>
 
+    {% if instrument.yf_ticker %}
+    <div class="col-6 col-md-3 col-lg-2">
+      <a href="https://finance.yahoo.com/quote/{{ instrument.yf_ticker }}" target="_blank" rel="noopener noreferrer"
+         style="text-decoration:none; color:inherit;">
+        <div class="card metric-card p-3" style="cursor:pointer; transition: box-shadow .15s;"
+             onmouseover="this.style.boxShadow='0 4px 12px rgba(0,200,150,.25)'"
+             onmouseout="this.style.boxShadow=''">
+          <div class="label d-flex align-items-center gap-1">
+            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" fill="currentColor" viewBox="0 0 16 16" style="flex-shrink:0;">
+              <path d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5"/>
+              <path d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0z"/>
+            </svg>
+            Yahoo Finance
+          </div>
+          <div class="value" style="font-size:.95rem; color:#00c896;">{{ instrument.yf_ticker }}</div>
+          <div class="sub">View on Yahoo Finance</div>
+        </div>
+      </a>
+    </div>
+    {% endif %}
+
   </div>
 
   <!-- ── Pies ─────────────────────────────────────────────────────────────── -->

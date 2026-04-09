@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 import yfinance as yf
 from fastapi import FastAPI, Depends, Request, Form
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -92,6 +92,7 @@ _scheduler = BackgroundScheduler(timezone="UTC")
 _enrich_state:    dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
 _t212_state:      dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
 _catalogue_state: dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
+_figi_state:      dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────
@@ -359,12 +360,25 @@ def _scheduled_enrich_catalogue() -> None:
     try:
         from app.sync.runner import SyncRunner
         runner = SyncRunner(db, user_id=None)
+        # yfinance enrichment (sector, industry, description, country)
         count = runner.enrich_stale_instruments_batch(batch_size=300)
-        print(f"[scheduler] Catalogue enrichment complete — {count} instruments updated.")
+        print(f"[scheduler] yfinance enrichment complete — {count} instruments updated.")
+        # OpenFIGI enrichment (FIGI, MIC, security type) — fast batch operation
+        figi_result = runner.enrich_instruments_openfigi(batch_size=1000)
+        print(f"[scheduler] OpenFIGI enrichment complete — {figi_result}.")
     except Exception:
         traceback.print_exc()
     finally:
         db.close()
+
+
+# ── Public well-known files ────────────────────────────────────────────────
+
+@app.get("/ads.txt", response_class=PlainTextResponse)
+def ads_txt():
+    """Serve ads.txt from the root for AdSense verification."""
+    ads_file = Path(__file__).parent / "static" / "ads.txt"
+    return ads_file.read_text()
 
 
 # ── Auth routes ────────────────────────────────────────────────────────────
@@ -623,6 +637,57 @@ def t212_reload_status(request: Request, db: Session = Depends(get_session)):
     if isinstance(user, RedirectResponse):
         return user
     return JSONResponse(_t212_state)
+
+
+def _run_openfigi_enrich() -> None:
+    """Background task: enrich all instruments with OpenFIGI data."""
+    global _figi_state
+    db = SessionLocal()
+    try:
+        from app.sync.runner import SyncRunner
+        _figi_state.update({"status": "running", "done": 0, "total": 0,
+                             "current": "Querying OpenFIGI…", "result": None})
+        runner = SyncRunner(db, user_id=None)
+        # Process in multiple passes until all instruments are covered
+        total_enriched = total_no_match = 0
+        while True:
+            result = runner.enrich_instruments_openfigi(batch_size=500)
+            total_enriched  += result["enriched"]
+            total_no_match  += result["no_match"]
+            _figi_state.update({
+                "done":    total_enriched,
+                "current": f"Enriched {total_enriched} so far…",
+            })
+            if result["total"] < 500:
+                break  # last batch — nothing left to process
+        _figi_state.update({
+            "status": "done",
+            "result": {"enriched": total_enriched, "no_match": total_no_match},
+        })
+    except Exception as exc:
+        traceback.print_exc()
+        _figi_state.update({"status": "error", "result": {"error": str(exc)}})
+    finally:
+        db.close()
+
+
+@app.post("/admin/instruments/openfigi-enrich")
+def trigger_openfigi_enrich(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    if _figi_state["status"] == "running":
+        return JSONResponse({"error": "OpenFIGI enrichment already running"}, status_code=409)
+    _sync_executor.submit(_run_openfigi_enrich)
+    return JSONResponse({"queued": True})
+
+
+@app.get("/admin/instruments/openfigi-enrich/status")
+def openfigi_enrich_status(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    return JSONResponse(_figi_state)
 
 
 def _run_full_catalogue_load(api_key: str, api_secret: str) -> None:
@@ -1350,6 +1415,12 @@ def api_instruments(
             "market_cap":      inst.market_cap,
             "isin":            inst.isin,
             "yf_ticker":       inst.yf_ticker,
+            "figi":            inst.figi,
+            "composite_figi":  inst.composite_figi,
+            "mic_code":        inst.mic_code,
+            "security_type":   inst.security_type,
+            "security_type2":  inst.security_type2,
+            "market_sector":   inst.market_sector,
             "is_held":         bool(accounts),
             "held_accounts":   accounts,
         })
@@ -1375,6 +1446,8 @@ def _instrument_filter_options(db: Session) -> dict:
         "countries":        _distinct(Instrument.country),
         "exchanges":        _distinct(Instrument.exchange),
         "instrument_types": _distinct(Instrument.instrument_type),
+        "security_types":   _distinct(Instrument.security_type),
+        "mic_codes":        _distinct(Instrument.mic_code),
     }
 
 

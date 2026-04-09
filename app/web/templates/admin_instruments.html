@@ -266,6 +266,37 @@
     </div>
   </div>
 
+  <!-- OpenFIGI Enrichment card -->
+  <div class="card mb-3" style="border:none; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,.08);">
+    <div class="card-body d-flex align-items-start justify-content-between gap-3 flex-wrap">
+      <div>
+        <div class="fw-semibold" style="font-size:.9rem;">OpenFIGI Enrichment</div>
+        <div class="text-muted" style="font-size:.8rem;">
+          Looks up every instrument by ISIN (falling back to ticker) via the free Bloomberg OpenFIGI API.
+          Populates <strong>FIGI</strong>, <strong>MIC exchange code</strong>, <strong>security type</strong>
+          (Common Stock, ETP, Mutual Fund, etc.) and market sector. Fast — processes up to 100 ISINs
+          per request in batches. Runs automatically at 04:00 UTC but can be triggered here to
+          enrich the full catalogue on demand. No API key required for testing.
+        </div>
+      </div>
+      <div class="d-flex align-items-center gap-3 flex-shrink-0">
+        <div id="figi-status" style="font-size:.82rem; color:#6c757d; display:none;"></div>
+        <button id="figi-btn" class="btn btn-sm"
+                style="background:#198754; color:#fff; font-weight:600; border:none; white-space:nowrap;"
+                onclick="startFigiEnrich()">
+          🔎 Run OpenFIGI Enrichment
+        </button>
+      </div>
+    </div>
+    <div id="figi-progress-wrap" style="display:none; padding: 0 1.25rem 1rem;">
+      <div class="progress" style="height:6px; border-radius:3px;">
+        <div id="figi-progress-bar" class="progress-bar"
+             style="background:#198754; width:0%; transition:width .3s;"></div>
+      </div>
+      <div id="figi-progress-text" class="text-muted mt-1" style="font-size:.75rem;"></div>
+    </div>
+  </div>
+
   <!-- Quick-filter buttons -->
   <div class="d-flex gap-2 mb-3 flex-wrap">
     <button class="btn btn-sm btn-outline-secondary filter-pill active" onclick="filterTable('all', this)">All</button>
@@ -663,6 +694,89 @@
         document.getElementById('catalogue-btn').textContent = '⏳ Running…';
         document.getElementById('catalogue-progress-wrap').style.display = 'block';
         cataloguePollTimer = setInterval(pollCatalogue, 2000);
+      }
+    });
+
+  // ── OpenFIGI Enrichment ────────────────────────────────────────────────
+  var figiPollTimer = null;
+
+  function startFigiEnrich() {
+    var btn = document.getElementById('figi-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Starting…';
+    setFigiStatus('', '');
+    fetch('/admin/instruments/openfigi-enrich', {method: 'POST'})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.error) {
+          setFigiStatus('✗ ' + d.error, 'text-danger');
+          btn.disabled = false;
+          btn.textContent = '🔎 Run OpenFIGI Enrichment';
+        } else {
+          pollFigi();
+          figiPollTimer = setInterval(pollFigi, 2000);
+        }
+      })
+      .catch(function(e) {
+        setFigiStatus('Failed to start: ' + e, 'text-danger');
+        btn.disabled = false;
+        btn.textContent = '🔎 Run OpenFIGI Enrichment';
+      });
+  }
+
+  function pollFigi() {
+    fetch('/admin/instruments/openfigi-enrich/status')
+      .then(function(r) { return r.json(); })
+      .then(function(s) {
+        var btn  = document.getElementById('figi-btn');
+        var wrap = document.getElementById('figi-progress-wrap');
+        var bar  = document.getElementById('figi-progress-bar');
+        var txt  = document.getElementById('figi-progress-text');
+
+        if (s.status === 'running') {
+          wrap.style.display = 'block';
+          bar.style.width = '100%';
+          bar.classList.add('progress-bar-animated', 'progress-bar-striped');
+          txt.textContent = s.current || 'Enriching…';
+
+        } else if (s.status === 'done') {
+          clearInterval(figiPollTimer);
+          wrap.style.display = 'none';
+          var r = s.result || {};
+          setFigiStatus(
+            '✓ Done — ' + (r.enriched || 0).toLocaleString() + ' enriched, ' +
+            (r.no_match || 0).toLocaleString() + ' no match. Reload page to see updated data.',
+            'text-success'
+          );
+          btn.disabled = false;
+          btn.textContent = '🔎 Run OpenFIGI Enrichment';
+
+        } else if (s.status === 'error') {
+          clearInterval(figiPollTimer);
+          wrap.style.display = 'none';
+          var msg = (s.result && s.result.error) ? s.result.error : 'Unknown error';
+          setFigiStatus('✗ Error: ' + msg, 'text-danger');
+          btn.disabled = false;
+          btn.textContent = '🔎 Run OpenFIGI Enrichment';
+        }
+      });
+  }
+
+  function setFigiStatus(msg, cls) {
+    var el = document.getElementById('figi-status');
+    el.style.display = msg ? 'block' : 'none';
+    el.className = cls;
+    el.textContent = msg;
+  }
+
+  fetch('/admin/instruments/openfigi-enrich/status')
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      if (s.status === 'running') {
+        document.getElementById('figi-btn').disabled = true;
+        document.getElementById('figi-btn').textContent = '⏳ Running…';
+        document.getElementById('figi-progress-wrap').style.display = 'block';
+        figiPollTimer = setInterval(pollFigi, 2000);
       }
     });
 

@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     # Optional: Financial Modeling Prep
     fmp_api_key: str | None = None
 
+    # Optional: OpenFIGI — used for FIGI/MIC/security-type enrichment
+    # Without a key: 25 requests per 10 s (100 ISINs each → 250 instruments/s)
+    # Free key at https://www.openfigi.com/api — raises limit to 25 req/s
+    openfigi_api_key: str | None = None
+
     # Optional: Anthropic Claude — used as fallback description enricher
     anthropic_api_key: str | None = None
 

@@ -33,6 +33,16 @@ class Instrument(Base):
     eps_ttm = Column(Float)
     instrument_class = Column(String(50))
 
+    # OpenFIGI enrichment
+    figi = Column(String(20))            # Bloomberg FIGI for this specific listing
+    composite_figi = Column(String(20))  # Composite FIGI (across all listings)
+    share_class_figi = Column(String(20))
+    mic_code = Column(String(20))        # ISO MIC exchange code e.g. XLON, XNAS, XNYS
+    security_type = Column(String(100))  # e.g. "Common Stock", "ETP", "Mutual Fund"
+    security_type2 = Column(String(100)) # OpenFIGI secondary classification
+    market_sector = Column(String(50))   # e.g. "Equity", "Index", "Commodity"
+    last_figi_enriched_at = Column(DateTime)
+
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
