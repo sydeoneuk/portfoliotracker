@@ -503,49 +503,145 @@ def admin_instruments_page(request: Request, db: Session = Depends(get_session))
     if isinstance(user, RedirectResponse):
         return user
 
-    rows = db.execute(text("""
+    # Compute summary stats via SQL aggregation — never load all rows into Python
+    stats = db.execute(text("""
         SELECT
-            i.ticker,
-            i.short_name,
-            i.name,
-            i.currency_code,
-            i.isin,
-            i.instrument_type,
-            i.exchange,
-            i.yf_ticker,
-            i.sector,
-            i.industry,
-            i.country,
-            i.market_cap,
-            i.instrument_class,
-            i.last_enriched_at,
-            i.last_dividend_synced_at,
-            i.created_at,
-            i.updated_at,
-            COUNT(DISTINCT p.user_id) AS holder_count
-        FROM instruments i
-        LEFT JOIN positions p ON p.ticker = i.ticker
-        GROUP BY i.ticker
-        ORDER BY i.name NULLS LAST
-    """)).mappings().all()
-
-    total            = len(rows)
-    missing_yf       = sum(1 for r in rows if not r["yf_ticker"])
-    missing_sector   = sum(1 for r in rows if not r["sector"])
-    missing_country  = sum(1 for r in rows if not r["country"])
-    missing_currency = sum(1 for r in rows if not r["currency_code"])
-    never_enriched   = sum(1 for r in rows if not r["last_enriched_at"])
+            COUNT(*)                                                               AS total,
+            COUNT(*) FILTER (WHERE yf_ticker IS NULL)                             AS missing_yf,
+            COUNT(*) FILTER (WHERE sector IS NULL)                                AS missing_sector,
+            COUNT(*) FILTER (WHERE country IS NULL)                               AS missing_country,
+            COUNT(*) FILTER (WHERE currency_code IS NULL)                         AS missing_currency,
+            COUNT(*) FILTER (WHERE last_enriched_at IS NULL)                      AS never_enriched,
+            COUNT(*) FILTER (WHERE last_enriched_at IS NOT NULL
+                                AND yf_ticker IS NOT NULL
+                                AND sector IS NOT NULL
+                                AND country IS NOT NULL)                           AS fully_enriched
+        FROM instruments
+    """)).mappings().one()
 
     return templates.TemplateResponse(request, "admin_instruments.html", {
         "user": user,
-        "instruments": rows,
-        "total": total,
-        "missing_yf": missing_yf,
-        "missing_sector": missing_sector,
-        "missing_country": missing_country,
-        "missing_currency": missing_currency,
-        "never_enriched": never_enriched,
+        "total":          stats["total"],
+        "missing_yf":     stats["missing_yf"],
+        "missing_sector": stats["missing_sector"],
+        "missing_country":  stats["missing_country"],
+        "missing_currency": stats["missing_currency"],
+        "never_enriched":   stats["never_enriched"],
+        "fully_enriched":   stats["fully_enriched"],
     })
+
+
+_ADMIN_INST_SORT_COLS = {
+    "ticker":          "i.ticker",
+    "short_name":      "i.short_name",
+    "name":            "i.name",
+    "instrument_type": "i.instrument_type",
+    "exchange":        "i.exchange",
+    "currency_code":   "i.currency_code",
+    "yf_ticker":       "i.yf_ticker",
+    "sector":          "i.sector",
+    "country":         "i.country",
+    "market_cap":      "i.market_cap",
+    "last_enriched_at":"i.last_enriched_at",
+    "updated_at":      "i.updated_at",
+    "holder_count":    "holder_count",
+}
+
+
+@app.get("/admin/api/instruments")
+def admin_api_instruments(
+    request: Request,
+    db: Session = Depends(get_session),
+    search: str = "",
+    filter: str = "all",
+    sort: str = "name",
+    order: str = "asc",
+    offset: int = 0,
+    limit: int = 200,
+):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse({"error": "Unauthorised"}, status_code=401)
+
+    search = search.strip()
+    offset = max(0, offset)
+    limit = min(max(1, limit), 200)
+    sort_col  = _ADMIN_INST_SORT_COLS.get(sort, "i.name")
+    order_dir = "DESC" if order.lower() == "desc" else "ASC"
+
+    where_parts  = []
+    having_parts = []
+    params: dict = {}
+
+    if search:
+        where_parts.append(
+            "(i.name ILIKE :search OR i.short_name ILIKE :search "
+            "OR i.ticker ILIKE :search OR i.isin ILIKE :search)"
+        )
+        params["search"] = f"%{search}%"
+
+    filter_where = {
+        "no-yf":          "i.yf_ticker IS NULL",
+        "no-sector":      "i.sector IS NULL",
+        "no-country":     "i.country IS NULL",
+        "no-currency":    "i.currency_code IS NULL",
+        "never-enriched": "i.last_enriched_at IS NULL",
+    }
+    if filter in filter_where:
+        where_parts.append(filter_where[filter])
+    elif filter == "held":
+        having_parts.append("COUNT(DISTINCT p.user_id) > 0")
+
+    where_sql  = ("WHERE "  + " AND ".join(where_parts))  if where_parts  else ""
+    having_sql = ("HAVING " + " AND ".join(having_parts)) if having_parts else ""
+
+    base_cte = f"""
+        SELECT
+            i.ticker, i.short_name, i.name, i.currency_code, i.isin,
+            i.instrument_type, i.exchange, i.yf_ticker, i.sector, i.industry,
+            i.country, i.market_cap, i.last_enriched_at, i.updated_at,
+            COUNT(DISTINCT p.user_id) AS holder_count
+        FROM instruments i
+        LEFT JOIN positions p ON p.ticker = i.ticker
+        {where_sql}
+        GROUP BY i.ticker
+        {having_sql}
+    """
+
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM ({base_cte}) _sub"), params
+    ).scalar() or 0
+
+    rows = db.execute(
+        text(f"""
+            {base_cte}
+            ORDER BY {sort_col} {order_dir} NULLS LAST
+            LIMIT :limit OFFSET :offset
+        """),
+        {**params, "limit": limit, "offset": offset},
+    ).mappings().all()
+
+    items = []
+    for r in rows:
+        items.append({
+            "ticker":          r["ticker"],
+            "short_name":      r["short_name"],
+            "name":            r["name"],
+            "currency_code":   r["currency_code"],
+            "isin":            r["isin"],
+            "instrument_type": r["instrument_type"],
+            "exchange":        r["exchange"],
+            "yf_ticker":       r["yf_ticker"],
+            "sector":          r["sector"],
+            "industry":        r["industry"],
+            "country":         r["country"],
+            "market_cap":      float(r["market_cap"]) if r["market_cap"] else None,
+            "last_enriched_at": r["last_enriched_at"].strftime("%d %b %Y") if r["last_enriched_at"] else None,
+            "updated_at":      r["updated_at"].strftime("%d %b %Y") if r["updated_at"] else None,
+            "holder_count":    r["holder_count"],
+        })
+
+    return JSONResponse({"items": items, "total": total, "offset": offset, "limit": limit})
 
 
 def _run_force_enrich() -> None:

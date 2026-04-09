@@ -15,7 +15,6 @@
 
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="https://cdn.datatables.net/2.0.8/css/dataTables.bootstrap5.min.css" rel="stylesheet">
 
   <style>
     :root { --t212-green: #00c896; --t212-dark: #0f1923; }
@@ -52,8 +51,13 @@
     #inst-table thead th {
       background: var(--t212-dark); color: #c8d6e5;
       font-size: .7rem; text-transform: uppercase; letter-spacing: .6px;
-      border: none; white-space: nowrap;
+      border: none; white-space: nowrap; user-select: none;
     }
+    #inst-table thead th.sortable { cursor: pointer; }
+    #inst-table thead th.sortable:hover { color: var(--t212-green); }
+    #inst-table thead th .sort-icon { margin-left: 4px; opacity: .4; font-style: normal; }
+    #inst-table thead th.sort-asc  .sort-icon { opacity: 1; }
+    #inst-table thead th.sort-desc .sort-icon { opacity: 1; }
     #inst-table td { vertical-align: middle; border-color: #f0f2f5; font-size: .8rem; }
 
     .badge-sm { background: #e9ecef; color: #495057; font-size: .67rem;
@@ -65,14 +69,16 @@
     /* row highlight for instruments with enrichment gaps */
     tr.gap-row td:first-child { border-left: 3px solid #e0334c; }
 
-    .dt-search input, .dt-length select { font-size: .8rem !important; }
-
     /* filter pills */
     .filter-pill {
       font-size: .78rem; border-radius: 999px; padding: .25rem .75rem;
       cursor: pointer; border: 1.5px solid transparent; transition: all .15s;
     }
     .filter-pill.active { border-color: var(--t212-green); color: var(--t212-green); background: rgba(0,200,150,0.07); font-weight: 600; }
+
+    /* pagination */
+    .page-btn { min-width: 32px; text-align: center; font-size: .8rem; }
+    .inst-search { max-width: 280px; font-size: .82rem; }
   </style>
 </head>
 <body>
@@ -168,7 +174,7 @@
     <div class="col-6 col-md-2">
       <div class="card stat-card p-3" style="border-left: 3px solid #0fa968;">
         <div class="label">Fully Enriched</div>
-        <div class="amount text-success">{{ instruments | selectattr('last_enriched_at') | selectattr('yf_ticker') | selectattr('sector') | selectattr('country') | list | length }}</div>
+        <div class="amount text-success">{{ fully_enriched }}</div>
       </div>
     </div>
   </div>
@@ -308,115 +314,47 @@
     <button class="btn btn-sm btn-outline-secondary filter-pill" onclick="filterTable('held', this)">Currently held</button>
   </div>
 
+  <div class="d-flex align-items-center justify-content-between gap-3 mb-3 flex-wrap">
+    <input id="inst-search" type="search" class="form-control inst-search"
+           placeholder="Search ticker, name, short name, ISIN" aria-label="Search instruments">
+    <div id="inst-summary" class="text-muted" style="font-size:.82rem;"></div>
+  </div>
+
   <!-- Instruments table -->
   <div class="card table-card">
     <div class="card-body p-0">
       <table id="inst-table" class="table table-hover mb-0 w-100">
         <thead>
           <tr>
-            <th>Ticker</th>
-            <th>Short Name</th>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Exchange</th>
-            <th>Currency</th>
-            <th>YF Ticker</th>
-            <th>Sector</th>
+            <th class="sortable" data-sort="ticker">Ticker <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="short_name">Short Name <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="name">Name <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="instrument_type">Type <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="exchange">Exchange <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="currency_code">Currency <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="yf_ticker">YF Ticker <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="sector">Sector <span class="sort-icon"></span></th>
             <th>Industry</th>
-            <th>Country</th>
-            <th class="text-end">Mkt Cap</th>
-            <th>Last Enriched</th>
-            <th>Last Updated</th>
-            <th class="text-center">Holders</th>
+            <th class="sortable" data-sort="country">Country <span class="sort-icon"></span></th>
+            <th class="text-end sortable" data-sort="market_cap">Mkt Cap <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="last_enriched_at">Last Enriched <span class="sort-icon"></span></th>
+            <th class="sortable" data-sort="updated_at">Last Updated <span class="sort-icon"></span></th>
+            <th class="text-center sortable" data-sort="holder_count">Holders <span class="sort-icon"></span></th>
           </tr>
         </thead>
-        <tbody>
-          {% for i in instruments %}
-          {% set has_gap = not i.yf_ticker or not i.sector or not i.country or not i.currency_code or not i.last_enriched_at %}
-          <tr class="{% if has_gap %}gap-row{% endif %}"
-              data-yf="{{ 'missing' if not i.yf_ticker else 'ok' }}"
-              data-sector="{{ 'missing' if not i.sector else 'ok' }}"
-              data-country="{{ 'missing' if not i.country else 'ok' }}"
-              data-currency="{{ 'missing' if not i.currency_code else 'ok' }}"
-              data-enriched="{{ 'never' if not i.last_enriched_at else 'ok' }}"
-              data-holders="{{ i.holder_count }}">
-            <td>
-              <a href="/holding/{{ i.ticker }}" class="text-decoration-none">
-                <code>{{ i.ticker }}</code>
-              </a>
-            </td>
-            <td><code>{{ i.short_name or '—' }}</code></td>
-            <td>{{ i.name or '—' }}</td>
-            <td>
-              {% if i.instrument_type %}
-              <span class="badge-sm">{{ i.instrument_type }}</span>
-              {% else %}<span class="muted-dash">—</span>{% endif %}
-            </td>
-            <td>
-              {% if i.exchange %}{{ i.exchange }}
-              {% else %}<span class="muted-dash">—</span>{% endif %}
-            </td>
-            <td>
-              {% if i.currency_code %}{{ i.currency_code }}
-              {% else %}<span class="muted-dash">—</span>{% endif %}
-            </td>
-            <td>
-              {% if i.yf_ticker %}
-                <code class="ok">{{ i.yf_ticker }}</code>
-              {% else %}
-                <span class="warn">✗ missing</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if i.sector %}
-                {{ i.sector }}
-              {% else %}
-                <span class="warn">✗ missing</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if i.industry %}{{ i.industry }}
-              {% else %}<span class="muted-dash">—</span>{% endif %}
-            </td>
-            <td>
-              {% if i.country %}
-                {{ i.country }}
-              {% else %}
-                <span class="warn">✗ missing</span>
-              {% endif %}
-            </td>
-            <td class="text-end">
-              {% if i.market_cap %}
-                {% if i.market_cap >= 1_000_000_000 %}
-                  {{ "%.1f B" | format(i.market_cap / 1_000_000_000) }}
-                {% else %}
-                  {{ "%.0f M" | format(i.market_cap / 1_000_000) }}
-                {% endif %}
-              {% else %}
-                <span class="muted-dash">—</span>
-              {% endif %}
-            </td>
-            <td style="white-space:nowrap;">
-              {% if i.last_enriched_at %}
-                <span class="ok">{{ i.last_enriched_at.strftime('%d %b %Y') }}</span>
-              {% else %}
-                <span class="warn">Never</span>
-              {% endif %}
-            </td>
-            <td style="white-space:nowrap; color:#6c757d;">
-              {{ i.updated_at.strftime('%d %b %Y') if i.updated_at else '—' }}
-            </td>
-            <td class="text-center">
-              {% if i.holder_count > 0 %}
-                <span class="ok fw-semibold">{{ i.holder_count }}</span>
-              {% else %}
-                <span class="muted-dash">0</span>
-              {% endif %}
-            </td>
+        <tbody id="inst-body">
+          <tr>
+            <td colspan="14" class="text-center text-muted py-4">Loading instruments...</td>
           </tr>
-          {% endfor %}
         </tbody>
       </table>
+    </div>
+    <div class="card-footer bg-white d-flex align-items-center justify-content-between gap-3 flex-wrap">
+      <div id="inst-pagination" class="text-muted" style="font-size:.82rem;"></div>
+      <div class="d-flex align-items-center gap-2">
+        <button id="prev-page-btn" type="button" class="btn btn-sm btn-outline-secondary page-btn">Prev</button>
+        <button id="next-page-btn" type="button" class="btn btn-sm btn-outline-secondary page-btn">Next</button>
+      </div>
     </div>
   </div>
 
@@ -431,23 +369,247 @@
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.datatables.net/2.0.8/js/dataTables.min.js"></script>
-<script src="https://cdn.datatables.net/2.0.8/js/dataTables.bootstrap5.min.js"></script>
 <script>
-  var dt;
+  var ADMIN_PAGE_SIZE = 200;
+  var ADMIN_SEARCH_MIN_CHARS = 3;
+  var ADMIN_SEARCH_DEBOUNCE_MS = 400;
+  var adminState = {
+    search: '',
+    filter: 'all',
+    sort: 'name',
+    order: 'asc',
+    offset: 0,
+    total: 0,
+    loading: false
+  };
+  var adminSearchTimer = null;
 
-  $(document).ready(function () {
-    dt = $('#inst-table').DataTable({
-      pageLength: 50,
-      order: [[2, 'asc']],
-      lengthMenu: [[25, 50, 100, -1], [25, 50, 100, 'All']],
-      language: { search: 'Filter:', lengthMenu: 'Show _MENU_ instruments' },
-      columnDefs: [
-        { targets: [13], type: 'num' }
-      ]
+  function adminEl(id) {
+    return document.getElementById(id);
+  }
+
+  function mutedDash() {
+    var span = document.createElement('span');
+    span.className = 'muted-dash';
+    span.textContent = '—';
+    return span;
+  }
+
+  function warnText(text) {
+    var span = document.createElement('span');
+    span.className = 'warn';
+    span.textContent = text;
+    return span;
+  }
+
+  function fmtMarketCap(value) {
+    if (!value) return null;
+    if (value >= 1e12) return (value / 1e12).toFixed(2) + ' T';
+    if (value >= 1e9) return (value / 1e9).toFixed(1) + ' B';
+    if (value >= 1e6) return (value / 1e6).toFixed(0) + ' M';
+    return value.toLocaleString();
+  }
+
+  function updateSortHeaders() {
+    document.querySelectorAll('#inst-table thead th.sortable').forEach(function(th) {
+      th.classList.remove('sort-asc', 'sort-desc');
+      var icon = th.querySelector('.sort-icon');
+      if (!icon) return;
+      if (th.dataset.sort === adminState.sort) {
+        th.classList.add(adminState.order === 'asc' ? 'sort-asc' : 'sort-desc');
+        icon.textContent = adminState.order === 'asc' ? '↑' : '↓';
+      } else {
+        icon.textContent = '⇅';
+      }
     });
-  });
+  }
+
+  function updatePager() {
+    var start = adminState.total === 0 ? 0 : adminState.offset + 1;
+    var end = Math.min(adminState.offset + ADMIN_PAGE_SIZE, adminState.total);
+
+    adminEl('inst-summary').textContent = adminState.total
+      ? 'Showing ' + start.toLocaleString() + '–' + end.toLocaleString() + ' of ' + adminState.total.toLocaleString() + ' instruments'
+      : 'No instruments found';
+    adminEl('inst-pagination').textContent = adminState.total
+      ? 'Page ' + (Math.floor(adminState.offset / ADMIN_PAGE_SIZE) + 1) + ' of ' + Math.ceil(adminState.total / ADMIN_PAGE_SIZE)
+      : 'Page 0 of 0';
+    adminEl('prev-page-btn').disabled = adminState.loading || adminState.offset === 0;
+    adminEl('next-page-btn').disabled = adminState.loading || (adminState.offset + ADMIN_PAGE_SIZE >= adminState.total);
+  }
+
+  function showAdminLoading() {
+    adminEl('inst-body').innerHTML = '<tr><td colspan="14" class="text-center text-muted py-4">Loading instruments...</td></tr>';
+    updateSortHeaders();
+    updatePager();
+  }
+
+  function buildCellWithText(value, extraClass) {
+    var td = document.createElement('td');
+    if (extraClass) td.className = extraClass;
+    if (value) {
+      td.textContent = value;
+    } else {
+      td.appendChild(mutedDash());
+    }
+    return td;
+  }
+
+  function renderAdminTable(items) {
+    var tbody = adminEl('inst-body');
+    tbody.innerHTML = '';
+
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="14" class="text-center text-muted py-4">No instruments match the current search/filter.</td></tr>';
+      return;
+    }
+
+    items.forEach(function(item) {
+      var tr = document.createElement('tr');
+      if (!item.yf_ticker || !item.sector || !item.country || !item.currency_code || !item.last_enriched_at) {
+        tr.classList.add('gap-row');
+      }
+
+      var tickerTd = document.createElement('td');
+      var link = document.createElement('a');
+      link.href = '/holding/' + encodeURIComponent(item.ticker);
+      link.className = 'text-decoration-none';
+      var code = document.createElement('code');
+      code.textContent = item.ticker;
+      link.appendChild(code);
+      tickerTd.appendChild(link);
+      tr.appendChild(tickerTd);
+
+      var shortNameTd = document.createElement('td');
+      if (item.short_name) {
+        var shortCode = document.createElement('code');
+        shortCode.textContent = item.short_name;
+        shortNameTd.appendChild(shortCode);
+      } else {
+        shortNameTd.appendChild(mutedDash());
+      }
+      tr.appendChild(shortNameTd);
+
+      tr.appendChild(buildCellWithText(item.name));
+
+      var typeTd = document.createElement('td');
+      if (item.instrument_type) {
+        var badge = document.createElement('span');
+        badge.className = 'badge-sm';
+        badge.textContent = item.instrument_type;
+        typeTd.appendChild(badge);
+      } else {
+        typeTd.appendChild(mutedDash());
+      }
+      tr.appendChild(typeTd);
+
+      tr.appendChild(buildCellWithText(item.exchange));
+      tr.appendChild(buildCellWithText(item.currency_code));
+
+      var yfTd = document.createElement('td');
+      if (item.yf_ticker) {
+        var yfCode = document.createElement('code');
+        yfCode.className = 'ok';
+        yfCode.textContent = item.yf_ticker;
+        yfTd.appendChild(yfCode);
+      } else {
+        yfTd.appendChild(warnText('✗ missing'));
+      }
+      tr.appendChild(yfTd);
+
+      var sectorTd = document.createElement('td');
+      if (item.sector) sectorTd.textContent = item.sector;
+      else sectorTd.appendChild(warnText('✗ missing'));
+      tr.appendChild(sectorTd);
+
+      tr.appendChild(buildCellWithText(item.industry));
+
+      var countryTd = document.createElement('td');
+      if (item.country) countryTd.textContent = item.country;
+      else countryTd.appendChild(warnText('✗ missing'));
+      tr.appendChild(countryTd);
+
+      var marketCapTd = document.createElement('td');
+      marketCapTd.className = 'text-end';
+      var marketCap = fmtMarketCap(item.market_cap);
+      if (marketCap) marketCapTd.textContent = marketCap;
+      else marketCapTd.appendChild(mutedDash());
+      tr.appendChild(marketCapTd);
+
+      var enrichedTd = document.createElement('td');
+      enrichedTd.style.whiteSpace = 'nowrap';
+      if (item.last_enriched_at) {
+        var enrichedSpan = document.createElement('span');
+        enrichedSpan.className = 'ok';
+        enrichedSpan.textContent = item.last_enriched_at;
+        enrichedTd.appendChild(enrichedSpan);
+      } else {
+        enrichedTd.appendChild(warnText('Never'));
+      }
+      tr.appendChild(enrichedTd);
+
+      var updatedTd = document.createElement('td');
+      updatedTd.style.whiteSpace = 'nowrap';
+      updatedTd.style.color = '#6c757d';
+      updatedTd.textContent = item.updated_at || '—';
+      tr.appendChild(updatedTd);
+
+      var holdersTd = document.createElement('td');
+      holdersTd.className = 'text-center';
+      if (item.holder_count > 0) {
+        var holdersSpan = document.createElement('span');
+        holdersSpan.className = 'ok fw-semibold';
+        holdersSpan.textContent = String(item.holder_count);
+        holdersTd.appendChild(holdersSpan);
+      } else {
+        holdersTd.appendChild(mutedDash());
+      }
+      tr.appendChild(holdersTd);
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function fetchAdminInstruments() {
+    if (adminState.loading) return;
+    adminState.loading = true;
+    showAdminLoading();
+
+    var params = new URLSearchParams({
+      search: adminState.search,
+      filter: adminState.filter,
+      sort: adminState.sort,
+      order: adminState.order,
+      offset: String(adminState.offset),
+      limit: String(ADMIN_PAGE_SIZE)
+    });
+
+    fetch('/admin/api/instruments?' + params.toString())
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        adminState.total = data.total || 0;
+        renderAdminTable(data.items || []);
+      })
+      .catch(function(err) {
+        adminState.total = 0;
+        adminEl('inst-body').innerHTML = '<tr><td colspan="14" class="text-center text-danger py-4">Failed to load instruments: ' + String(err) + '</td></tr>';
+      })
+      .finally(function() {
+        adminState.loading = false;
+        updateSortHeaders();
+        updatePager();
+      });
+  }
+
+  function queueAdminSearch() {
+    clearTimeout(adminSearchTimer);
+    adminSearchTimer = setTimeout(function() {
+      var rawSearch = adminEl('inst-search').value.trim();
+      adminState.search = rawSearch.length >= ADMIN_SEARCH_MIN_CHARS ? rawSearch : '';
+      adminState.offset = 0;
+      fetchAdminInstruments();
+    }, ADMIN_SEARCH_DEBOUNCE_MS);
+  }
 
   // ── Force enrich ──────────────────────────────────────────────────────
   var enrichPollTimer = null;
@@ -782,30 +944,44 @@
 
   // ── Table filters ──────────────────────────────────────────────────────
   function filterTable(type, btn) {
-    // Update active pill
     document.querySelectorAll('.filter-pill').forEach(function(el) {
       el.classList.remove('active');
     });
     btn.classList.add('active');
-
-    // Clear any existing custom filter
-    $.fn.dataTable.ext.search = [];
-
-    if (type !== 'all') {
-      $.fn.dataTable.ext.search.push(function(settings, data, dataIndex) {
-        var row = dt.row(dataIndex).node();
-        if (type === 'no-yf')       return row.dataset.yf       === 'missing';
-        if (type === 'no-sector')   return row.dataset.sector    === 'missing';
-        if (type === 'no-country')  return row.dataset.country   === 'missing';
-        if (type === 'no-currency') return row.dataset.currency  === 'missing';
-        if (type === 'never-enriched') return row.dataset.enriched === 'never';
-        if (type === 'held')        return parseInt(row.dataset.holders) > 0;
-        return true;
-      });
-    }
-
-    dt.draw();
+    adminState.filter = type;
+    adminState.offset = 0;
+    fetchAdminInstruments();
   }
+
+  document.querySelectorAll('#inst-table thead th.sortable').forEach(function(th) {
+    th.addEventListener('click', function() {
+      var sortKey = th.dataset.sort;
+      if (adminState.sort === sortKey) {
+        adminState.order = adminState.order === 'asc' ? 'desc' : 'asc';
+      } else {
+        adminState.sort = sortKey;
+        adminState.order = 'asc';
+      }
+      adminState.offset = 0;
+      fetchAdminInstruments();
+    });
+  });
+
+  adminEl('inst-search').addEventListener('input', queueAdminSearch);
+  adminEl('prev-page-btn').addEventListener('click', function() {
+    if (adminState.loading || adminState.offset === 0) return;
+    adminState.offset = Math.max(0, adminState.offset - ADMIN_PAGE_SIZE);
+    fetchAdminInstruments();
+  });
+  adminEl('next-page-btn').addEventListener('click', function() {
+    if (adminState.loading || adminState.offset + ADMIN_PAGE_SIZE >= adminState.total) return;
+    adminState.offset += ADMIN_PAGE_SIZE;
+    fetchAdminInstruments();
+  });
+
+  updateSortHeaders();
+  updatePager();
+  fetchAdminInstruments();
 </script>
 
 </body>
