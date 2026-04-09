@@ -150,16 +150,16 @@ class SyncRunner:
             )
             self.session.execute(stmt)
 
-        # Back-fill NULL currency for all matching instruments using the exchange map
-        backfill = (
-            self.session.query(Instrument)
-            .filter(
-                Instrument.ticker.in_(upsert_tickers),
-                Instrument.currency_code.is_(None),
-                Instrument.exchange.isnot(None),
-            )
-            .all()
+        # Back-fill NULL currency for all matching instruments using the exchange map.
+        # When full_catalogue=True, upsert_tickers is None so we skip the ticker
+        # filter and back-fill across the whole table.
+        backfill_q = self.session.query(Instrument).filter(
+            Instrument.currency_code.is_(None),
+            Instrument.exchange.isnot(None),
         )
+        if not full_catalogue:
+            backfill_q = backfill_q.filter(Instrument.ticker.in_(upsert_tickers))
+        backfill = backfill_q.all()
         for inst in backfill:
             derived = EXCHANGE_CURRENCY_MAP.get((inst.exchange or "").upper())
             if derived:

@@ -655,6 +655,7 @@ def _run_full_catalogue_load(api_key: str, api_secret: str) -> None:
         runner = SyncRunner(db, api_key=api_key, api_secret=api_secret, user_id=user_id)
         runner.sync_instruments(full_catalogue=True)
 
+        from app.models import Instrument
         total = db.query(Instrument).count()
         _catalogue_state.update({
             "status": "done",
