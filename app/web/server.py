@@ -1890,6 +1890,44 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     for row in sector_table:
         row["href"] = "/?" + urlencode({**_base, "sector": row["label"]})
 
+    selected_tickers = {p["ticker"] for p in positions}
+    div_holdings_q = """
+        SELECT
+            dp.ticker AS ticker,
+            COALESCE(NULLIF(i.name, ''), i.short_name, dp.ticker) AS name,
+            SUM(dp.amount) AS total
+        FROM dividend_payments dp
+        LEFT JOIN instruments i ON i.ticker = dp.ticker
+        WHERE dp.user_id = :user_id
+    """
+    div_holdings_params: dict = {"user_id": user.id}
+    if account in ("ISA", "Trading"):
+        div_holdings_q += " AND dp.account = :account"
+        div_holdings_params["account"] = account
+
+    div_holding_rows = db.execute(text(div_holdings_q + """
+        GROUP BY dp.ticker, i.name, i.short_name
+        ORDER BY SUM(dp.amount) DESC
+    """), div_holdings_params).fetchall()
+
+    div_holdings = []
+    for row in div_holding_rows:
+        if selected_tickers and row.ticker not in selected_tickers:
+            continue
+        div_holdings.append({
+            "ticker": row.ticker,
+            "label": row.name,
+            "value": float(row.total or 0),
+        })
+
+    div_holdings_total = sum(r["value"] for r in div_holdings) or 1.0
+    for i, row in enumerate(div_holdings):
+        row["pct"] = row["value"] / div_holdings_total * 100
+        row["color"] = _PALETTE[i % len(_PALETTE)]
+        row["href"] = f"/holding/{quote(str(row['ticker']), safe='')}?account={account}"
+
+    div_holdings_top = div_holdings[:15]
+
     # ── Dividends by month ────────────────────────────────────────────────
     # Fetch the last 24 months of dividend payments, scoped to the current
     # account filter. Amounts are already stored in GBP by T212.
@@ -1924,6 +1962,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "sector_table": sector_table,
         "geo_data": _build_chart_json(geo_table),
         "sector_data": _build_chart_json(sector_table),
+        "div_holdings_table": div_holdings_top,
+        "div_holdings_data": _build_chart_json(div_holdings_top),
         "div_by_month": div_by_month,
         "fmt": _fmt,
         "cfmt": _cfmt,

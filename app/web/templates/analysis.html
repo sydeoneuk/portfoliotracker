@@ -217,54 +217,109 @@
   <!-- ── Charts + tables (merged cards) ───────────────────────────── -->
   <div class="row g-4">
 
-    <!-- Geographic -->
+    <!-- Left column: Geographic + dividends by holding -->
     <div class="col-12 col-xl-6">
-      <div class="card analysis-card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <span>🌍 Geographic Split</span>
-          <span style="font-weight:400; color:rgba(255,255,255,.5); font-size:.72rem; text-transform:none; letter-spacing:0;">
-            {{ geo_table|length }} countr{{ 'y' if geo_table|length == 1 else 'ies' }}
-          </span>
-        </div>
-        <div class="card-body p-3">
-          <div class="chart-wrap">
-            <canvas id="geoChart"></canvas>
+      <div class="d-flex flex-column gap-4">
+        <div class="card analysis-card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span>🌍 Geographic Split</span>
+            <span style="font-weight:400; color:rgba(255,255,255,.5); font-size:.72rem; text-transform:none; letter-spacing:0;">
+              {{ geo_table|length }} countr{{ 'y' if geo_table|length == 1 else 'ies' }}
+            </span>
+          </div>
+          <div class="card-body p-3">
+            <div class="chart-wrap">
+              <canvas id="geoChart"></canvas>
+            </div>
+          </div>
+          <div class="card-body p-0" style="border-top: 1px solid #f0f2f5;">
+            {% if geo_table %}
+            <table class="table breakdown-table mb-0 w-100">
+              <thead>
+                <tr>
+                  <th>Country</th>
+                  <th class="text-end">Value (GBP)</th>
+                  <th class="text-end" style="min-width:60px">%</th>
+                  <th style="min-width:110px; padding-right:1rem;"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in geo_table %}
+                <tr onclick="window.location.href='{{ row.href }}'">
+                  <td>
+                    <div class="d-flex align-items-center gap-2">
+                      <span class="color-swatch" style="background:{{ row.color }};"></span>
+                      {{ row.label }}
+                    </div>
+                  </td>
+                  <td class="text-end">£{{ "{:,.0f}".format(row.value) }}</td>
+                  <td class="text-end fw-semibold">{{ "{:.1f}".format(row.pct) }}%</td>
+                  <td style="padding-right:1rem;">
+                    <div class="progress" style="height:5px; border-radius:3px;">
+                      <div class="progress-bar" style="width:{{ [row.pct, 100]|min | round(1) }}%; background:{{ row.color }};"></div>
+                    </div>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <p class="text-muted p-3 mb-0">No data — run a sync to populate country data.</p>
+            {% endif %}
           </div>
         </div>
-        <div class="card-body p-0" style="border-top: 1px solid #f0f2f5;">
-          {% if geo_table %}
-          <table class="table breakdown-table mb-0 w-100">
-            <thead>
-              <tr>
-                <th>Country</th>
-                <th class="text-end">Value (GBP)</th>
-                <th class="text-end" style="min-width:60px">%</th>
-                <th style="min-width:110px; padding-right:1rem;"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in geo_table %}
-              <tr onclick="window.location.href='{{ row.href }}'">
-                <td>
-                  <div class="d-flex align-items-center gap-2">
-                    <span class="color-swatch" style="background:{{ row.color }};"></span>
-                    {{ row.label }}
-                  </div>
-                </td>
-                <td class="text-end">£{{ "{:,.0f}".format(row.value) }}</td>
-                <td class="text-end fw-semibold">{{ "{:.1f}".format(row.pct) }}%</td>
-                <td style="padding-right:1rem;">
-                  <div class="progress" style="height:5px; border-radius:3px;">
-                    <div class="progress-bar" style="width:{{ [row.pct, 100]|min | round(1) }}%; background:{{ row.color }};"></div>
-                  </div>
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          {% else %}
-          <p class="text-muted p-3 mb-0">No data — run a sync to populate country data.</p>
-          {% endif %}
+
+        <div class="card analysis-card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span>💷 Dividends by Holding</span>
+            <span style="font-weight:400; color:rgba(255,255,255,.5); font-size:.72rem; text-transform:none; letter-spacing:0;">
+              {{ div_holdings_table|length }} of top holdings
+            </span>
+          </div>
+          <div class="card-body p-3">
+            {% if div_holdings_table %}
+            <div class="chart-wrap">
+              <canvas id="divHoldingsChart"></canvas>
+            </div>
+            {% else %}
+            <p class="text-muted mb-0">No dividend payments recorded yet.</p>
+            {% endif %}
+          </div>
+          <div class="card-body p-0" style="border-top: 1px solid #f0f2f5;">
+            {% if div_holdings_table %}
+            <table class="table breakdown-table mb-0 w-100">
+              <thead>
+                <tr>
+                  <th>Holding</th>
+                  <th class="text-end">Dividends (GBP)</th>
+                  <th class="text-end" style="min-width:60px">%</th>
+                  <th style="min-width:110px; padding-right:1rem;"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in div_holdings_table %}
+                <tr onclick="window.location.href='{{ row.href }}'">
+                  <td>
+                    <div class="d-flex align-items-center gap-2">
+                      <span class="color-swatch" style="background:{{ row.color }};"></span>
+                      {{ row.label }}
+                    </div>
+                  </td>
+                  <td class="text-end">£{{ "{:,.2f}".format(row.value) }}</td>
+                  <td class="text-end fw-semibold">{{ "{:.1f}".format(row.pct) }}%</td>
+                  <td style="padding-right:1rem;">
+                    <div class="progress" style="height:5px; border-radius:3px;">
+                      <div class="progress-bar" style="width:{{ [row.pct, 100]|min | round(1) }}%; background:{{ row.color }};"></div>
+                    </div>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <p class="text-muted p-3 mb-0">No dividend holdings data available.</p>
+            {% endif %}
+          </div>
         </div>
       </div>
     </div>
@@ -415,10 +470,14 @@
   // ── Render charts ─────────────────────────────────────────────────────
   const geoData    = {{ geo_data    | safe }};
   const sectorData = {{ sector_data | safe }};
+  const divHoldingsData = {{ div_holdings_data | safe }};
   const divData    = {{ div_by_month | safe }};
 
   makeDonut('geoChart',    geoData);
   makeDonut('sectorChart', sectorData);
+  if (divHoldingsData.labels.length > 0) {
+    makeDonut('divHoldingsChart', divHoldingsData);
+  }
 
   // ── Dividend bar chart ────────────────────────────────────────────────
   if (divData.labels.length > 0) {
