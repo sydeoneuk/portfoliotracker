@@ -31,6 +31,50 @@ class SyncRunner:
             if fatal:
                 raise
 
+    def _held_tickers(self) -> set[str]:
+        """Return tickers held directly or inside pies for the current user."""
+        position_q = self.session.query(Position.ticker)
+        pie_q = self.session.query(PieHolding.ticker)
+
+        if self.user_id is not None:
+            position_q = position_q.filter(Position.user_id == self.user_id)
+            pie_q = pie_q.filter(PieHolding.user_id == self.user_id)
+
+        return {r[0] for r in position_q.all()} | {r[0] for r in pie_q.all()}
+
+    def _resolve_yfinance_metadata(self, instrument, yf):
+        """Try stored and derived Yahoo symbols until one returns usable metadata."""
+        from app.enrichment.ticker_mapper import build_yf_ticker_candidates
+
+        candidates: list[str] = []
+        if instrument.yf_ticker:
+            candidates.append(instrument.yf_ticker)
+        for candidate in build_yf_ticker_candidates(
+            instrument.ticker, instrument.short_name, instrument.exchange
+        ):
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        if not candidates:
+            return None, None
+
+        last_exc = None
+        for candidate in candidates:
+            try:
+                time.sleep(0.5)
+                info = yf.Ticker(candidate).info or {}
+            except Exception as exc:
+                last_exc = exc
+                continue
+
+            if _is_useful_yf_info(info):
+                return candidate, info
+
+        if last_exc:
+            raise last_exc
+
+        raise ValueError("No usable yfinance metadata returned")
+
     def sync_all(self, full_catalogue: bool = False):
         print(f"Starting full sync for account: {self.account}...")
         # Positions and pies are synced first so we know which tickers are held.
@@ -832,7 +876,9 @@ class SyncRunner:
         """
         import yfinance as yf
         from app.config import settings as _settings
-        from app.enrichment.ticker_mapper import derive_yf_ticker, EXCHANGE_COUNTRY_MAP
+        from app.enrichment.ticker_mapper import (
+            EXCHANGE_COUNTRY_MAP, EXCHANGE_CURRENCY_MAP, normalize_exchange,
+        )
         from app.enrichment.fmp_enricher import FmpDividendEnricher
         from app.enrichment.claude_enricher import ClaudeDescriptionEnricher
 
@@ -840,10 +886,7 @@ class SyncRunner:
         claude = ClaudeDescriptionEnricher(_settings.anthropic_api_key) if _settings.anthropic_api_key else None
 
         # Only enrich instruments this user currently holds
-        held_tickers = {
-            r[0] for r in self.session.query(Position.ticker)
-            .filter(Position.user_id == self.user_id).all()
-        }
+        held_tickers = self._held_tickers()
         if not held_tickers:
             return
 
@@ -858,7 +901,9 @@ class SyncRunner:
         )
         backfilled = 0
         for inst in backfill_instruments:
-            inferred = EXCHANGE_COUNTRY_MAP.get((inst.exchange or "").upper())
+            inferred = EXCHANGE_COUNTRY_MAP.get(
+                normalize_exchange(inst.exchange) or (inst.exchange or "").upper()
+            )
             if inferred:
                 inst.country = inferred
                 backfilled += 1
@@ -886,13 +931,10 @@ class SyncRunner:
         enriched = 0
 
         for instrument in instruments:
-            yf_ticker = instrument.yf_ticker or derive_yf_ticker(
-                instrument.ticker, instrument.short_name, instrument.exchange
-            )
-            if not yf_ticker:
-                continue
             try:
-                info = yf.Ticker(yf_ticker).info
+                yf_ticker, info = self._resolve_yfinance_metadata(instrument, yf)
+                if not yf_ticker or not info:
+                    continue
                 if info.get("longBusinessSummary"):
                     instrument.description = info["longBusinessSummary"]
                 if info.get("sector"):
@@ -904,17 +946,22 @@ class SyncRunner:
                 elif not instrument.country:
                     # yfinance didn't return a country — infer from exchange
                     instrument.country = EXCHANGE_COUNTRY_MAP.get(
-                        (instrument.exchange or "").upper()
+                        normalize_exchange(instrument.exchange) or (instrument.exchange or "").upper()
                     )
 
                 # Refine exchange: yfinance returns a human-readable fullExchangeName
-                # (e.g. "NYSE", "Nasdaq", "London") which is more specific than the
-                # coarse "US" we derive from the ticker. Always prefer it over "US";
-                # also fill in if exchange is still null.
-                yf_exchange = info.get("fullExchangeName")
+                # (e.g. "NasdaqGS", "London") which we normalise back to our
+                # internal exchange codes so future ticker derivation still works.
+                yf_exchange = _normalised_yf_exchange(info)
                 if yf_exchange:
-                    if not instrument.exchange or instrument.exchange.upper() == "US":
+                    current_exchange = normalize_exchange(instrument.exchange)
+                    if not current_exchange or current_exchange == "US":
                         instrument.exchange = yf_exchange
+
+                if not instrument.currency_code and instrument.exchange:
+                    instrument.currency_code = EXCHANGE_CURRENCY_MAP.get(
+                        normalize_exchange(instrument.exchange) or (instrument.exchange or "").upper()
+                    )
 
                 instrument.yf_ticker = yf_ticker
                 instrument.last_enriched_at = now
@@ -1037,7 +1084,7 @@ class SyncRunner:
         """
         import yfinance as yf
         from app.enrichment.ticker_mapper import (
-            EXCHANGE_COUNTRY_MAP, EXCHANGE_CURRENCY_MAP, derive_yf_ticker,
+            EXCHANGE_COUNTRY_MAP, EXCHANGE_CURRENCY_MAP, normalize_exchange,
         )
         from app.enrichment.fmp_enricher import FmpDividendEnricher
         from app.config import settings as _settings
@@ -1094,15 +1141,16 @@ class SyncRunner:
         enriched = 0
 
         for instrument in instruments:
-            yf_ticker = instrument.yf_ticker or derive_yf_ticker(
-                instrument.ticker, instrument.short_name, instrument.exchange
-            )
-            if not yf_ticker:
-                instrument.last_enriched_at = now  # prevent endless retries
-                continue
             try:
-                time.sleep(0.5)
-                info = yf.Ticker(yf_ticker).info
+                yf_ticker, info = self._resolve_yfinance_metadata(instrument, yf)
+            except Exception as exc:
+                print(f"  [enrich-batch] {instrument.ticker}: {exc}")
+                continue
+
+            if not yf_ticker or not info:
+                continue
+
+            try:
                 if info.get("longBusinessSummary"):
                     instrument.description = info["longBusinessSummary"]
                 if info.get("sector"):
@@ -1113,16 +1161,17 @@ class SyncRunner:
                     instrument.country = info["country"]
                 elif not instrument.country:
                     instrument.country = EXCHANGE_COUNTRY_MAP.get(
-                        (instrument.exchange or "").upper()
+                        normalize_exchange(instrument.exchange) or (instrument.exchange or "").upper()
                     )
                 if info.get("marketCap"):
                     instrument.market_cap = info["marketCap"]
-                yf_exchange = info.get("fullExchangeName")
-                if yf_exchange and (not instrument.exchange or instrument.exchange.upper() == "US"):
+                yf_exchange = _normalised_yf_exchange(info)
+                current_exchange = normalize_exchange(instrument.exchange)
+                if yf_exchange and (not current_exchange or current_exchange == "US"):
                     instrument.exchange = yf_exchange
                 if not instrument.currency_code and instrument.exchange:
                     instrument.currency_code = EXCHANGE_CURRENCY_MAP.get(
-                        (instrument.exchange or "").upper()
+                        normalize_exchange(instrument.exchange) or (instrument.exchange or "").upper()
                     )
                 # FMP fallback for description
                 if not instrument.description and fmp:
@@ -1134,7 +1183,6 @@ class SyncRunner:
                 enriched += 1
             except Exception as exc:
                 print(f"  [enrich-batch] {instrument.ticker}: {exc}")
-                instrument.last_enriched_at = now  # back off, retry next cycle
 
             if enriched % 50 == 0:
                 self.session.commit()
@@ -1161,7 +1209,7 @@ class SyncRunner:
         import yfinance as yf
         from app.config import settings as _settings
         from app.enrichment.ticker_mapper import (
-            derive_yf_ticker, EXCHANGE_COUNTRY_MAP, EXCHANGE_CURRENCY_MAP
+            EXCHANGE_COUNTRY_MAP, EXCHANGE_CURRENCY_MAP, normalize_exchange
         )
         from app.enrichment.fmp_enricher import FmpDividendEnricher
         from app.enrichment.claude_enricher import ClaudeDescriptionEnricher
@@ -1180,14 +1228,17 @@ class SyncRunner:
 
         for idx, instrument in enumerate(instruments, 1):
             # Resolve yfinance ticker — use stored value first, then derive
-            yf_ticker = instrument.yf_ticker or derive_yf_ticker(
-                instrument.ticker, instrument.short_name, instrument.exchange
-            )
+            try:
+                yf_ticker, info = self._resolve_yfinance_metadata(instrument, yf)
+            except Exception as exc:
+                failed += 1
+                print(f"  [{idx}/{total}] {instrument.ticker}: FAILED - {exc}")
+                continue
 
             if progress_callback:
                 progress_callback(idx, total, instrument.ticker)
 
-            if not yf_ticker:
+            if not yf_ticker or not info:
                 print(f"  [{idx}/{total}] {instrument.ticker}: no yf_ticker derivable — skipped")
                 skipped += 1
                 continue
@@ -1198,14 +1249,13 @@ class SyncRunner:
 
             # Back-fill currency from exchange map if still NULL
             if not instrument.currency_code and instrument.exchange:
-                derived_ccy = EXCHANGE_CURRENCY_MAP.get((instrument.exchange or "").upper())
+                derived_ccy = EXCHANGE_CURRENCY_MAP.get(
+                    normalize_exchange(instrument.exchange) or (instrument.exchange or "").upper()
+                )
                 if derived_ccy:
                     instrument.currency_code = derived_ccy
 
             try:
-                import time as _time
-                _time.sleep(0.5)  # be polite to yfinance rate limits
-                info = yf.Ticker(yf_ticker).info
 
                 # Only write if the source returned something useful — never overwrite with empty
                 if info.get("longBusinessSummary"):
@@ -1221,9 +1271,23 @@ class SyncRunner:
 
                 # Country fallback from exchange if yfinance didn't return one
                 if not instrument.country and instrument.exchange:
-                    inferred = EXCHANGE_COUNTRY_MAP.get((instrument.exchange or "").upper())
+                    inferred = EXCHANGE_COUNTRY_MAP.get(
+                        normalize_exchange(instrument.exchange) or (instrument.exchange or "").upper()
+                    )
                     if inferred:
                         instrument.country = inferred
+
+                yf_exchange = _normalised_yf_exchange(info)
+                current_exchange = normalize_exchange(instrument.exchange)
+                if yf_exchange and (not current_exchange or current_exchange == "US"):
+                    instrument.exchange = yf_exchange
+
+                if not instrument.currency_code and instrument.exchange:
+                    derived_ccy = EXCHANGE_CURRENCY_MAP.get(
+                        normalize_exchange(instrument.exchange) or (instrument.exchange or "").upper()
+                    )
+                    if derived_ccy:
+                        instrument.currency_code = derived_ccy
 
                 instrument.last_enriched_at = now
 
@@ -1257,6 +1321,42 @@ class SyncRunner:
         result = {"total": total, "enriched": enriched, "failed": failed, "skipped": skipped}
         print(f"[force-enrich] Complete — {enriched} enriched, {failed} failed, {skipped} skipped.")
         return result
+
+
+def _is_useful_yf_info(info: dict | None) -> bool:
+    """Return True when a Yahoo response has enough signal to enrich an instrument."""
+    if not isinstance(info, dict):
+        return False
+
+    useful_fields = (
+        "longBusinessSummary",
+        "sector",
+        "industry",
+        "country",
+        "marketCap",
+        "longName",
+        "shortName",
+        "quoteType",
+        "fullExchangeName",
+        "exchange",
+    )
+    return any(info.get(field) for field in useful_fields)
+
+
+def _normalised_yf_exchange(info: dict | None) -> str | None:
+    """Map Yahoo exchange labels back to the app's internal exchange codes."""
+    from app.enrichment.ticker_mapper import normalize_exchange
+
+    if not isinstance(info, dict):
+        return None
+
+    for field in ("exchange", "fullExchangeName"):
+        value = info.get(field)
+        normalised = normalize_exchange(value)
+        if normalised:
+            return normalised
+
+    return None
 
 
 def _synthesise_description(instrument) -> str | None:

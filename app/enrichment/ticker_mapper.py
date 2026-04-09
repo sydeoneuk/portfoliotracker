@@ -11,6 +11,7 @@ Yahoo Finance expects:
   VWRP.L       → London
   SAP.DE       → Frankfurt
 """
+import re
 
 # Known T212 exchange identifiers → Yahoo Finance suffix
 EXCHANGE_COUNTRY_MAP: dict[str, str] = {
@@ -160,6 +161,57 @@ EXCHANGE_SUFFIX_MAP: dict[str, str] = {
     "SGX": ".SI",
 }
 
+YF_EXCHANGE_ALIAS_MAP: dict[str, str] = {
+    "LONDON": "LSE",
+    "LSE": "LSE",
+    "XLON": "XLON",
+    "NASDAQ": "NASDAQ",
+    "NASDAQ GS": "NASDAQ",
+    "NASDAQ GM": "NASDAQ",
+    "NASDAQ CM": "NASDAQ",
+    "NASDAQGS": "NASDAQ",
+    "NASDAQGM": "NASDAQ",
+    "NASDAQCM": "NASDAQ",
+    "NYSE": "NYSE",
+    "NYSEARCA": "ARCA",
+    "ARCA": "ARCA",
+    "BATS": "BATS",
+    "NYSEAMERICAN": "AMEX",
+    "NYSE MKT": "AMEX",
+    "AMEX": "AMEX",
+    "XETRA": "XETR",
+    "XETR": "XETR",
+    "FRANKFURT": "FRA",
+    "FRA": "FRA",
+    "PARIS": "XPAR",
+    "XPAR": "XPAR",
+    "AMSTERDAM": "XAMS",
+    "XAMS": "XAMS",
+    "MADRID": "XMAD",
+    "XMAD": "XMAD",
+    "MILAN": "XMIL",
+    "XMIL": "XMIL",
+    "SIX": "XSWX",
+    "XSWX": "XSWX",
+    "STOCKHOLM": "XSTO",
+    "XSTO": "XSTO",
+    "COPENHAGEN": "XCSE",
+    "XCSE": "XCSE",
+    "OSLO": "XOSL",
+    "XOSL": "XOSL",
+    "TORONTO": "TSX",
+    "TSX": "TSX",
+    "TSXV": "TSXV",
+    "ASX": "ASX",
+    "HKEX": "HKEX",
+    "XHKG": "XHKG",
+    "TSE": "TSE",
+    "NSE": "NSE",
+    "BSE": "BSE",
+    "BVMF": "BVMF",
+    "SGX": "SGX",
+}
+
 
 def derive_exchange_from_ticker(t212_ticker: str) -> str | None:
     """
@@ -196,6 +248,59 @@ def derive_exchange_from_ticker(t212_ticker: str) -> str | None:
     return None
 
 
+def normalize_exchange(exchange: str | None) -> str | None:
+    """Map human-readable or Yahoo exchange labels back to internal exchange codes."""
+    if not exchange:
+        return None
+
+    key = exchange.strip().upper()
+    if not key:
+        return None
+
+    if key in EXCHANGE_SUFFIX_MAP:
+        return key
+
+    return YF_EXCHANGE_ALIAS_MAP.get(key)
+
+
+def build_yf_ticker_candidates(
+    t212_ticker: str,
+    short_name: str | None,
+    exchange: str | None,
+) -> list[str]:
+    """Return best-effort Yahoo Finance ticker candidates in descending confidence order."""
+    candidates: list[str] = []
+    symbol = _strip_t212_suffix(t212_ticker)
+    normalised_exchange = normalize_exchange(exchange)
+
+    def _append(candidate: str | None) -> None:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    if symbol and normalised_exchange:
+        suffix = EXCHANGE_SUFFIX_MAP.get(normalised_exchange)
+        if suffix is not None:
+            _append(f"{symbol}{suffix}")
+
+    if symbol and t212_ticker.endswith("l_EQ") and not t212_ticker.endswith("_US_EQ"):
+        _append(f"{symbol}.L")
+
+    if symbol and "_US_" in t212_ticker:
+        _append(symbol)
+
+    _append(symbol)
+
+    fallback = (short_name or "").strip()
+    if fallback and _looks_like_symbol(fallback) and fallback.upper() != (symbol or "").upper():
+        if normalised_exchange:
+            suffix = EXCHANGE_SUFFIX_MAP.get(normalised_exchange)
+            if suffix is not None:
+                _append(f"{fallback}{suffix}")
+        _append(fallback)
+
+    return candidates
+
+
 def derive_yf_ticker(t212_ticker: str, short_name: str | None, exchange: str | None) -> str | None:
     """
     Best-effort derivation of a Yahoo Finance ticker from T212 data.
@@ -207,27 +312,8 @@ def derive_yf_ticker(t212_ticker: str, short_name: str | None, exchange: str | N
 
     Returns None if derivation is not possible.
     """
-    base = short_name or _strip_t212_suffix(t212_ticker)
-    if not base:
-        return None
-
-    # Explicit exchange mapping takes precedence
-    if exchange:
-        suffix = EXCHANGE_SUFFIX_MAP.get(exchange.upper())
-        if suffix is not None:
-            return f"{base}{suffix}"
-
-    # Heuristic: T212 appends lowercase 'l' before _EQ for LSE stocks
-    # e.g. VWRPl_EQ, ARMGl_EQ
-    if t212_ticker.endswith("l_EQ") and not t212_ticker.endswith("_US_EQ"):
-        return f"{base}.L"
-
-    # US equities typically have no suffix
-    if "_US_" in t212_ticker:
-        return base
-
-    # Default: return base and let caller handle failures
-    return base
+    candidates = build_yf_ticker_candidates(t212_ticker, short_name, exchange)
+    return candidates[0] if candidates else None
 
 
 def _strip_t212_suffix(ticker: str) -> str | None:
@@ -236,3 +322,8 @@ def _strip_t212_suffix(ticker: str) -> str | None:
         if ticker.upper().endswith(suffix.upper()):
             return ticker[: -len(suffix)]
     return ticker or None
+
+
+def _looks_like_symbol(value: str) -> bool:
+    """Return True for compact symbol-like strings, False for display names."""
+    return bool(re.fullmatch(r"[A-Za-z0-9.\-=/]{1,20}", value or ""))
