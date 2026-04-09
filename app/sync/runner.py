@@ -1342,6 +1342,87 @@ class SyncRunner:
         return result
 
 
+    def refresh_single_instrument(self, ticker: str) -> dict:
+        """Force-refresh metadata and fundamentals for a single instrument."""
+        import yfinance as yf
+        from app.config import settings as _settings
+        from app.enrichment.ticker_mapper import (
+            EXCHANGE_COUNTRY_MAP, EXCHANGE_CURRENCY_MAP, normalize_exchange,
+        )
+        from app.enrichment.fmp_enricher import FmpDividendEnricher
+        from app.enrichment.claude_enricher import ClaudeDescriptionEnricher
+
+        instrument = self.session.query(Instrument).filter_by(ticker=ticker).first()
+        if not instrument:
+            raise ValueError(f"Instrument not found: {ticker}")
+
+        fmp = FmpDividendEnricher(_settings.fmp_api_key) if _settings.fmp_api_key else None
+        claude = ClaudeDescriptionEnricher(_settings.anthropic_api_key) if _settings.anthropic_api_key else None
+        now = datetime.datetime.utcnow()
+
+        yf_ticker, info, ticker_obj = self._resolve_yfinance_metadata(instrument, yf)
+        if not yf_ticker or not info:
+            raise ValueError(f"No yfinance metadata available for {ticker}")
+
+        if info.get("longBusinessSummary"):
+            instrument.description = info["longBusinessSummary"]
+        if info.get("sector"):
+            instrument.sector = info["sector"]
+        if info.get("industry"):
+            instrument.industry = info["industry"]
+        if info.get("country"):
+            instrument.country = info["country"]
+        elif not instrument.country:
+            instrument.country = EXCHANGE_COUNTRY_MAP.get(
+                normalize_exchange(instrument.exchange) or (instrument.exchange or "").upper()
+            )
+        if info.get("marketCap"):
+            instrument.market_cap = info["marketCap"]
+
+        fundamentals = _extract_yf_fundamentals(ticker_obj, info)
+        if fundamentals.get("eps_ttm") is not None:
+            instrument.eps_ttm = fundamentals["eps_ttm"]
+        if fundamentals.get("fcf_per_share_3y_avg") is not None:
+            instrument.fcf_per_share_3y_avg = fundamentals["fcf_per_share_3y_avg"]
+
+        yf_exchange = _normalised_yf_exchange(info)
+        current_exchange = normalize_exchange(instrument.exchange)
+        if yf_exchange and (not current_exchange or current_exchange == "US"):
+            instrument.exchange = yf_exchange
+
+        if not instrument.currency_code and instrument.exchange:
+            derived_ccy = EXCHANGE_CURRENCY_MAP.get(
+                normalize_exchange(instrument.exchange) or (instrument.exchange or "").upper()
+            )
+            if derived_ccy:
+                instrument.currency_code = derived_ccy
+
+        instrument.yf_ticker = yf_ticker
+        instrument.last_enriched_at = now
+
+        if not instrument.description and fmp:
+            fmp_desc = fmp.get_description(yf_ticker, instrument.instrument_type or "")
+            if fmp_desc:
+                instrument.description = fmp_desc
+
+        if not instrument.description and claude:
+            display_name = instrument.name or instrument.short_name or instrument.ticker
+            claude_desc = claude.get_description(display_name)
+            if claude_desc:
+                instrument.description = claude_desc
+
+        if not instrument.description:
+            instrument.description = _synthesise_description(instrument)
+
+        self.session.commit()
+        return {
+            "ticker": instrument.ticker,
+            "yf_ticker": instrument.yf_ticker,
+            "eps_ttm": instrument.eps_ttm,
+            "fcf_per_share_3y_avg": instrument.fcf_per_share_3y_avg,
+        }
+
+
 def _is_useful_yf_info(info: dict | None) -> bool:
     """Return True when a Yahoo response has enough signal to enrich an instrument."""
     if not isinstance(info, dict):

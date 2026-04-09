@@ -160,6 +160,14 @@
         {% if instrument.country %} · {{ instrument.country }}{% endif %}
       </div>
     </div>
+    <div class="ms-auto d-flex align-items-center gap-2">
+      <div id="refresh-status" class="small" style="color:#c8d6e5; display:none;"></div>
+      <button id="refresh-holding-btn" class="btn btn-sm"
+              style="background:var(--t212-green); color:#fff; font-weight:600; border:none;"
+              onclick="refreshHoldingData()">
+        Refresh Dividends & Metrics
+      </button>
+    </div>
   </div>
 </div>
 
@@ -525,6 +533,32 @@
 <script src="https://cdn.datatables.net/2.0.8/js/dataTables.min.js"></script>
 <script src="https://cdn.datatables.net/2.0.8/js/dataTables.bootstrap5.min.js"></script>
 <script>
+  function refreshHoldingData() {
+    var btn = document.getElementById('refresh-holding-btn');
+    var status = document.getElementById('refresh-status');
+    btn.disabled = true;
+    btn.textContent = 'Refreshing...';
+    status.style.display = 'block';
+    status.className = 'small';
+    status.textContent = 'Refreshing dividend history, forecast, EPS and DPS...';
+
+    fetch('/holding/{{ ticker }}/refresh', { method: 'POST' })
+      .then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); })
+      .then(function(res) {
+        if (!res.ok || res.data.error) {
+          throw new Error(res.data.error || 'Refresh failed');
+        }
+        status.textContent = 'Refresh complete. Reloading...';
+        setTimeout(function() { window.location.reload(); }, 500);
+      })
+      .catch(function(err) {
+        status.className = 'small text-warning';
+        status.textContent = err.message || 'Refresh failed';
+        btn.disabled = false;
+        btn.textContent = 'Refresh Dividends & Metrics';
+      });
+  }
+
   $(document).ready(function () {
     {% if trade_history %}
     $('#trade-history-table').DataTable({

@@ -2075,3 +2075,51 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         "fmt": _fmt,
         "cfmt": _cfmt,
     })
+
+
+@app.post("/holding/{ticker:path}/refresh")
+def refresh_holding_data(ticker: str, request: Request, db: Session = Depends(get_session)):
+    from app.models.instrument import Instrument
+    from app.models.position import Position
+    from app.models.pie import PieHolding
+    from app.sync.runner import SyncRunner
+    from app.sync.dividend_sync import DividendSync
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse({"error": "Unauthorised"}, status_code=401)
+
+    instrument = db.query(Instrument).filter_by(ticker=ticker).first()
+    if not instrument:
+        return JSONResponse({"error": "Instrument not found"}, status_code=404)
+
+    has_position = db.query(Position).filter_by(ticker=ticker, user_id=user.id).first() is not None
+    in_pie = db.query(PieHolding).filter_by(ticker=ticker, user_id=user.id).first() is not None
+    if not (has_position or in_pie):
+        return JSONResponse({"error": "You do not hold this instrument"}, status_code=403)
+
+    try:
+        runner = SyncRunner(db, user_id=user.id)
+        metadata_result = runner.refresh_single_instrument(ticker)
+
+        div_sync = DividendSync(
+            session=db,
+            fmp_api_key=settings.fmp_api_key,
+        )
+        div_sync.sync_all(tickers=[ticker])
+
+        annual_rate = db.execute(
+            text("SELECT MAX(annual_rate) FROM dividend_forecast WHERE ticker = :t"),
+            {"t": ticker},
+        ).scalar()
+        return JSONResponse({
+            "ok": True,
+            "ticker": ticker,
+            "yf_ticker": metadata_result.get("yf_ticker"),
+            "eps_ttm": metadata_result.get("eps_ttm"),
+            "fcf_per_share_3y_avg": metadata_result.get("fcf_per_share_3y_avg"),
+            "annual_dps": float(annual_rate) if annual_rate is not None else None,
+        })
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse({"error": str(exc)}, status_code=500)
