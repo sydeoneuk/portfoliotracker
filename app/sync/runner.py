@@ -1,5 +1,6 @@
 import datetime
 import time
+import requests
 from sqlalchemy import literal_column
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
@@ -27,9 +28,20 @@ class SyncRunner:
             fn()
         except Exception as exc:
             self.session.rollback()
+            if self._is_permission_error(exc):
+                print(f"  {fn.__name__} skipped: API token lacks permission ({exc})")
+                return
+
             print(f"  {fn.__name__} failed: {exc}")
             if fatal:
                 raise
+
+    @staticmethod
+    def _is_permission_error(exc: Exception) -> bool:
+        if not isinstance(exc, requests.HTTPError):
+            return False
+        response = exc.response
+        return response is not None and response.status_code in (401, 403)
 
     def _held_tickers(self) -> set[str]:
         """Return tickers held directly or inside pies for the current user."""

@@ -2120,8 +2120,6 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
 @app.post("/holding/{ticker:path}/refresh")
 def refresh_holding_data(ticker: str, request: Request, db: Session = Depends(get_session)):
     from app.models.instrument import Instrument
-    from app.models.position import Position
-    from app.models.pie import PieHolding
     from app.sync.runner import SyncRunner
     from app.sync.dividend_sync import DividendSync
 
@@ -2132,11 +2130,6 @@ def refresh_holding_data(ticker: str, request: Request, db: Session = Depends(ge
     instrument = db.query(Instrument).filter_by(ticker=ticker).first()
     if not instrument:
         return JSONResponse({"error": "Instrument not found"}, status_code=404)
-
-    has_position = db.query(Position).filter_by(ticker=ticker, user_id=user.id).first() is not None
-    in_pie = db.query(PieHolding).filter_by(ticker=ticker, user_id=user.id).first() is not None
-    if not (has_position or in_pie):
-        return JSONResponse({"error": "You do not hold this instrument"}, status_code=403)
 
     try:
         runner = SyncRunner(db, user_id=user.id)
