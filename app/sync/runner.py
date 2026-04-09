@@ -31,14 +31,15 @@ class SyncRunner:
             if fatal:
                 raise
 
-    def sync_all(self):
+    def sync_all(self, full_catalogue: bool = False):
         print(f"Starting full sync for account: {self.account}...")
-        # Positions and pies first so we know which tickers are held before
-        # fetching the T212 instrument catalogue (avoids storing all 16k+ rows).
+        # Positions and pies are synced first so we know which tickers are held.
+        # full_catalogue=True (nightly only) additionally stores all ~16k T212
+        # instruments, not just the ones held, enabling the research/filter page.
         self._run_step(self.sync_positions)
         self._run_step(self.sync_pies)
         self._run_step(self.sync_account_cash, fatal=False)
-        self._run_step(self.sync_instruments)
+        self._run_step(lambda: self.sync_instruments(full_catalogue=full_catalogue))
         self._run_step(self.sync_open_orders)
         self._run_step(self.sync_order_history, fatal=False)
         self._run_step(self.sync_transactions)
@@ -46,16 +47,18 @@ class SyncRunner:
         self._run_step(self.sync_instrument_metadata, fatal=False)
         print("Sync complete.")
 
-    def sync_instruments(self):
-        """Sync T212 instrument metadata for held tickers and any existing DB stubs.
+    def sync_instruments(self, full_catalogue: bool = False):
+        """Sync T212 instrument metadata.
 
-        Fetches the full T212 catalogue (one API call). Upserts rows for:
-        - Tickers the user currently holds (new rows inserted if missing)
-        - All instruments already in the DB (stubs from order/transaction history
-          get their T212 fields filled in — no extra API cost since the full
-          catalogue is downloaded anyway)
+        Fetches the full T212 catalogue (one API call). When full_catalogue is
+        False (default, used by manual user syncs) only held tickers and any
+        existing DB stubs are upserted — keeping the table lean during normal
+        use. When full_catalogue is True (nightly sync) every instrument in the
+        T212 catalogue is upserted, populating the instruments table for the
+        investment research / filter page.
 
-        Skips if all held instruments were updated within the last 24 hours.
+        Skips if held instruments were updated within the last 24 hours (unless
+        full_catalogue is True, in which case it always runs).
         """
         from sqlalchemy import text as _text
 
@@ -72,28 +75,34 @@ class SyncRunner:
             print("  No held positions found, skipping instrument sync.")
             return
 
-        # Skip if all held instruments were refreshed within the last 24 hours
-        last = self.session.execute(
-            _text("SELECT MIN(updated_at) FROM instruments WHERE ticker = ANY(:tickers)"),
-            {"tickers": list(held_tickers)},
-        ).scalar()
-        if last and (datetime.datetime.utcnow() - last).total_seconds() < 86400:
-            print("  Instruments up to date (synced < 24h ago), skipping.")
-            return
+        # Skip freshness check when loading the full catalogue
+        if not full_catalogue:
+            last = self.session.execute(
+                _text("SELECT MIN(updated_at) FROM instruments WHERE ticker = ANY(:tickers)"),
+                {"tickers": list(held_tickers)},
+            ).scalar()
+            if last and (datetime.datetime.utcnow() - last).total_seconds() < 86400:
+                print("  Instruments up to date (synced < 24h ago), skipping.")
+                return
 
-        # Also refresh any instruments already in the DB (fills in stubs created for
-        # historical orders/transactions/dividends that are no longer held)
+        # Build the set of tickers to upsert
         existing_tickers = {r[0] for r in self.session.query(Instrument.ticker).all()}
-        upsert_tickers = held_tickers | existing_tickers
-        stub_count = len(existing_tickers - held_tickers)
 
-        print(f"Syncing instruments: {len(held_tickers)} held + {stub_count} existing stubs...")
+        if full_catalogue:
+            # Upsert everything — upsert_tickers is resolved after catalogue download
+            upsert_tickers = None
+            print("Syncing full T212 instrument catalogue...")
+        else:
+            upsert_tickers = held_tickers | existing_tickers
+            stub_count = len(existing_tickers - held_tickers)
+            print(f"Syncing instruments: {len(held_tickers)} held + {stub_count} existing stubs...")
+
         data = self.client.get_instruments()
         now = datetime.datetime.utcnow()
 
         from app.enrichment.ticker_mapper import EXCHANGE_CURRENCY_MAP, derive_exchange_from_ticker
 
-        relevant = [item for item in data if item["ticker"] in upsert_tickers]
+        relevant = data if full_catalogue else [item for item in data if item["ticker"] in upsert_tickers]
 
         for item in relevant:
             # T212 does not include exchange in the API response; derive it from
@@ -158,7 +167,8 @@ class SyncRunner:
                 print(f"  Back-filled currency {derived} for {inst.ticker} (exchange={inst.exchange})")
 
         self.session.commit()
-        print(f"  Synced {len(relevant)} instruments from T212 catalogue ({len(data)} total in catalogue).")
+        label = "full catalogue" if full_catalogue else "held + stubs"
+        print(f"  Synced {len(relevant)} instruments ({label}) from T212 catalogue ({len(data)} total).")
 
     def reload_all_instruments_from_t212(self, progress_callback=None) -> dict:
         """Force-reload T212 base data for every instrument currently in the DB.
@@ -937,6 +947,125 @@ class SyncRunner:
 
         self.session.commit()
         print(f"  Metadata enrichment complete ({enriched}/{len(instruments)} instruments).")
+
+    def enrich_stale_instruments_batch(self, batch_size: int = 300) -> int:
+        """Progressively enrich uninitialised or stale instruments.
+
+        Called by the nightly scheduler after user syncs complete. Processes up
+        to batch_size instruments per run so yfinance rate limits are respected
+        without the job running for hours. Held instruments are always processed
+        first to keep portfolio data fresh; the rest of the catalogue follows in
+        staleness order.
+
+        Returns the number of instruments enriched.
+        """
+        import yfinance as yf
+        from app.enrichment.ticker_mapper import (
+            EXCHANGE_COUNTRY_MAP, EXCHANGE_CURRENCY_MAP, derive_yf_ticker,
+        )
+        from app.enrichment.fmp_enricher import FmpDividendEnricher
+        from app.config import settings as _settings
+
+        fmp = FmpDividendEnricher(_settings.fmp_api_key) if _settings.fmp_api_key else None
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+        now = datetime.datetime.utcnow()
+
+        # Held tickers across all users — these get priority
+        held_tickers = {
+            r[0] for r in self.session.execute(
+                __import__("sqlalchemy").text("SELECT DISTINCT ticker FROM positions")
+            )
+        }
+
+        # Priority 1: held instruments that are stale / never enriched
+        priority = (
+            self.session.query(Instrument)
+            .filter(Instrument.ticker.in_(held_tickers))
+            .filter(
+                (Instrument.last_enriched_at == None) |  # noqa: E711
+                (Instrument.last_enriched_at < cutoff)
+            )
+            .order_by(Instrument.last_enriched_at.asc().nullsfirst())
+            .limit(batch_size)
+            .all()
+        )
+
+        # Priority 2: fill remaining slots with non-held stale instruments
+        remaining = batch_size - len(priority)
+        if remaining > 0:
+            priority_tickers = {i.ticker for i in priority}
+            others = (
+                self.session.query(Instrument)
+                .filter(~Instrument.ticker.in_(held_tickers | priority_tickers))
+                .filter(
+                    (Instrument.last_enriched_at == None) |  # noqa: E711
+                    (Instrument.last_enriched_at < cutoff)
+                )
+                .order_by(Instrument.last_enriched_at.asc().nullsfirst())
+                .limit(remaining)
+                .all()
+            )
+        else:
+            others = []
+
+        instruments = priority + others
+        if not instruments:
+            print("[enrich-batch] All instruments up to date.")
+            return 0
+
+        print(f"[enrich-batch] Enriching {len(instruments)} stale instruments "
+              f"({len(priority)} held-priority, {len(others)} catalogue)...")
+        enriched = 0
+
+        for instrument in instruments:
+            yf_ticker = instrument.yf_ticker or derive_yf_ticker(
+                instrument.ticker, instrument.short_name, instrument.exchange
+            )
+            if not yf_ticker:
+                instrument.last_enriched_at = now  # prevent endless retries
+                continue
+            try:
+                time.sleep(0.5)
+                info = yf.Ticker(yf_ticker).info
+                if info.get("longBusinessSummary"):
+                    instrument.description = info["longBusinessSummary"]
+                if info.get("sector"):
+                    instrument.sector = info["sector"]
+                if info.get("industry"):
+                    instrument.industry = info["industry"]
+                if info.get("country"):
+                    instrument.country = info["country"]
+                elif not instrument.country:
+                    instrument.country = EXCHANGE_COUNTRY_MAP.get(
+                        (instrument.exchange or "").upper()
+                    )
+                if info.get("marketCap"):
+                    instrument.market_cap = info["marketCap"]
+                yf_exchange = info.get("fullExchangeName")
+                if yf_exchange and (not instrument.exchange or instrument.exchange.upper() == "US"):
+                    instrument.exchange = yf_exchange
+                if not instrument.currency_code and instrument.exchange:
+                    instrument.currency_code = EXCHANGE_CURRENCY_MAP.get(
+                        (instrument.exchange or "").upper()
+                    )
+                # FMP fallback for description
+                if not instrument.description and fmp:
+                    fmp_desc = fmp.get_description(yf_ticker, instrument.instrument_type or "")
+                    if fmp_desc:
+                        instrument.description = fmp_desc
+                instrument.yf_ticker = yf_ticker
+                instrument.last_enriched_at = now
+                enriched += 1
+            except Exception as exc:
+                print(f"  [enrich-batch] {instrument.ticker}: {exc}")
+                instrument.last_enriched_at = now  # back off, retry next cycle
+
+            if enriched % 50 == 0:
+                self.session.commit()
+
+        self.session.commit()
+        print(f"[enrich-batch] Done — enriched {enriched}/{len(instruments)} instruments.")
+        return enriched
 
     def enrich_all_instruments(self, progress_callback=None) -> dict:
         """Force-enrich every instrument in the database, ignoring the 7-day cache.

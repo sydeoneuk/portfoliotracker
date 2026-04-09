@@ -63,8 +63,16 @@ def _on_startup():
         id="nightly_sync",
         replace_existing=True,
     )
+    # Progressive catalogue enrichment runs at 04:00 UTC — after user syncs
+    # have completed. Enriches up to 300 stale instruments per night.
+    _scheduler.add_job(
+        _scheduled_enrich_catalogue,
+        CronTrigger(hour=4, minute=0, timezone="UTC"),
+        id="nightly_enrich",
+        replace_existing=True,
+    )
     _scheduler.start()
-    print("  Scheduler started — nightly sync scheduled at 03:00 UTC.")
+    print("  Scheduler started — nightly sync 03:00 UTC, catalogue enrich 04:00 UTC.")
 
 
 @app.on_event("shutdown")
@@ -81,8 +89,9 @@ _sync_executor = ThreadPoolExecutor(max_workers=4)  # used directly for sync tas
 _scheduler = BackgroundScheduler(timezone="UTC")
 
 # In-memory state for admin background jobs (single global each — only one of each runs at a time)
-_enrich_state: dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
-_t212_state:   dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
+_enrich_state:    dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
+_t212_state:      dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
+_catalogue_state: dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────
@@ -241,8 +250,13 @@ def _get_or_create_settings(db: Session, user_id: int) -> UserSettings:
 
 # ── Background sync ────────────────────────────────────────────────────────
 
-def _run_sync(user_id: int) -> None:
-    """Synchronous sync task — runs in thread pool."""
+def _run_sync(user_id: int, full_catalogue: bool = False) -> None:
+    """Synchronous sync task — runs in thread pool.
+
+    full_catalogue=True is passed by the nightly scheduler for the first user
+    so that the complete T212 instrument catalogue is loaded into the DB once
+    per day, keeping the instruments research page up to date.
+    """
     db = SessionLocal()
     try:
         from app.sync.runner import SyncRunner
@@ -275,7 +289,7 @@ def _run_sync(user_id: int) -> None:
         for account_label, key, secret in accounts:
             runner = SyncRunner(db, account=account_label, api_key=key,
                                 api_secret=secret, user_id=user_id)
-            runner.sync_all()
+            runner.sync_all(full_catalogue=full_catalogue)
 
         user_settings.last_sync_at = datetime.datetime.utcnow()
         user_settings.sync_status = "done"
@@ -302,7 +316,11 @@ def _run_sync(user_id: int) -> None:
 # ── Nightly scheduled sync ────────────────────────────────────────────────
 
 def _scheduled_sync_all_users() -> None:
-    """Run at 03:00 UTC daily — sync every user who has API keys and hasn't opted out."""
+    """Run at 03:00 UTC daily — sync every user who has API keys and hasn't opted out.
+
+    The first user to sync also triggers a full T212 catalogue load so the
+    instruments research page stays populated with all available instruments.
+    """
     now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     print(f"[scheduler] Nightly sync triggered at {now_str} UTC")
     db = SessionLocal()
@@ -320,13 +338,29 @@ def _scheduled_sync_all_users() -> None:
             has_key = bool(us.t212_api_key_enc or us.t212_isa_api_key_enc)
             if not has_key:
                 continue
-            # Mark as queued so the UI shows something immediately
             us.sync_status = "running"
             us.sync_message = "Scheduled nightly sync…"
-            _sync_executor.submit(_run_sync, us.user_id)
+            # First user's sync loads the full catalogue; others do the normal held+stubs
+            _sync_executor.submit(_run_sync, us.user_id, queued == 0)
             queued += 1
         db.commit()
         print(f"[scheduler] Queued nightly sync for {queued} user(s).")
+    except Exception:
+        traceback.print_exc()
+    finally:
+        db.close()
+
+
+def _scheduled_enrich_catalogue() -> None:
+    """Run at 04:00 UTC daily — progressively enrich stale instruments in batches."""
+    print(f"[scheduler] Catalogue enrichment triggered at "
+          f"{datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC")
+    db = SessionLocal()
+    try:
+        from app.sync.runner import SyncRunner
+        runner = SyncRunner(db, user_id=None)
+        count = runner.enrich_stale_instruments_batch(batch_size=300)
+        print(f"[scheduler] Catalogue enrichment complete — {count} instruments updated.")
     except Exception:
         traceback.print_exc()
     finally:
@@ -589,6 +623,77 @@ def t212_reload_status(request: Request, db: Session = Depends(get_session)):
     if isinstance(user, RedirectResponse):
         return user
     return JSONResponse(_t212_state)
+
+
+def _run_full_catalogue_load(api_key: str, api_secret: str) -> None:
+    """Background task: load the complete T212 instrument catalogue into the DB.
+
+    Uses sync_instruments(full_catalogue=True) which upserts every instrument
+    in the T212 catalogue. The ON CONFLICT clause only updates T212 base fields;
+    all enrichment data (sector, country, description, yf_ticker, etc.) is
+    preserved unchanged on rows that already exist.
+    """
+    global _catalogue_state
+    db = SessionLocal()
+    try:
+        from app.sync.runner import SyncRunner
+
+        _catalogue_state.update({"status": "running", "done": 0, "total": 0,
+                                  "current": "Fetching T212 catalogue…", "result": None})
+
+        # We need a user_id for the held-ticker query inside sync_instruments;
+        # use the first user that has this API key configured
+        user_settings = db.query(UserSettings).filter(
+            UserSettings.t212_api_key_enc.isnot(None)
+        ).first()
+        if not user_settings:
+            user_settings = db.query(UserSettings).filter(
+                UserSettings.t212_isa_api_key_enc.isnot(None)
+            ).first()
+        user_id = user_settings.user_id if user_settings else None
+
+        runner = SyncRunner(db, api_key=api_key, api_secret=api_secret, user_id=user_id)
+        runner.sync_instruments(full_catalogue=True)
+
+        total = db.query(Instrument).count()
+        _catalogue_state.update({
+            "status": "done",
+            "result": {"total_in_db": total},
+        })
+    except Exception as exc:
+        traceback.print_exc()
+        _catalogue_state.update({"status": "error", "result": {"error": str(exc)}})
+    finally:
+        db.close()
+
+
+@app.post("/admin/instruments/load-catalogue")
+def trigger_full_catalogue_load(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    if _catalogue_state["status"] == "running":
+        return JSONResponse({"error": "Catalogue load already running"}, status_code=409)
+
+    user_settings = db.query(UserSettings).filter_by(user_id=user.id).first()
+    api_key    = decrypt(user_settings.t212_api_key_enc)    if user_settings and user_settings.t212_api_key_enc    else None
+    api_secret = decrypt(user_settings.t212_api_secret_enc) if user_settings and user_settings.t212_api_secret_enc else None
+    if not api_key:
+        api_key    = decrypt(user_settings.t212_isa_api_key_enc)    if user_settings and user_settings.t212_isa_api_key_enc    else None
+        api_secret = decrypt(user_settings.t212_isa_api_secret_enc) if user_settings and user_settings.t212_isa_api_secret_enc else None
+    if not api_key:
+        return JSONResponse({"error": "No T212 API credentials found for your account"}, status_code=400)
+
+    _sync_executor.submit(_run_full_catalogue_load, api_key, api_secret)
+    return JSONResponse({"queued": True})
+
+
+@app.get("/admin/instruments/load-catalogue/status")
+def full_catalogue_load_status(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    return JSONResponse(_catalogue_state)
 
 
 # ── Help route ────────────────────────────────────────────────────────────
@@ -1138,6 +1243,138 @@ def index(request: Request, account: str = "combined", pies: str = "",
         "fmt": _fmt,
         "cfmt": _cfmt,
     })
+
+
+# ── Instruments research page ──────────────────────────────────────────────
+
+@app.get("/instruments", response_class=HTMLResponse)
+def instruments_page(request: Request, db: Session = Depends(get_session)):
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(request, "instruments.html", {"user": user})
+
+
+@app.get("/api/instruments")
+def api_instruments(
+    request: Request,
+    db: Session = Depends(get_session),
+    search: str = "",
+    sector: str = "",
+    country: str = "",
+    exchange: str = "",
+    instrument_type: str = "",
+    held_only: bool = False,
+    sort: str = "name",
+    order: str = "asc",
+    limit: int = 50,
+    offset: int = 0,
+):
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+    from sqlalchemy import text as _text, func, or_
+    from app.models import Instrument, Position
+
+    # Tickers held by this user (across all accounts) — used for the
+    # "In portfolio" badge and the held_only filter
+    held_rows = (
+        db.query(Position.ticker, Position.account)
+        .filter(Position.user_id == user.id)
+        .all()
+    )
+    held_map: dict[str, list[str]] = {}
+    for ticker, acct in held_rows:
+        held_map.setdefault(ticker, []).append(acct)
+
+    q = db.query(Instrument)
+
+    # Text search across name, short_name, ISIN and ticker
+    if search.strip():
+        term = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                Instrument.name.ilike(term),
+                Instrument.short_name.ilike(term),
+                Instrument.ticker.ilike(term),
+                Instrument.isin.ilike(term),
+            )
+        )
+
+    if sector.strip():
+        q = q.filter(Instrument.sector == sector.strip())
+    if country.strip():
+        q = q.filter(Instrument.country == country.strip())
+    if exchange.strip():
+        q = q.filter(Instrument.exchange == exchange.strip())
+    if instrument_type.strip():
+        q = q.filter(Instrument.instrument_type == instrument_type.strip())
+    if held_only:
+        if held_map:
+            q = q.filter(Instrument.ticker.in_(list(held_map.keys())))
+        else:
+            # User holds nothing — return empty
+            return JSONResponse({"total": 0, "items": [], "filter_options": _instrument_filter_options(db)})
+
+    total = q.count()
+
+    # Sorting
+    _sort_cols = {
+        "name":            Instrument.name,
+        "sector":          Instrument.sector,
+        "country":         Instrument.country,
+        "exchange":        Instrument.exchange,
+        "instrument_type": Instrument.instrument_type,
+        "market_cap":      Instrument.market_cap,
+        "currency_code":   Instrument.currency_code,
+    }
+    col = _sort_cols.get(sort, Instrument.name)
+    q = q.order_by(col.asc().nullslast() if order == "asc" else col.desc().nullslast())
+
+    rows = q.offset(offset).limit(min(limit, 200)).all()
+
+    items = []
+    for inst in rows:
+        accounts = held_map.get(inst.ticker, [])
+        items.append({
+            "ticker":          inst.ticker,
+            "name":            inst.name,
+            "short_name":      inst.short_name,
+            "exchange":        inst.exchange,
+            "sector":          inst.sector,
+            "country":         inst.country,
+            "instrument_type": inst.instrument_type,
+            "currency_code":   inst.currency_code,
+            "market_cap":      inst.market_cap,
+            "isin":            inst.isin,
+            "yf_ticker":       inst.yf_ticker,
+            "is_held":         bool(accounts),
+            "held_accounts":   accounts,
+        })
+
+    return JSONResponse({
+        "total":          total,
+        "items":          items,
+        "filter_options": _instrument_filter_options(db),
+    })
+
+
+def _instrument_filter_options(db: Session) -> dict:
+    """Return distinct non-null values for each filterable dimension."""
+    from app.models import Instrument
+
+    def _distinct(col):
+        return sorted(
+            r[0] for r in db.query(col).filter(col.isnot(None)).distinct().all()
+        )
+
+    return {
+        "sectors":          _distinct(Instrument.sector),
+        "countries":        _distinct(Instrument.country),
+        "exchanges":        _distinct(Instrument.exchange),
+        "instrument_types": _distinct(Instrument.instrument_type),
+    }
 
 
 # ── Transactions page ──────────────────────────────────────────────────────

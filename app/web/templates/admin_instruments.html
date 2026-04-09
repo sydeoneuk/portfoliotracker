@@ -90,6 +90,7 @@
       <a class="nav-link text-white px-4 py-3" href="/transactions">&#9;🔄&nbsp; Transactions</a>
       <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
       <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
+      <a class="nav-link text-white px-4 py-3" href="/instruments">&#9;🔍&nbsp; Instruments</a>
       <a class="nav-link text-white px-4 py-3" href="/help">&#9;❓&nbsp; Help</a>
       <a class="nav-link text-white px-4 py-3" href="/settings">&#9;⚙️&nbsp; Settings</a>
       <a class="nav-link text-white px-4 py-3" href="/admin">&#9;🛡️&nbsp; Admin</a>
@@ -231,6 +232,37 @@
              style="background:#0d6efd; width:0%; transition:width .3s;"></div>
       </div>
       <div id="t212-progress-text" class="text-muted mt-1" style="font-size:.75rem;"></div>
+    </div>
+  </div>
+
+  <!-- Load Full Catalogue card -->
+  <div class="card mb-3" style="border:none; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,.08);">
+    <div class="card-body d-flex align-items-start justify-content-between gap-3 flex-wrap">
+      <div>
+        <div class="fw-semibold" style="font-size:.9rem;">Load Full T212 Catalogue</div>
+        <div class="text-muted" style="font-size:.8rem;">
+          Fetches every instrument available on Trading 212 (~16,000+) and inserts any that
+          aren't already in the database. Existing rows are updated with the latest T212 base
+          fields only — <strong>all enrichment data (sector, country, description, etc.) is
+          preserved unchanged</strong>. Run this once to populate the Instruments research page,
+          then the nightly sync will keep it up to date automatically.
+        </div>
+      </div>
+      <div class="d-flex align-items-center gap-3 flex-shrink-0">
+        <div id="catalogue-status" style="font-size:.82rem; color:#6c757d; display:none;"></div>
+        <button id="catalogue-btn" class="btn btn-sm"
+                style="background:#6f42c1; color:#fff; font-weight:600; border:none; white-space:nowrap;"
+                onclick="startCatalogueLoad()">
+          📦 Load Full Catalogue
+        </button>
+      </div>
+    </div>
+    <div id="catalogue-progress-wrap" style="display:none; padding: 0 1.25rem 1rem;">
+      <div class="progress" style="height:6px; border-radius:3px;">
+        <div id="catalogue-progress-bar" class="progress-bar"
+             style="background:#6f42c1; width:0%; transition:width .3s;"></div>
+      </div>
+      <div id="catalogue-progress-text" class="text-muted mt-1" style="font-size:.75rem;"></div>
     </div>
   </div>
 
@@ -548,6 +580,89 @@
         document.getElementById('t212-btn').textContent = '⏳ Running…';
         document.getElementById('t212-progress-wrap').style.display = 'block';
         t212PollTimer = setInterval(pollT212, 2000);
+      }
+    });
+
+  // ── Load Full Catalogue ────────────────────────────────────────────────
+  var cataloguePollTimer = null;
+
+  function startCatalogueLoad() {
+    var btn = document.getElementById('catalogue-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Starting…';
+    setCatalogueStatus('', '');
+    fetch('/admin/instruments/load-catalogue', {method: 'POST'})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.error) {
+          setCatalogueStatus('✗ ' + d.error, 'text-danger');
+          btn.disabled = false;
+          btn.textContent = '📦 Load Full Catalogue';
+        } else {
+          pollCatalogue();
+          cataloguePollTimer = setInterval(pollCatalogue, 2000);
+        }
+      })
+      .catch(function(e) {
+        setCatalogueStatus('Failed to start: ' + e, 'text-danger');
+        btn.disabled = false;
+        btn.textContent = '📦 Load Full Catalogue';
+      });
+  }
+
+  function pollCatalogue() {
+    fetch('/admin/instruments/load-catalogue/status')
+      .then(function(r) { return r.json(); })
+      .then(function(s) {
+        var btn  = document.getElementById('catalogue-btn');
+        var wrap = document.getElementById('catalogue-progress-wrap');
+        var bar  = document.getElementById('catalogue-progress-bar');
+        var txt  = document.getElementById('catalogue-progress-text');
+
+        if (s.status === 'running') {
+          wrap.style.display = 'block';
+          bar.style.width = '100%';  // indeterminate — no per-row progress on bulk upsert
+          bar.classList.add('progress-bar-animated', 'progress-bar-striped');
+          txt.textContent = s.current || 'Loading catalogue…';
+
+        } else if (s.status === 'done') {
+          clearInterval(cataloguePollTimer);
+          wrap.style.display = 'none';
+          var r = s.result || {};
+          setCatalogueStatus(
+            '✓ Done — ' + (r.total_in_db || 0).toLocaleString() + ' instruments now in database. Reload page to see updated count.',
+            'text-success'
+          );
+          btn.disabled = false;
+          btn.textContent = '📦 Load Full Catalogue';
+
+        } else if (s.status === 'error') {
+          clearInterval(cataloguePollTimer);
+          wrap.style.display = 'none';
+          var msg = (s.result && s.result.error) ? s.result.error : 'Unknown error';
+          setCatalogueStatus('✗ Error: ' + msg, 'text-danger');
+          btn.disabled = false;
+          btn.textContent = '📦 Load Full Catalogue';
+        }
+      });
+  }
+
+  function setCatalogueStatus(msg, cls) {
+    var el = document.getElementById('catalogue-status');
+    el.style.display = msg ? 'block' : 'none';
+    el.className = cls;
+    el.textContent = msg;
+  }
+
+  // Resume polling if a catalogue load was already running when page loaded
+  fetch('/admin/instruments/load-catalogue/status')
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      if (s.status === 'running') {
+        document.getElementById('catalogue-btn').disabled = true;
+        document.getElementById('catalogue-btn').textContent = '⏳ Running…';
+        document.getElementById('catalogue-progress-wrap').style.display = 'block';
+        cataloguePollTimer = setInterval(pollCatalogue, 2000);
       }
     });
 

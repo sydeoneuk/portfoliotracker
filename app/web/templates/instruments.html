@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-QN3KWW2EFD"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-QN3KWW2EFD');
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Instruments — Trading 212 Portfolio</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-6145203907417515" crossorigin="anonymous"></script>
+
+  <style>
+    :root { --t212-green: #00c896; --t212-dark: #0f1923; }
+    body { background: #f4f6f9; font-size: 0.875rem; }
+
+    .side-nav .nav-link {
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      transition: background .15s;
+      font-size: .88rem; letter-spacing: .3px;
+    }
+    .side-nav .nav-link:hover  { background: rgba(0,200,150,0.1);  color: var(--t212-green) !important; }
+    .side-nav .nav-link.active { background: rgba(0,200,150,0.15); color: var(--t212-green) !important; font-weight: 600; }
+
+    .top-bar {
+      background: var(--t212-dark); color: #fff;
+      padding: 1rem 1.5rem; display: flex; align-items: center; justify-content: space-between;
+    }
+    .top-bar .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: .5px; }
+    .top-bar .brand span { color: var(--t212-green); }
+    .top-bar .user-info { display: flex; align-items: center; gap: .75rem; font-size: .82rem; }
+    .top-bar .avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+
+    /* Filter panel */
+    .filter-bar {
+      background: #fff;
+      border-bottom: 1px solid #e9ecef;
+      padding: .85rem 1.5rem;
+      display: flex; flex-wrap: wrap; align-items: flex-end; gap: .6rem;
+    }
+    .filter-bar .form-select,
+    .filter-bar .form-control { font-size: .82rem; min-width: 140px; }
+    .filter-bar label { font-size: .75rem; color: #6c757d; font-weight: 600;
+                        text-transform: uppercase; letter-spacing: .4px; margin-bottom: .2rem; }
+
+    /* Results table */
+    .results-card {
+      border: none; border-radius: 12px;
+      box-shadow: 0 1px 6px rgba(0,0,0,.07);
+      overflow: hidden;
+    }
+    .results-card table { margin: 0; }
+    .results-card thead th {
+      background: var(--t212-dark); color: #8a9bb0;
+      font-size: .72rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .5px; padding: .65rem 1rem; border: none;
+      white-space: nowrap; cursor: pointer; user-select: none;
+    }
+    .results-card thead th:hover { color: var(--t212-green); }
+    .results-card thead th .sort-icon { opacity: .4; margin-left: .3rem; }
+    .results-card thead th.sort-active { color: var(--t212-green); }
+    .results-card thead th.sort-active .sort-icon { opacity: 1; }
+
+    .results-card tbody tr { cursor: pointer; transition: background .1s; }
+    .results-card tbody tr:hover { background: rgba(0,200,150,0.05); }
+    .results-card tbody td { padding: .6rem 1rem; border-color: #f0f0f0; vertical-align: middle; }
+
+    .badge-held {
+      background: rgba(0,200,150,0.12); color: #0a7d5c;
+      border: 1px solid rgba(0,200,150,0.3);
+      font-size: .68rem; font-weight: 700; padding: .15rem .45rem;
+      border-radius: 999px; white-space: nowrap;
+    }
+    .badge-type {
+      background: #e9ecef; color: #495057;
+      font-size: .68rem; font-weight: 600; padding: .15rem .45rem;
+      border-radius: 4px;
+    }
+
+    .mktcap { font-variant-numeric: tabular-nums; }
+
+    /* Pagination */
+    .pagination-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: .75rem 1rem; border-top: 1px solid #f0f0f0;
+      background: #fff; font-size: .8rem; color: #6c757d;
+    }
+    .pagination-bar .btn { font-size: .78rem; }
+
+    /* State messages */
+    .state-box {
+      text-align: center; padding: 4rem 2rem; color: #adb5bd;
+    }
+    .state-box .state-icon { font-size: 2.5rem; margin-bottom: .75rem; }
+    .state-box .state-title { font-size: 1rem; font-weight: 600; color: #6c757d; margin-bottom: .35rem; }
+    .state-box .state-sub { font-size: .83rem; }
+
+    /* Portfolio default banner */
+    .portfolio-banner {
+      background: rgba(0,200,150,0.07);
+      border-left: 3px solid var(--t212-green);
+      border-radius: 0 6px 6px 0;
+      padding: .55rem 1rem;
+      font-size: .82rem;
+      display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 768px) {
+      .filter-bar { padding: .75rem 1rem; }
+      .col-hide-sm { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Side nav ─────────────────────────────────────────────────────────── -->
+<div class="offcanvas offcanvas-start side-nav" tabindex="-1" id="sideNav"
+     style="width:210px; background:#0f1923; border-right:1px solid rgba(255,255,255,0.08);">
+  <div class="offcanvas-header pb-2">
+    <span class="text-white fw-bold" style="font-size:.95rem;">Trading 212 <span style="color:#00c896;">Portfolio</span></span>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas"></button>
+  </div>
+  <div class="offcanvas-body p-0">
+    <nav class="nav flex-column pt-1">
+      <a class="nav-link text-white px-4 py-3" href="/">&#9;📊&nbsp; Portfolio</a>
+      <a class="nav-link text-white px-4 py-3" href="/transactions">&#9;🔄&nbsp; Transactions</a>
+      <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
+      <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
+      <a class="nav-link text-white px-4 py-3 active" href="/instruments">&#9;🔍&nbsp; Instruments</a>
+      <a class="nav-link text-white px-4 py-3" href="/help">&#9;❓&nbsp; Help</a>
+      <a class="nav-link text-white px-4 py-3" href="/settings">&#9;⚙️&nbsp; Settings</a>
+    </nav>
+  </div>
+</div>
+
+<!-- ── Top bar ───────────────────────────────────────────────────────────── -->
+<div class="top-bar">
+  <div class="d-flex align-items-center gap-3">
+    <button class="btn btn-link text-white p-0" data-bs-toggle="offcanvas" data-bs-target="#sideNav" aria-label="Menu">
+      <svg width="22" height="22" fill="currentColor" viewBox="0 0 16 16">
+        <path fill-rule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/>
+      </svg>
+    </button>
+    <div class="brand">Trading 212 <span>Portfolio</span></div>
+  </div>
+  <div class="user-info">
+    {% if user.avatar_url %}<img src="{{ user.avatar_url }}" class="avatar" alt="">{% endif %}
+    <span>{{ user.name or user.email }}</span>
+    <form method="post" action="/logout" class="d-inline">
+      <button class="btn btn-sm btn-outline-secondary">Sign out</button>
+    </form>
+  </div>
+</div>
+
+<!-- ── Filter bar ────────────────────────────────────────────────────────── -->
+<div class="filter-bar" id="filterBar">
+  <div>
+    <label for="searchInput">Search</label>
+    <input type="text" id="searchInput" class="form-control"
+           placeholder="Name, ticker, ISIN…" style="width:220px;">
+  </div>
+  <div>
+    <label for="sectorFilter">Sector</label>
+    <select id="sectorFilter" class="form-select"><option value="">All sectors</option></select>
+  </div>
+  <div>
+    <label for="countryFilter">Country</label>
+    <select id="countryFilter" class="form-select"><option value="">All countries</option></select>
+  </div>
+  <div>
+    <label for="exchangeFilter">Exchange</label>
+    <select id="exchangeFilter" class="form-select"><option value="">All exchanges</option></select>
+  </div>
+  <div>
+    <label for="typeFilter">Type</label>
+    <select id="typeFilter" class="form-select"><option value="">All types</option></select>
+  </div>
+  <div class="d-flex gap-2 align-items-end">
+    <button class="btn btn-sm btn-outline-secondary" id="clearBtn">Clear</button>
+  </div>
+</div>
+
+<!-- ── View toggle banner ─────────────────────────────────────────────────── -->
+<div class="container-fluid px-4 pt-3" style="max-width:1400px;">
+  <div class="portfolio-banner mb-3" id="portfolioBanner">
+    <span>📊 Showing your <strong>portfolio holdings</strong> — use the filters above to search the full T212 catalogue.</span>
+    <button class="btn btn-sm btn-outline-secondary" id="browseAllBtn" style="white-space:nowrap;">Browse all instruments</button>
+  </div>
+
+  <!-- Results -->
+  <div class="results-card card mb-3">
+    <div id="resultsBody">
+      <!-- Populated by JS -->
+      <div class="state-box">
+        <div class="state-icon">🔍</div>
+        <div class="state-title">Loading your portfolio…</div>
+      </div>
+    </div>
+    <div class="pagination-bar" id="paginationBar" style="display:none;">
+      <span id="paginationInfo"></span>
+      <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-secondary" id="prevBtn" disabled>← Prev</button>
+        <button class="btn btn-sm btn-outline-secondary" id="nextBtn" disabled>Next →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- AdSense -->
+<div style="max-width:1400px; margin:0 auto; padding:.5rem 1.5rem 1rem;">
+  <ins class="adsbygoogle" style="display:block" data-ad-client="ca-pub-6145203907417515"
+       data-ad-slot="auto" data-ad-format="auto" data-full-width-responsive="true"></ins>
+  <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+</div>
+
+<!-- Disclaimer footer -->
+<footer style="background:#0f1923; color:#8a9bb0; font-size:.72rem; text-align:center; padding:.9rem 1.5rem; margin-top:1rem; line-height:1.6;">
+  <strong style="color:#c8d6e5;">Disclaimer:</strong>
+  This application is a <strong style="color:#c8d6e5;">technology demonstration only</strong> and is provided strictly for informational purposes.
+  It does <strong style="color:#c8d6e5;">not</strong> constitute financial advice, investment recommendations, or any form of regulated financial service.
+  No liability is accepted for any loss or damage arising from the use of this application.
+  <br><span style="color:#4a5a6a; margin-top:.4rem; display:inline-block;">&copy; {{ now().year }} <a href="https://www.sydeone.co.uk" target="_blank" rel="noopener noreferrer" style="color:#8a9bb0; text-decoration:underline;">Sydeone Ltd</a>. All rights reserved.</span>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+const PAGE_SIZE = 50;
+let state = {
+  search: '',
+  sector: '',
+  country: '',
+  exchange: '',
+  instrumentType: '',
+  heldOnly: true,      // Default: show portfolio
+  sort: 'name',
+  order: 'asc',
+  offset: 0,
+  total: 0,
+  loading: false,
+  filtersPopulated: false,
+  userHasFiltered: false,  // true once the user explicitly changes a filter
+};
+
+// ── Elements ─────────────────────────────────────────────────────────────────
+const searchInput    = document.getElementById('searchInput');
+const sectorFilter   = document.getElementById('sectorFilter');
+const countryFilter  = document.getElementById('countryFilter');
+const exchangeFilter = document.getElementById('exchangeFilter');
+const typeFilter     = document.getElementById('typeFilter');
+const clearBtn       = document.getElementById('clearBtn');
+const browseAllBtn   = document.getElementById('browseAllBtn');
+const portfolioBanner = document.getElementById('portfolioBanner');
+const resultsBody    = document.getElementById('resultsBody');
+const paginationBar  = document.getElementById('paginationBar');
+const paginationInfo = document.getElementById('paginationInfo');
+const prevBtn        = document.getElementById('prevBtn');
+const nextBtn        = document.getElementById('nextBtn');
+
+// ── Debounce ─────────────────────────────────────────────────────────────────
+let debounceTimer = null;
+function debounce(fn, ms = 350) {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(fn, ms);
+}
+
+// ── Filter population ─────────────────────────────────────────────────────────
+function populateSelect(el, values, currentVal) {
+  const existing = new Set(Array.from(el.options).map(o => o.value));
+  values.forEach(v => {
+    if (v && !existing.has(v)) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = v;
+      el.appendChild(o);
+    }
+  });
+  if (currentVal) el.value = currentVal;
+}
+
+// ── Fetch & render ────────────────────────────────────────────────────────────
+async function fetchAndRender() {
+  if (state.loading) return;
+  state.loading = true;
+  showLoading();
+
+  const params = new URLSearchParams({
+    limit:           PAGE_SIZE,
+    offset:          state.offset,
+    sort:            state.sort,
+    order:           state.order,
+  });
+  if (state.search)         params.set('search',          state.search);
+  if (state.sector)         params.set('sector',          state.sector);
+  if (state.country)        params.set('country',         state.country);
+  if (state.exchange)       params.set('exchange',        state.exchange);
+  if (state.instrumentType) params.set('instrument_type', state.instrumentType);
+  if (state.heldOnly)       params.set('held_only',       'true');
+
+  try {
+    const resp = await fetch('/api/instruments?' + params.toString());
+    const data = await resp.json();
+
+    state.total = data.total;
+
+    // Populate filter dropdowns once
+    if (!state.filtersPopulated && data.filter_options) {
+      populateSelect(sectorFilter,   data.filter_options.sectors,          state.sector);
+      populateSelect(countryFilter,  data.filter_options.countries,        state.country);
+      populateSelect(exchangeFilter, data.filter_options.exchanges,        state.exchange);
+      populateSelect(typeFilter,     data.filter_options.instrument_types, state.instrumentType);
+      state.filtersPopulated = true;
+    }
+
+    renderTable(data.items);
+    renderPagination();
+  } catch (e) {
+    resultsBody.innerHTML = `
+      <div class="state-box">
+        <div class="state-icon">⚠️</div>
+        <div class="state-title">Failed to load instruments</div>
+        <div class="state-sub text-muted">${e.message}</div>
+      </div>`;
+    paginationBar.style.display = 'none';
+  }
+
+  state.loading = false;
+}
+
+function showLoading() {
+  resultsBody.innerHTML = `
+    <div class="state-box">
+      <div class="spinner-border text-secondary mb-3" role="status" style="width:1.5rem;height:1.5rem;"></div>
+      <div class="state-title">Loading…</div>
+    </div>`;
+  paginationBar.style.display = 'none';
+}
+
+// ── Table rendering ────────────────────────────────────────────────────────────
+function fmtMarketCap(v) {
+  if (!v) return '<span class="text-muted">—</span>';
+  if (v >= 1e12) return (v / 1e12).toFixed(2) + 'T';
+  if (v >= 1e9)  return (v / 1e9).toFixed(2) + 'B';
+  if (v >= 1e6)  return (v / 1e6).toFixed(1) + 'M';
+  return v.toLocaleString();
+}
+
+function sortIcon(col) {
+  if (state.sort !== col) return '<span class="sort-icon">⇅</span>';
+  return state.order === 'asc'
+    ? '<span class="sort-icon">↑</span>'
+    : '<span class="sort-icon">↓</span>';
+}
+
+function renderTable(items) {
+  if (items.length === 0) {
+    const msg = state.heldOnly
+      ? 'No portfolio holdings found. Run a sync in Settings to load your positions.'
+      : 'No instruments match your filters. Try broadening your search.';
+    resultsBody.innerHTML = `
+      <div class="state-box">
+        <div class="state-icon">📭</div>
+        <div class="state-title">No results</div>
+        <div class="state-sub text-muted">${msg}</div>
+      </div>`;
+    paginationBar.style.display = 'none';
+    return;
+  }
+
+  const cols = [
+    { key: 'name',            label: 'Name' },
+    { key: 'instrument_type', label: 'Type',     cls: 'col-hide-sm' },
+    { key: 'exchange',        label: 'Exchange',  cls: 'col-hide-sm' },
+    { key: 'sector',          label: 'Sector',    cls: 'col-hide-sm' },
+    { key: 'country',         label: 'Country',   cls: 'col-hide-sm' },
+    { key: 'currency_code',   label: 'Currency',  cls: 'col-hide-sm' },
+    { key: 'market_cap',      label: 'Market Cap' },
+  ];
+
+  const thead = cols.map(c => {
+    const active = state.sort === c.key ? ' sort-active' : '';
+    return `<th class="${c.cls || ''}${active}" data-sort="${c.key}">${c.label}${sortIcon(c.key)}</th>`;
+  }).join('');
+
+  const tbody = items.map(r => {
+    const heldBadge = r.is_held
+      ? `<span class="badge-held ms-1">${r.held_accounts.join(', ')}</span>`
+      : '';
+    const typeBadge = r.instrument_type
+      ? `<span class="badge-type">${r.instrument_type}</span>`
+      : '<span class="text-muted">—</span>';
+
+    return `<tr data-ticker="${r.ticker}">
+      <td>
+        <div class="fw-semibold" style="font-size:.85rem;">${r.name || r.short_name || r.ticker}</div>
+        <div class="text-muted" style="font-size:.75rem;">${r.short_name || r.ticker}${heldBadge}</div>
+      </td>
+      <td class="col-hide-sm">${typeBadge}</td>
+      <td class="col-hide-sm">${r.exchange || '<span class="text-muted">—</span>'}</td>
+      <td class="col-hide-sm">${r.sector   || '<span class="text-muted">—</span>'}</td>
+      <td class="col-hide-sm">${r.country  || '<span class="text-muted">—</span>'}</td>
+      <td class="col-hide-sm">${r.currency_code || '<span class="text-muted">—</span>'}</td>
+      <td class="mktcap">${fmtMarketCap(r.market_cap)}</td>
+    </tr>`;
+  }).join('');
+
+  resultsBody.innerHTML = `
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead><tr>${thead}</tr></thead>
+        <tbody>${tbody}</tbody>
+      </table>
+    </div>`;
+
+  // Sort headers
+  resultsBody.querySelectorAll('thead th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.dataset.sort;
+      if (state.sort === col) {
+        state.order = state.order === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.sort = col;
+        state.order = 'asc';
+      }
+      state.offset = 0;
+      fetchAndRender();
+    });
+  });
+
+  // Row click → holding page if held, otherwise instrument detail (falls back to holding)
+  resultsBody.querySelectorAll('tbody tr').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const ticker = tr.dataset.ticker;
+      window.location.href = `/holding/${encodeURIComponent(ticker)}`;
+    });
+  });
+}
+
+// ── Pagination ────────────────────────────────────────────────────────────────
+function renderPagination() {
+  const start = state.offset + 1;
+  const end   = Math.min(state.offset + PAGE_SIZE, state.total);
+  paginationInfo.textContent = `Showing ${start}–${end} of ${state.total.toLocaleString()} instruments`;
+  prevBtn.disabled = state.offset === 0;
+  nextBtn.disabled = state.offset + PAGE_SIZE >= state.total;
+  paginationBar.style.display = 'flex';
+}
+
+prevBtn.addEventListener('click', () => {
+  if (state.offset > 0) { state.offset = Math.max(0, state.offset - PAGE_SIZE); fetchAndRender(); }
+});
+nextBtn.addEventListener('click', () => {
+  if (state.offset + PAGE_SIZE < state.total) { state.offset += PAGE_SIZE; fetchAndRender(); }
+});
+
+// ── Filter events ─────────────────────────────────────────────────────────────
+function onFilterChange() {
+  state.userHasFiltered = true;
+  state.search         = searchInput.value.trim();
+  state.sector         = sectorFilter.value;
+  state.country        = countryFilter.value;
+  state.exchange       = exchangeFilter.value;
+  state.instrumentType = typeFilter.value;
+  state.offset         = 0;
+
+  // Once the user touches any filter, switch off the portfolio-only view
+  // and show the browse-all banner message accordingly
+  const hasFilters = state.search || state.sector || state.country || state.exchange || state.instrumentType;
+  if (hasFilters) {
+    state.heldOnly = false;
+    portfolioBanner.style.display = 'none';
+  }
+
+  fetchAndRender();
+}
+
+searchInput.addEventListener('input',  () => debounce(onFilterChange));
+sectorFilter.addEventListener('change',   onFilterChange);
+countryFilter.addEventListener('change',  onFilterChange);
+exchangeFilter.addEventListener('change', onFilterChange);
+typeFilter.addEventListener('change',     onFilterChange);
+
+clearBtn.addEventListener('click', () => {
+  searchInput.value = '';
+  sectorFilter.value = '';
+  countryFilter.value = '';
+  exchangeFilter.value = '';
+  typeFilter.value = '';
+  state.search = state.sector = state.country = state.exchange = state.instrumentType = '';
+  state.heldOnly = true;
+  state.offset = 0;
+  portfolioBanner.style.display = 'flex';
+  fetchAndRender();
+});
+
+browseAllBtn.addEventListener('click', () => {
+  state.heldOnly = false;
+  portfolioBanner.style.display = 'none';
+  state.offset = 0;
+  fetchAndRender();
+});
+
+// ── Initial load — portfolio view ────────────────────────────────────────────
+fetchAndRender();
+</script>
+</body>
+</html>
