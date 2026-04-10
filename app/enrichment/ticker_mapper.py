@@ -317,7 +317,19 @@ def derive_yf_ticker(t212_ticker: str, short_name: str | None, exchange: str | N
 
 
 def _strip_t212_suffix(ticker: str) -> str | None:
-    """Remove common T212 suffixes to get the base symbol."""
+    """Remove Trading 212 exchange/type suffixes to get the base symbol."""
+    if not ticker:
+        return None
+
+    if ticker.endswith("l_EQ") and "_US_" not in ticker:
+        return ticker[:-4]
+
+    parts = ticker.split("_")
+    if len(parts) >= 3 and parts[-1].upper() == "EQ":
+        exchange = parts[-2].upper()
+        if exchange in EXCHANGE_SUFFIX_MAP:
+            return "_".join(parts[:-2])
+
     for suffix in ("_US_EQ", "_EQ", "_US"):
         if ticker.upper().endswith(suffix.upper()):
             return ticker[: -len(suffix)]
