@@ -31,10 +31,12 @@ class UserSettings(Base):
     last_sync_at = Column(DateTime)
     sync_status = Column(String(20), default="idle")  # idle | running | done | error
     sync_message = Column(Text)
-    free_cash_trading = Column(Float)   # uninvested GBP cash in Trading account (outside pies)
-    free_cash_isa = Column(Float)       # uninvested GBP cash in ISA account (outside pies)
-    pie_cash_trading = Column(Float)    # uninvested cash sitting inside pies, Trading account
-    pie_cash_isa = Column(Float)        # uninvested cash sitting inside pies, ISA account
+    trading_currency_code = Column(String(10))
+    isa_currency_code = Column(String(10))
+    free_cash_trading = Column(Float)   # uninvested cash in Trading account currency (outside pies)
+    free_cash_isa = Column(Float)       # uninvested cash in ISA account currency (outside pies)
+    pie_cash_trading = Column(Float)    # uninvested cash sitting inside pies, Trading account currency
+    pie_cash_isa = Column(Float)        # uninvested cash sitting inside pies, ISA account currency
     auto_sync_enabled = Column(Boolean, default=True, nullable=False, server_default="true")
 
     user = relationship("User", back_populates="settings")

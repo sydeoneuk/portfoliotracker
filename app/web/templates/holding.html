@@ -191,8 +191,8 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Current Price</div>
-        <div class="value">{{ cfmt(current_price_gbp, "GBP", 2) }}</div>
-        <div class="sub">Avg cost {{ cfmt(avg_price_gbp, "GBP", 2) }}</div>
+        <div class="value">{{ cfmt(current_price_display, display_currency, 2) }}</div>
+        <div class="sub">Avg cost {{ cfmt(avg_price_display, display_currency, 2) }}</div>
       </div>
     </div>
 
@@ -207,15 +207,15 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Total Cost</div>
-        <div class="value">{{ cfmt(cost_gbp, "GBP") }}</div>
+        <div class="value">{{ cfmt(cost_display, display_currency) }}</div>
       </div>
     </div>
 
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Market Value</div>
-        <div class="value {% if value_gbp >= cost_gbp %}pnl-pos{% else %}pnl-neg{% endif %}">
-          {{ cfmt(value_gbp, "GBP") }}
+        <div class="value {% if value_display >= cost_display %}pnl-pos{% else %}pnl-neg{% endif %}">
+          {{ cfmt(value_display, display_currency) }}
         </div>
       </div>
     </div>
@@ -223,8 +223,8 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Cap. P&amp;L</div>
-        <div class="value {% if cap_pnl_gbp > 0 %}pnl-pos{% elif cap_pnl_gbp < 0 %}pnl-neg{% endif %}">
-          {% if cap_pnl_gbp >= 0 %}+{% endif %}{{ cfmt(cap_pnl_gbp, "GBP") }}
+        <div class="value {% if cap_pnl_display > 0 %}pnl-pos{% elif cap_pnl_display < 0 %}pnl-neg{% endif %}">
+          {% if cap_pnl_display >= 0 %}+{% endif %}{{ cfmt(cap_pnl_display, display_currency) }}
         </div>
         <div class="sub {% if cap_pnl_pct > 0 %}pnl-pos{% elif cap_pnl_pct < 0 %}pnl-neg{% endif %}">
           {% if cap_pnl_pct >= 0 %}+{% endif %}{{ fmt(cap_pnl_pct, 2) }}%
@@ -235,8 +235,8 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Total P&amp;L</div>
-        <div class="value {% if total_pnl_gbp > 0 %}pnl-pos{% elif total_pnl_gbp < 0 %}pnl-neg{% endif %}">
-          {% if total_pnl_gbp >= 0 %}+{% endif %}{{ cfmt(total_pnl_gbp, "GBP") }}
+        <div class="value {% if total_pnl_display > 0 %}pnl-pos{% elif total_pnl_display < 0 %}pnl-neg{% endif %}">
+          {% if total_pnl_display >= 0 %}+{% endif %}{{ cfmt(total_pnl_display, display_currency) }}
         </div>
         <div class="sub {% if total_pnl_pct > 0 %}pnl-pos{% elif total_pnl_pct < 0 %}pnl-neg{% endif %}">
           {% if total_pnl_pct >= 0 %}+{% endif %}{{ fmt(total_pnl_pct, 2) }}%
@@ -247,8 +247,8 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Dividends Actual</div>
-        <div class="value {% if total_divs_gbp > 0 %}pnl-pos{% endif %}">
-          {{ cfmt(total_divs_gbp, "GBP") if total_divs_gbp else '—' }}
+        <div class="value {% if total_divs_display > 0 %}pnl-pos{% endif %}">
+          {{ cfmt(total_divs_display, display_currency) if total_divs_display else '—' }}
         </div>
         <div class="sub {% if actual_yield > 0 %}pnl-pos{% endif %}">
           {% if actual_yield > 0 %}{{ fmt(actual_yield, 2) }}% yield{% else %}No dividends received{% endif %}
@@ -276,6 +276,15 @@
       </a>
     </div>
     {% endif %}
+
+      <div class="col-12 col-lg-4">
+        <div class="card metric-card p-3 h-100">
+          <div class="label">Market Data</div>
+          <div class="sub mt-1">Market Cap: {% if market_cap_display %}{{ cfmt(market_cap_display, display_currency, 0) }}{% else %}—{% endif %}</div>
+          <div class="sub">Shares Outstanding: {% if instrument.shares_outstanding %}{{ "{:,.0f}".format(instrument.shares_outstanding) }}{% else %}—{% endif %}</div>
+          <div class="sub">Next Ex-Dividend: {% if instrument.next_ex_dividend_date %}{{ instrument.next_ex_dividend_date.strftime('%d %b %Y') }}{% else %}—{% endif %}</div>
+        </div>
+      </div>
 
   </div>
 
@@ -315,8 +324,8 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Forward Div. (12m)</div>
-        <div class="value {% if fwd_div_gbp > 0 %}pnl-pos{% endif %}">
-          {{ cfmt(fwd_div_gbp, "GBP") if fwd_div_gbp else '—' }}
+        <div class="value {% if fwd_div_display > 0 %}pnl-pos{% endif %}">
+          {{ cfmt(fwd_div_display, display_currency) if fwd_div_display else '—' }}
         </div>
         <div class="sub {% if personal_fwd_yield > 0 %}pnl-pos{% endif %}">
           {% if personal_fwd_yield > 0 %}Personal fwd yield: {{ fmt(personal_fwd_yield, 2) }}%{% else %}Personal fwd yield: —{% endif %}
@@ -384,7 +393,7 @@
             <th>Paid On</th>
             <th>Account</th>
             <th class="text-end">Quantity</th>
-            <th class="text-end">Amount (GBP)</th>
+            <th class="text-end">Amount ({{ display_currency }})</th>
             <th class="text-end">Per Share</th>
             <th>Type</th>
             <th>Reference</th>
@@ -396,7 +405,7 @@
             <td data-order="{{ dp.paid_on.strftime('%Y%m%d') if dp.paid_on else '0' }}">{{ dp.paid_on.strftime('%d %b %Y') if dp.paid_on else '—' }}</td>
             <td><span style="background:#e9ecef;color:#495057;font-size:.68rem;font-weight:500;border-radius:4px;padding:2px 6px">{{ dp.account or '—' }}</span></td>
             <td class="text-end">{{ fmt(dp.quantity, 4) if dp.quantity else '—' }}</td>
-            <td class="text-end pnl-pos">{{ cfmt(dp.amount, "GBP") if dp.amount else '—' }}</td>
+            <td class="text-end pnl-pos">{{ cfmt(dp.amount_display, display_currency) if dp.amount else '—' }}</td>
             <td class="text-end">
               {% if dp.gross_amount_per_share %}{{ cfmt(dp.gross_amount_per_share, instrument.currency_code or 'GBP', 4) }}{% else %}—{% endif %}
             </td>
@@ -408,7 +417,7 @@
         <tfoot>
           <tr class="fw-semibold" style="background:#f8f9fa">
             <td colspan="3">Total</td>
-            <td class="text-end pnl-pos">{{ cfmt(total_divs_gbp, "GBP") }}</td>
+            <td class="text-end pnl-pos">{{ cfmt(total_divs_display, display_currency) }}</td>
             <td colspan="3"></td>
           </tr>
         </tfoot>

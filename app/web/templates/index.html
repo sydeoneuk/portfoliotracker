@@ -336,15 +336,15 @@
     <div class="col-12 d-flex align-items-center gap-2">
       <small class="section-header-row">
         <span class="section-title">
-          {% if account_filter == 'ISA' %}ISA Portfolio (GBP)
-          {% elif account_filter == 'Trading' %}Trading Portfolio (GBP)
-          {% else %}Total Portfolio (GBP){% endif %}
+          {% if account_filter == 'ISA' %}ISA Portfolio ({{ display_currency }})
+          {% elif account_filter == 'Trading' %}Trading Portfolio ({{ display_currency }})
+          {% else %}Total Portfolio ({{ display_currency }}){% endif %}
         </span>
         {% if fx_rates_used %}
         <span class="section-meta">
           FX:
           {% for ccy, rate in fx_rates_used.items() %}
-            1 {{ ccy }} = £{{ "%.4f"|format(rate) }}{% if not loop.last %}, {% endif %}
+            1 {{ ccy }} = {{ cfmt(rate, display_currency, 4) }}{% if not loop.last %}, {% endif %}
           {% endfor %}
         </span>
         {% endif %}
@@ -353,47 +353,47 @@
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
         <div class="label">Total Cost</div>
-        <div class="amount">{{ cfmt(grand_total.cost, "GBP") }}</div>
+        <div class="amount">{{ cfmt(grand_total.cost, display_currency) }}</div>
       </div>
     </div>
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
         <div class="label">Market Value</div>
-        <div class="amount">{{ cfmt(grand_total.value, "GBP") }}</div>
+        <div class="amount">{{ cfmt(grand_total.value, display_currency) }}</div>
       </div>
     </div>
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
         <div class="label">Unrealised P&L</div>
         <div class="amount {% if grand_total.ppl > 0 %}pnl-pos{% elif grand_total.ppl < 0 %}pnl-neg{% endif %}">
-          {% if grand_total.ppl >= 0 %}+{% endif %}{{ cfmt(grand_total.ppl, "GBP") }}
+          {% if grand_total.ppl >= 0 %}+{% endif %}{{ cfmt(grand_total.ppl, display_currency) }}
         </div>
       </div>
     </div>
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
         <div class="label">Dividends Actual</div>
-        <div class="amount pnl-pos">{{ cfmt(grand_total.dividends, "GBP") }}</div>
+        <div class="amount pnl-pos">{{ cfmt(grand_total.dividends, display_currency) }}</div>
       </div>
     </div>
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
         <div class="label">Forward Div. (12m)</div>
-        <div class="amount pnl-pos">{{ cfmt(grand_total.fwd_dividends, "GBP") }}</div>
+        <div class="amount pnl-pos">{{ cfmt(grand_total.fwd_dividends, display_currency) }}</div>
       </div>
     </div>
     {% if free_cash or total_pie_cash %}
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3" style="border-left: 3px solid #6c757d;">
         <div class="label">Free Cash</div>
-        <div class="amount">{{ cfmt(free_cash, "GBP") }}</div>
+        <div class="amount">{{ cfmt(free_cash, display_currency) }}</div>
         <div style="font-size:.7rem; color:#6c757d; margin-top:2px;">Uninvested, outside pies</div>
       </div>
     </div>
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3" style="border-left: 3px solid #6c757d;">
         <div class="label">Pie Cash</div>
-        <div class="amount">{{ cfmt(total_pie_cash, "GBP") }}</div>
+        <div class="amount">{{ cfmt(total_pie_cash, display_currency) }}</div>
         <div style="font-size:.7rem; color:#6c757d; margin-top:2px;">Uninvested inside pies</div>
       </div>
     </div>
@@ -482,19 +482,19 @@
             <th>Acc.</th>
             <th>Type</th>
             <th class="text-end">Qty</th>
-            <th class="text-end">Avg Cost</th>
-            <th class="text-end">Curr. Price</th>
-            <th class="text-end">Cost</th>
-            <th class="text-end">Value</th>
-            <th class="text-end">Cap. P&amp;L</th>
-            <th class="text-end">Total P&amp;L</th>
+            <th class="text-end">Avg Cost ({{ display_currency }})</th>
+            <th class="text-end">Curr. Price ({{ display_currency }})</th>
+            <th class="text-end">Cost ({{ display_currency }})</th>
+            <th class="text-end">Value ({{ display_currency }})</th>
+            <th class="text-end">Cap. P&amp;L ({{ display_currency }})</th>
+            <th class="text-end">Total P&amp;L ({{ display_currency }})</th>
             <th class="text-end">Cap. P&amp;L %</th>
             <th class="text-end">Total P&amp;L %</th>
-            <th class="text-end">Dividends Actual</th>
+            <th class="text-end">Dividends Actual ({{ display_currency }})</th>
             <th class="text-end">Div Return%</th>
             <th class="text-end">FCF Div. Cov.</th>
             <th class="text-end">Div. Cov.</th>
-            <th class="text-end">Forward Div. (12m)</th>
+            <th class="text-end">Forward Div. (12m, {{ display_currency }})</th>
             <th class="text-end">Fwd Yield</th>
             <th class="text-end">Pies</th>
           </tr>
@@ -502,11 +502,6 @@
         <tbody>
           {% for p in positions %}
           {% set pct = ((p.current_price - p.average_price) / p.average_price * 100) if (p.average_price and p.average_price != 0) else 0 %}
-          {% set fx = fx_rates_used.get(p.currency, 1.0) %}
-          {% set cost_gbp = (p.quantity or 0)|float * (p.average_price or 0)|float * fx %}
-          {% set value_gbp = (p.quantity or 0)|float * (p.current_price or 0)|float * fx %}
-          {% set divs_gbp = (p.total_dividends or 0)|float %}
-          {% set total_pnl_pct = (((value_gbp - cost_gbp) + divs_gbp) / cost_gbp * 100) if cost_gbp != 0 else 0 %}
           <tr onclick="window.location.href='/holding/{{ p.ticker }}?account={{ account_filter }}'" style="cursor:pointer">
             <td>{{ p.name }}</td>
             <td><code>{{ p.short_name }}</code></td>
@@ -514,34 +509,27 @@
             <td><span class="badge-exchange">{{ p.account }}</span></td>
             <td><span class="badge-exchange">{{ p.display_class }}</span></td>
             <td class="text-end">{{ fmt(p.quantity, 4) }}</td>
-            {% set avg_price_gbp = (p.average_price or 0)|float * fx %}
-            {% set cur_price_gbp = (p.current_price or 0)|float * fx %}
-            <td class="text-end">{{ cfmt(avg_price_gbp, "GBP", 2) }}</td>
-            <td class="text-end">{{ cfmt(cur_price_gbp, "GBP", 2) }}</td>
-            <td class="text-end">{{ cfmt(cost_gbp, "GBP") }}</td>
-            <td data-order="{{ value_gbp }}" class="text-end fw-semibold {% if value_gbp >= cost_gbp %}pnl-pos{% else %}pnl-neg{% endif %}">{{ cfmt(value_gbp, "GBP") }}</td>
-            {% set ppl_val = (p.ppl or 0)|float %}
-            {% set ppl_gbp = ppl_val * fx %}
-            <td data-order="{{ ppl_gbp }}" class="text-end {% if ppl_gbp > 0 %}pnl-pos{% elif ppl_gbp < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if ppl_gbp != 0 %}{% if ppl_gbp > 0 %}+{% endif %}{{ cfmt(ppl_gbp, "GBP") }}{% else %}-{% endif %}
+            <td class="text-end">{{ cfmt(p.avg_price_display, display_currency, 2) }}</td>
+            <td class="text-end">{{ cfmt(p.current_price_display, display_currency, 2) }}</td>
+            <td class="text-end">{{ cfmt(p.cost_display, display_currency) }}</td>
+            <td data-order="{{ p.value_display }}" class="text-end fw-semibold {% if p.value_display >= p.cost_display %}pnl-pos{% else %}pnl-neg{% endif %}">{{ cfmt(p.value_display, display_currency) }}</td>
+            <td data-order="{{ p.ppl_display }}" class="text-end {% if p.ppl_display > 0 %}pnl-pos{% elif p.ppl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
+              {% if p.ppl_display != 0 %}{% if p.ppl_display > 0 %}+{% endif %}{{ cfmt(p.ppl_display, display_currency) }}{% else %}-{% endif %}
             </td>
-            {% set total_pnl = ppl_gbp + divs_gbp %}
-            <td data-order="{{ total_pnl }}" class="text-end {% if total_pnl > 0 %}pnl-pos{% elif total_pnl < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if total_pnl != 0 %}{% if total_pnl > 0 %}+{% endif %}{{ cfmt(total_pnl, "GBP") }}{% else %}-{% endif %}
+            <td data-order="{{ p.total_pnl_display }}" class="text-end {% if p.total_pnl_display > 0 %}pnl-pos{% elif p.total_pnl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
+              {% if p.total_pnl_display != 0 %}{% if p.total_pnl_display > 0 %}+{% endif %}{{ cfmt(p.total_pnl_display, display_currency) }}{% else %}-{% endif %}
             </td>
             <td data-order="{{ pct }}" class="text-end {% if pct > 0 %}pnl-pos{% elif pct < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
               {% if pct != 0 %}{% if pct > 0 %}+{% endif %}{{ fmt(pct, 2) }}%{% else %}-{% endif %}
             </td>
-            <td data-order="{{ total_pnl_pct }}" class="text-end {% if total_pnl_pct > 0 %}pnl-pos{% elif total_pnl_pct < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if total_pnl_pct != 0 %}{% if total_pnl_pct > 0 %}+{% endif %}{{ fmt(total_pnl_pct, 2) }}%{% else %}-{% endif %}
+            <td data-order="{{ p.total_pnl_pct_display }}" class="text-end {% if p.total_pnl_pct_display > 0 %}pnl-pos{% elif p.total_pnl_pct_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
+              {% if p.total_pnl_pct_display != 0 %}{% if p.total_pnl_pct_display > 0 %}+{% endif %}{{ fmt(p.total_pnl_pct_display, 2) }}%{% else %}-{% endif %}
             </td>
-            {% set divs_val = (p.total_dividends or 0)|float %}
-            <td data-order="{{ divs_val }}" class="text-end fw-semibold">
-              {% if divs_val > 0 %}{{ cfmt(divs_val, "GBP") }}{% else %}-{% endif %}
+            <td data-order="{{ p.dividends_display }}" class="text-end fw-semibold">
+              {% if p.dividends_display > 0 %}{{ cfmt(p.dividends_display, display_currency) }}{% else %}-{% endif %}
             </td>
-            {% set div_return_pct = (divs_val / cost_gbp * 100) if cost_gbp != 0 else 0 %}
-            <td data-order="{{ div_return_pct }}" class="text-end fw-semibold">
-              {% if div_return_pct > 0 %}{{ fmt(div_return_pct, 2) }}%{% else %}-{% endif %}
+            <td data-order="{{ p.div_return_pct_display }}" class="text-end fw-semibold">
+              {% if p.div_return_pct_display > 0 %}{{ fmt(p.div_return_pct_display, 2) }}%{% else %}-{% endif %}
             </td>
             {% set annual_dps = (p.annual_rate_per_share or 0)|float %}
             {% set fcf_ps = (p.fcf_per_share_3y_avg or 0)|float %}
@@ -554,14 +542,11 @@
             <td data-order="{{ div_cov }}" class="text-end {% if div_cov > 0 %}{% if div_cov >= 2 %}cov-good{% elif div_cov >= 1 %}cov-warn{% else %}cov-bad{% endif %}{% elif eps < 0 and annual_dps > 0 %}cov-bad{% endif %}">
               {% if div_cov > 0 %}{{ fmt(div_cov, 1) }}x{% elif eps < 0 and annual_dps > 0 %}<span class="cov-bad">-ve EPS</span>{% else %}-{% endif %}
             </td>
-            {% set fwd_val = (p.forward_dividends or 0)|float %}
-            {% set fwd_gbp = fwd_val * fx %}
-            <td data-order="{{ fwd_gbp }}" class="text-end fw-semibold">
-              {% if fwd_gbp > 0 %}{{ cfmt(fwd_gbp, "GBP") }}{% else %}-{% endif %}
+            <td data-order="{{ p.forward_dividends_display }}" class="text-end fw-semibold">
+              {% if p.forward_dividends_display > 0 %}{{ cfmt(p.forward_dividends_display, display_currency) }}{% else %}-{% endif %}
             </td>
-            {% set fwd_yield = (fwd_gbp / cost_gbp * 100) if cost_gbp > 0 else 0 %}
-            <td data-order="{{ fwd_yield }}" class="text-end fw-semibold">
-              {% if fwd_yield > 0 %}{{ fmt(fwd_yield, 2) }}%{% else %}-{% endif %}
+            <td data-order="{{ p.fwd_yield_display }}" class="text-end fw-semibold">
+              {% if p.fwd_yield_display > 0 %}{{ fmt(p.fwd_yield_display, 2) }}%{% else %}-{% endif %}
             </td>
             {% set pc = (p.pie_count or 0)|int %}
             <td data-order="{{ pc }}" class="text-end">

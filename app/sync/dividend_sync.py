@@ -149,6 +149,13 @@ class DividendSync:
         # Merge FMP calendar entries for this ticker (confirmed upcoming)
         fmp_upcoming = fmp_calendar.get(yf_ticker, [])
         confirmed_dates = {d.ex_date for d in fmp_upcoming}
+        next_ex_dividend_date = None
+        if fmp_upcoming:
+            next_ex_dividend_date = min((d.ex_date for d in fmp_upcoming), default=None)
+        elif outlook.next_ex_date:
+            next_ex_dividend_date = outlook.next_ex_date
+        elif outlook.projected:
+            next_ex_dividend_date = outlook.projected[0].get("ex_date")
 
         # Remove stale forecasts
         self.session.query(DividendForecast).filter_by(ticker=instrument.ticker).delete()
@@ -190,6 +197,10 @@ class DividendSync:
         # ── 5. Update instrument metadata and mark as synced ─────────────
         instrument.yf_ticker = yf_ticker
         instrument.last_dividend_synced_at = now
+        instrument.next_ex_dividend_date = (
+            datetime.datetime.combine(next_ex_dividend_date, datetime.time.min)
+            if next_ex_dividend_date else None
+        )
         if outlook.description:
             instrument.description = outlook.description
         if outlook.sector:

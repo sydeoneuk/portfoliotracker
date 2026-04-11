@@ -46,6 +46,15 @@
     }
     .filter-bar .form-select,
     .filter-bar .form-control { font-size: .82rem; min-width: 140px; }
+    .metric-filter {
+      display: flex;
+      gap: .35rem;
+      align-items: center;
+    }
+    .metric-filter .form-control {
+      min-width: 84px;
+      width: 84px;
+    }
     .filter-bar label { font-size: .75rem; color: #6c757d; font-weight: 600;
                         text-transform: uppercase; letter-spacing: .4px; margin-bottom: .2rem; }
 
@@ -182,6 +191,34 @@
     <label for="typeFilter">Type</label>
     <select id="typeFilter" class="form-select"><option value="">All types</option></select>
   </div>
+  <div>
+    <label>Share Fwd Yield %</label>
+    <div class="metric-filter">
+      <input type="number" step="0.1" id="shareFwdYieldMin" class="form-control" placeholder="Min">
+      <input type="number" step="0.1" id="shareFwdYieldMax" class="form-control" placeholder="Max">
+    </div>
+  </div>
+  <div>
+    <label>P/E Ratio</label>
+    <div class="metric-filter">
+      <input type="number" step="0.1" id="peRatioMin" class="form-control" placeholder="Min">
+      <input type="number" step="0.1" id="peRatioMax" class="form-control" placeholder="Max">
+    </div>
+  </div>
+  <div>
+    <label>Div Cover</label>
+    <div class="metric-filter">
+      <input type="number" step="0.1" id="divCoverMin" class="form-control" placeholder="Min">
+      <input type="number" step="0.1" id="divCoverMax" class="form-control" placeholder="Max">
+    </div>
+  </div>
+  <div>
+    <label>FCF Div Cover</label>
+    <div class="metric-filter">
+      <input type="number" step="0.1" id="fcfDivCoverMin" class="form-control" placeholder="Min">
+      <input type="number" step="0.1" id="fcfDivCoverMax" class="form-control" placeholder="Max">
+    </div>
+  </div>
   <div class="d-flex gap-2 align-items-end">
     <button class="btn btn-sm btn-outline-secondary" id="clearBtn">Clear</button>
   </div>
@@ -239,6 +276,14 @@ let state = {
   country: '',
   exchange: '',
   instrumentType: '',
+  shareFwdYieldMin: '',
+  shareFwdYieldMax: '',
+  peRatioMin: '',
+  peRatioMax: '',
+  divCoverMin: '',
+  divCoverMax: '',
+  fcfDivCoverMin: '',
+  fcfDivCoverMax: '',
   heldOnly: true,      // Default: show portfolio
   sort: 'name',
   order: 'asc',
@@ -255,6 +300,14 @@ const sectorFilter   = document.getElementById('sectorFilter');
 const countryFilter  = document.getElementById('countryFilter');
 const exchangeFilter = document.getElementById('exchangeFilter');
 const typeFilter     = document.getElementById('typeFilter');
+const shareFwdYieldMin = document.getElementById('shareFwdYieldMin');
+const shareFwdYieldMax = document.getElementById('shareFwdYieldMax');
+const peRatioMin = document.getElementById('peRatioMin');
+const peRatioMax = document.getElementById('peRatioMax');
+const divCoverMin = document.getElementById('divCoverMin');
+const divCoverMax = document.getElementById('divCoverMax');
+const fcfDivCoverMin = document.getElementById('fcfDivCoverMin');
+const fcfDivCoverMax = document.getElementById('fcfDivCoverMax');
 const clearBtn       = document.getElementById('clearBtn');
 const browseAllBtn   = document.getElementById('browseAllBtn');
 const portfolioBanner = document.getElementById('portfolioBanner');
@@ -301,6 +354,14 @@ async function fetchAndRender() {
   if (state.country)        params.set('country',         state.country);
   if (state.exchange)       params.set('exchange',        state.exchange);
   if (state.instrumentType) params.set('instrument_type', state.instrumentType);
+  if (state.shareFwdYieldMin !== '') params.set('share_fwd_yield_min', state.shareFwdYieldMin);
+  if (state.shareFwdYieldMax !== '') params.set('share_fwd_yield_max', state.shareFwdYieldMax);
+  if (state.peRatioMin !== '') params.set('pe_ratio_min', state.peRatioMin);
+  if (state.peRatioMax !== '') params.set('pe_ratio_max', state.peRatioMax);
+  if (state.divCoverMin !== '') params.set('div_cover_min', state.divCoverMin);
+  if (state.divCoverMax !== '') params.set('div_cover_max', state.divCoverMax);
+  if (state.fcfDivCoverMin !== '') params.set('fcf_div_cover_min', state.fcfDivCoverMin);
+  if (state.fcfDivCoverMax !== '') params.set('fcf_div_cover_max', state.fcfDivCoverMax);
   if (state.heldOnly)       params.set('held_only',       'true');
 
   try {
@@ -351,6 +412,16 @@ function fmtMarketCap(v) {
   return v.toLocaleString();
 }
 
+function fmtMetric(v, decimals = 1, suffix = '') {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) {
+    return '<span class="text-muted">—</span>';
+  }
+  return Number(v).toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  }) + suffix;
+}
+
 function sortIcon(col) {
   if (state.sort !== col) return '<span class="sort-icon">⇅</span>';
   return state.order === 'asc'
@@ -375,12 +446,17 @@ function renderTable(items) {
 
   const cols = [
     { key: 'name',            label: 'Name' },
+    { key: 'held_in',         label: 'Held In' },
     { key: 'instrument_type', label: 'Type',     cls: 'col-hide-sm' },
     { key: 'exchange',        label: 'Exchange',  cls: 'col-hide-sm' },
     { key: 'sector',          label: 'Sector',    cls: 'col-hide-sm' },
     { key: 'country',         label: 'Country',   cls: 'col-hide-sm' },
     { key: 'currency_code',   label: 'Currency',  cls: 'col-hide-sm' },
     { key: 'market_cap',      label: 'Market Cap' },
+    { key: 'share_fwd_yield', label: 'Share Fwd Yield %' },
+    { key: 'pe_ratio',        label: 'P/E' },
+    { key: 'div_cover',       label: 'Div Cover' },
+    { key: 'fcf_div_cover',   label: 'FCF Div Cover' },
   ];
 
   const thead = cols.map(c => {
@@ -395,18 +471,26 @@ function renderTable(items) {
     const typeBadge = r.instrument_type
       ? `<span class="badge-type">${r.instrument_type}</span>`
       : '<span class="text-muted">—</span>';
+    const heldIn = r.is_held
+      ? r.held_accounts.map(a => `<span class="badge-type me-1">${a}</span>`).join('')
+      : '<span class="text-muted">—</span>';
 
     return `<tr data-ticker="${r.ticker}">
       <td>
         <div class="fw-semibold" style="font-size:.85rem;">${r.name || r.short_name || r.ticker}</div>
         <div class="text-muted" style="font-size:.75rem;">${r.short_name || r.ticker}${heldBadge}</div>
       </td>
+      <td>${heldIn}</td>
       <td class="col-hide-sm">${typeBadge}</td>
       <td class="col-hide-sm">${r.exchange || '<span class="text-muted">—</span>'}</td>
       <td class="col-hide-sm">${r.sector   || '<span class="text-muted">—</span>'}</td>
       <td class="col-hide-sm">${r.country  || '<span class="text-muted">—</span>'}</td>
       <td class="col-hide-sm">${r.currency_code || '<span class="text-muted">—</span>'}</td>
       <td class="mktcap">${fmtMarketCap(r.market_cap)}</td>
+      <td>${fmtMetric(r.share_fwd_yield, 2, '%')}</td>
+      <td>${fmtMetric(r.pe_ratio, 1, 'x')}</td>
+      <td>${fmtMetric(r.div_cover, 1, 'x')}</td>
+      <td>${fmtMetric(r.fcf_div_cover, 1, 'x')}</td>
     </tr>`;
   }).join('');
 
@@ -467,11 +551,23 @@ function onFilterChange() {
   state.country        = countryFilter.value;
   state.exchange       = exchangeFilter.value;
   state.instrumentType = typeFilter.value;
+  state.shareFwdYieldMin = shareFwdYieldMin.value;
+  state.shareFwdYieldMax = shareFwdYieldMax.value;
+  state.peRatioMin = peRatioMin.value;
+  state.peRatioMax = peRatioMax.value;
+  state.divCoverMin = divCoverMin.value;
+  state.divCoverMax = divCoverMax.value;
+  state.fcfDivCoverMin = fcfDivCoverMin.value;
+  state.fcfDivCoverMax = fcfDivCoverMax.value;
   state.offset         = 0;
 
   // Once the user touches any filter, switch off the portfolio-only view
   // and show the browse-all banner message accordingly
-  const hasFilters = state.search || state.sector || state.country || state.exchange || state.instrumentType;
+  const hasFilters = state.search || state.sector || state.country || state.exchange || state.instrumentType
+    || state.shareFwdYieldMin || state.shareFwdYieldMax
+    || state.peRatioMin || state.peRatioMax
+    || state.divCoverMin || state.divCoverMax
+    || state.fcfDivCoverMin || state.fcfDivCoverMax;
   if (hasFilters) {
     state.heldOnly = false;
     portfolioBanner.style.display = 'none';
@@ -485,6 +581,14 @@ sectorFilter.addEventListener('change',   onFilterChange);
 countryFilter.addEventListener('change',  onFilterChange);
 exchangeFilter.addEventListener('change', onFilterChange);
 typeFilter.addEventListener('change',     onFilterChange);
+shareFwdYieldMin.addEventListener('input', () => debounce(onFilterChange));
+shareFwdYieldMax.addEventListener('input', () => debounce(onFilterChange));
+peRatioMin.addEventListener('input', () => debounce(onFilterChange));
+peRatioMax.addEventListener('input', () => debounce(onFilterChange));
+divCoverMin.addEventListener('input', () => debounce(onFilterChange));
+divCoverMax.addEventListener('input', () => debounce(onFilterChange));
+fcfDivCoverMin.addEventListener('input', () => debounce(onFilterChange));
+fcfDivCoverMax.addEventListener('input', () => debounce(onFilterChange));
 
 clearBtn.addEventListener('click', () => {
   searchInput.value = '';
@@ -492,7 +596,19 @@ clearBtn.addEventListener('click', () => {
   countryFilter.value = '';
   exchangeFilter.value = '';
   typeFilter.value = '';
+  shareFwdYieldMin.value = '';
+  shareFwdYieldMax.value = '';
+  peRatioMin.value = '';
+  peRatioMax.value = '';
+  divCoverMin.value = '';
+  divCoverMax.value = '';
+  fcfDivCoverMin.value = '';
+  fcfDivCoverMax.value = '';
   state.search = state.sector = state.country = state.exchange = state.instrumentType = '';
+  state.shareFwdYieldMin = state.shareFwdYieldMax = '';
+  state.peRatioMin = state.peRatioMax = '';
+  state.divCoverMin = state.divCoverMax = '';
+  state.fcfDivCoverMin = state.fcfDivCoverMax = '';
   state.heldOnly = true;
   state.offset = 0;
   portfolioBanner.style.display = 'flex';

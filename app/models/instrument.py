@@ -27,6 +27,8 @@ class Instrument(Base):
     fallback_price = Column(Float)
     fallback_price_source = Column(String(20))
     fallback_price_updated_at = Column(DateTime)
+    shares_outstanding = Column(Float)
+    next_ex_dividend_date = Column(DateTime)
 
     # Yahoo Finance ticker mapping (auto-derived or manually set)
     # e.g. T212 "VWRPl_EQ" → yf_ticker "VWRP.L"

@@ -123,6 +123,7 @@ class SyncRunner:
         # instruments, not just the ones held, enabling the research/filter page.
         self._run_step(self.sync_positions)
         self._run_step(self.sync_pies)
+        self._run_step(self.sync_account_info, fatal=False)
         self._run_step(self.sync_account_cash, fatal=False)
         self._run_step(lambda: self.sync_instruments(full_catalogue=full_catalogue))
         self._run_step(self.sync_open_orders)
@@ -751,6 +752,48 @@ class SyncRunner:
         self.session.commit()
         print(f"  Stored cash for {self.account}: free={free}, in_pies={pie_cash}")
 
+    def sync_account_info(self):
+        """Fetch account metadata and persist the account currency when available."""
+        print("Syncing account info...")
+        try:
+            data = self.client.get_account_info()
+        except Exception as exc:
+            print(f"  Account info sync failed (non-fatal): {exc}")
+            return
+
+        print(f"  Account info response: {data}")
+
+        currency = (
+            data.get("currencyCode")
+            or data.get("currency")
+            or data.get("baseCurrency")
+            or data.get("accountCurrency")
+        )
+        if not currency:
+            account_block = data.get("account") if isinstance(data.get("account"), dict) else None
+            if account_block:
+                currency = (
+                    account_block.get("currencyCode")
+                    or account_block.get("currency")
+                    or account_block.get("baseCurrency")
+                )
+
+        if self.user_id is None:
+            return
+
+        from app.auth.models import UserSettings
+        settings_row = self.session.query(UserSettings).filter_by(user_id=self.user_id).first()
+        if settings_row is None:
+            return
+
+        if self.account == "ISA":
+            settings_row.isa_currency_code = currency or settings_row.isa_currency_code
+        else:
+            settings_row.trading_currency_code = currency or settings_row.trading_currency_code
+
+        self.session.commit()
+        print(f"  Stored currency for {self.account}: {currency or 'unknown'}")
+
     def sync_open_orders(self):
         print("Syncing open orders...")
         data = self.client.get_open_orders()
@@ -1159,6 +1202,15 @@ class SyncRunner:
                     instrument.fallback_price = yf_price
                     instrument.fallback_price_source = "yahoo"
                     instrument.fallback_price_updated_at = now
+                shares_outstanding = None
+                try:
+                    shares_outstanding = ticker_obj.fast_info.get("shares")
+                except Exception:
+                    shares_outstanding = None
+                if shares_outstanding is None:
+                    shares_outstanding = info.get("sharesOutstanding")
+                if shares_outstanding is not None:
+                    instrument.shares_outstanding = float(shares_outstanding)
                 fundamentals = _extract_yf_fundamentals(ticker_obj, info)
                 if fundamentals.get("eps_ttm") is not None:
                     instrument.eps_ttm = fundamentals["eps_ttm"]
@@ -1386,6 +1438,15 @@ class SyncRunner:
                     instrument.fallback_price = yf_price
                     instrument.fallback_price_source = "yahoo"
                     instrument.fallback_price_updated_at = now
+                shares_outstanding = None
+                try:
+                    shares_outstanding = ticker_obj.fast_info.get("shares")
+                except Exception:
+                    shares_outstanding = None
+                if shares_outstanding is None:
+                    shares_outstanding = info.get("sharesOutstanding")
+                if shares_outstanding is not None:
+                    instrument.shares_outstanding = float(shares_outstanding)
                 fundamentals = _extract_yf_fundamentals(ticker_obj, info)
                 if fundamentals.get("eps_ttm") is not None:
                     instrument.eps_ttm = fundamentals["eps_ttm"]
@@ -1499,6 +1560,15 @@ class SyncRunner:
                     instrument.fallback_price = yf_price
                     instrument.fallback_price_source = "yahoo"
                     instrument.fallback_price_updated_at = now
+                shares_outstanding = None
+                try:
+                    shares_outstanding = ticker_obj.fast_info.get("shares")
+                except Exception:
+                    shares_outstanding = None
+                if shares_outstanding is None:
+                    shares_outstanding = info.get("sharesOutstanding")
+                if shares_outstanding is not None:
+                    instrument.shares_outstanding = float(shares_outstanding)
                 fundamentals = _extract_yf_fundamentals(ticker_obj, info)
                 if fundamentals.get("eps_ttm") is not None:
                     instrument.eps_ttm = fundamentals["eps_ttm"]
@@ -1600,6 +1670,15 @@ class SyncRunner:
             instrument.fallback_price = yf_price
             instrument.fallback_price_source = "yahoo"
             instrument.fallback_price_updated_at = now
+        shares_outstanding = None
+        try:
+            shares_outstanding = ticker_obj.fast_info.get("shares")
+        except Exception:
+            shares_outstanding = None
+        if shares_outstanding is None:
+            shares_outstanding = info.get("sharesOutstanding")
+        if shares_outstanding is not None:
+            instrument.shares_outstanding = float(shares_outstanding)
 
         fundamentals = _extract_yf_fundamentals(ticker_obj, info)
         if fundamentals.get("eps_ttm") is not None:
@@ -1642,6 +1721,7 @@ class SyncRunner:
             "yf_ticker": instrument.yf_ticker,
             "fallback_price": instrument.fallback_price,
             "fallback_price_source": instrument.fallback_price_source,
+            "shares_outstanding": instrument.shares_outstanding,
             "eps_ttm": instrument.eps_ttm,
             "fcf_per_share_3y_avg": instrument.fcf_per_share_3y_avg,
         }

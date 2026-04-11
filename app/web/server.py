@@ -205,6 +205,59 @@ def _get_fx_rates_to_gbp(currencies: set[str]) -> dict[str, float]:
     return rates
 
 
+def _resolve_display_currency(user_settings: UserSettings | None, account: str) -> str:
+    if not user_settings:
+        return "GBP"
+    if account == "ISA":
+        return user_settings.isa_currency_code or user_settings.trading_currency_code or "GBP"
+    if account == "Trading":
+        return user_settings.trading_currency_code or user_settings.isa_currency_code or "GBP"
+    return user_settings.trading_currency_code or user_settings.isa_currency_code or "GBP"
+
+
+def _convert_gbp_to_currency(value: float | int | None, currency: str, fx_to_gbp: dict[str, float] | None = None) -> float:
+    if value is None:
+        return 0.0
+    if currency in (None, "", "GBP"):
+        return float(value)
+    if currency == "GBX":
+        return float(value) * 100
+    rates = fx_to_gbp or _get_fx_rates_to_gbp({currency})
+    rate = float(rates.get(currency, 1.0) or 1.0)
+    return float(value) / rate if rate else float(value)
+
+
+def _native_to_display_rate(native_currency: str, display_currency: str, fx_to_gbp: dict[str, float]) -> float:
+    native = native_currency or "GBP"
+    display = display_currency or "GBP"
+    if native == display:
+        return 1.0
+    native_to_gbp = float(fx_to_gbp.get(native, 1.0) or 1.0)
+    if display == "GBP":
+        return native_to_gbp
+    if display == "GBX":
+        return native_to_gbp * 100
+    display_to_gbp = float(fx_to_gbp.get(display, 1.0) or 1.0)
+    if not display_to_gbp:
+        return native_to_gbp
+    return native_to_gbp / display_to_gbp
+
+
+def _convert_amount_between_currencies(
+    value: float | int | None,
+    source_currency: str | None,
+    target_currency: str,
+    fx_to_gbp: dict[str, float],
+) -> float:
+    if value is None:
+        return 0.0
+    source = source_currency or "GBP"
+    if source == target_currency:
+        return float(value)
+    value_gbp = float(value) * float(fx_to_gbp.get(source, 1.0) or 1.0)
+    return _convert_gbp_to_currency(value_gbp, target_currency, fx_to_gbp)
+
+
 # ── Auth helpers ───────────────────────────────────────────────────────────
 
 def _get_current_user(request: Request, db: Session) -> User | None:
@@ -1425,13 +1478,21 @@ def index(request: Request, account: str = "combined", pies: str = "",
         totals[ccy]["dividends"] += float(p["total_dividends"] or 0)
         totals[ccy]["fwd_dividends"] += float(p["forward_dividends"] or 0)
 
-    fx = _get_fx_rates_to_gbp(set(totals.keys()))
+    from app.auth.models import UserSettings as _UserSettings
+    user_settings = db.query(_UserSettings).filter_by(user_id=user.id).first()
+    display_currency = _resolve_display_currency(user_settings, account)
+
+    fx_needed = set(totals.keys()) | {display_currency}
+    if user_settings:
+        if user_settings.trading_currency_code:
+            fx_needed.add(user_settings.trading_currency_code)
+        if user_settings.isa_currency_code:
+            fx_needed.add(user_settings.isa_currency_code)
+
+    fx = _get_fx_rates_to_gbp(fx_needed)
     grand_total = {"cost": 0.0, "value": 0.0, "ppl": 0.0, "dividends": 0.0, "fwd_dividends": 0.0}
-    fx_rates_used: dict[str, float] = {}
     for ccy, t in totals.items():
         rate = fx.get(ccy, 1.0)
-        if ccy != "GBP":
-            fx_rates_used[ccy] = rate
         grand_total["cost"] += t["cost"] * rate
         grand_total["value"] += t["value"] * rate
         grand_total["ppl"] += t["ppl"] * rate
@@ -1442,33 +1503,62 @@ def index(request: Request, account: str = "combined", pies: str = "",
         "SELECT MAX(last_synced_at) FROM positions WHERE user_id = :uid"
     ), {"uid": user.id}).scalar()
 
-    # Cash positions: free cash per account + uninvested cash sitting in pies
-    # Both values come from the account cash endpoint stored on UserSettings at sync time.
-    from app.auth.models import UserSettings as _UserSettings
-    user_settings = db.query(_UserSettings).filter_by(user_id=user.id).first()
+    # Cash positions: free cash per account + uninvested cash sitting in pies.
     free_cash_trading = float(user_settings.free_cash_trading or 0) if user_settings else 0.0
     free_cash_isa = float(user_settings.free_cash_isa or 0) if user_settings else 0.0
     pie_cash_trading = float(user_settings.pie_cash_trading or 0) if user_settings else 0.0
     pie_cash_isa = float(user_settings.pie_cash_isa or 0) if user_settings else 0.0
+    trading_currency = user_settings.trading_currency_code if user_settings else None
+    isa_currency = user_settings.isa_currency_code if user_settings else None
 
     if account == "ISA":
-        free_cash = free_cash_isa
-        total_pie_cash = pie_cash_isa
+        free_cash = _convert_amount_between_currencies(free_cash_isa, isa_currency, display_currency, fx)
+        total_pie_cash = _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, fx)
     elif account == "Trading":
-        free_cash = free_cash_trading
-        total_pie_cash = pie_cash_trading
+        free_cash = _convert_amount_between_currencies(free_cash_trading, trading_currency, display_currency, fx)
+        total_pie_cash = _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, fx)
     else:
-        free_cash = free_cash_trading + free_cash_isa
-        total_pie_cash = pie_cash_trading + pie_cash_isa
+        free_cash = (
+            _convert_amount_between_currencies(free_cash_trading, trading_currency, display_currency, fx)
+            + _convert_amount_between_currencies(free_cash_isa, isa_currency, display_currency, fx)
+        )
+        total_pie_cash = (
+            _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, fx)
+            + _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, fx)
+        )
+
+    grand_total_display = {
+        key: _convert_gbp_to_currency(value, display_currency, fx)
+        for key, value in grand_total.items()
+    }
+    fx_rates_display: dict[str, float] = {}
+    for ccy in totals.keys():
+        if ccy != display_currency:
+            fx_rates_display[ccy] = _native_to_display_rate(ccy, display_currency, fx)
+
+    for p in positions:
+        native_to_display = _native_to_display_rate(p["currency"], display_currency, fx)
+        p["avg_price_display"] = float(p["average_price"] or 0) * native_to_display
+        p["current_price_display"] = float(p["current_price"] or 0) * native_to_display
+        p["cost_display"] = float(p["cost"] or 0) * native_to_display
+        p["value_display"] = float(p["value"] or 0) * native_to_display
+        p["ppl_display"] = float(p["ppl"] or 0) * native_to_display
+        p["dividends_display"] = _convert_gbp_to_currency(float(p["total_dividends"] or 0), display_currency, fx)
+        p["forward_dividends_display"] = float(p["forward_dividends"] or 0) * native_to_display
+        p["total_pnl_display"] = p["ppl_display"] + p["dividends_display"]
+        p["total_pnl_pct_display"] = (p["total_pnl_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
+        p["div_return_pct_display"] = (p["dividends_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
+        p["fwd_yield_display"] = (p["forward_dividends_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
 
     return templates.TemplateResponse(request, "index.html", {
         "user": user,
         "positions": positions,
         "totals": totals,
-        "grand_total": grand_total,
-        "fx_rates_used": fx_rates_used,
+        "grand_total": grand_total_display,
+        "fx_rates_used": fx_rates_display,
         "last_synced": last_synced,
         "account_filter": account,
+        "display_currency": display_currency,
         "available_pies": available_pies,
         "selected_pie_ids": {str(i) for i in selected_pie_ids},
         "pies_param": pies,
@@ -1500,6 +1590,14 @@ def api_instruments(
     country: str = "",
     exchange: str = "",
     instrument_type: str = "",
+    share_fwd_yield_min: float | None = None,
+    share_fwd_yield_max: float | None = None,
+    pe_ratio_min: float | None = None,
+    pe_ratio_max: float | None = None,
+    div_cover_min: float | None = None,
+    div_cover_max: float | None = None,
+    fcf_div_cover_min: float | None = None,
+    fcf_div_cover_max: float | None = None,
     held_only: bool = False,
     sort: str = "name",
     order: str = "asc",
@@ -1510,8 +1608,8 @@ def api_instruments(
     if isinstance(user, RedirectResponse):
         return JSONResponse({"error": "unauthenticated"}, status_code=401)
 
-    from sqlalchemy import text as _text, func, or_
-    from app.models import Instrument, Position
+    from sqlalchemy import func, or_, case, and_, select
+    from app.models import Instrument, Position, DividendForecast
 
     # Tickers held by this user (across all accounts) — used for the
     # "In portfolio" badge and the held_only filter
@@ -1524,7 +1622,63 @@ def api_instruments(
     for ticker, acct in held_rows:
         held_map.setdefault(ticker, []).append(acct)
 
-    q = db.query(Instrument)
+    price_sq = (
+        db.query(
+            Position.ticker.label("ticker"),
+            func.max(Position.current_price).label("current_price"),
+        )
+        .filter(Position.user_id == user.id)
+        .group_by(Position.ticker)
+        .subquery()
+    )
+
+    annual_rate_sq = (
+        select(func.max(DividendForecast.annual_rate))
+        .where(DividendForecast.ticker == Instrument.ticker)
+        .scalar_subquery()
+    )
+    current_price_expr = func.coalesce(price_sq.c.current_price, Instrument.fallback_price)
+    share_fwd_yield_expr = case(
+        (
+            and_(annual_rate_sq.is_not(None), annual_rate_sq > 0, current_price_expr.is_not(None), current_price_expr > 0),
+            annual_rate_sq / current_price_expr * 100.0,
+        ),
+        else_=None,
+    )
+    pe_ratio_expr = case(
+        (
+            and_(Instrument.eps_ttm.is_not(None), Instrument.eps_ttm > 0, current_price_expr.is_not(None), current_price_expr > 0),
+            current_price_expr / Instrument.eps_ttm,
+        ),
+        else_=None,
+    )
+    div_cover_expr = case(
+        (
+            and_(Instrument.eps_ttm.is_not(None), Instrument.eps_ttm > 0, annual_rate_sq.is_not(None), annual_rate_sq > 0),
+            Instrument.eps_ttm / annual_rate_sq,
+        ),
+        else_=None,
+    )
+    fcf_div_cover_expr = case(
+        (
+            and_(Instrument.fcf_per_share_3y_avg.is_not(None), Instrument.fcf_per_share_3y_avg > 0, annual_rate_sq.is_not(None), annual_rate_sq > 0),
+            Instrument.fcf_per_share_3y_avg / annual_rate_sq,
+        ),
+        else_=None,
+    )
+
+    q = (
+        db.query(
+            Instrument,
+            current_price_expr.label("current_price"),
+            annual_rate_sq.label("annual_rate_per_share"),
+            share_fwd_yield_expr.label("share_fwd_yield"),
+            pe_ratio_expr.label("pe_ratio"),
+            div_cover_expr.label("div_cover"),
+            fcf_div_cover_expr.label("fcf_div_cover"),
+        )
+        .outerjoin(price_sq, price_sq.c.ticker == Instrument.ticker)
+    )
 
     # Text search across name, short_name, ISIN and ticker
     if search.strip():
@@ -1546,6 +1700,22 @@ def api_instruments(
         q = q.filter(Instrument.exchange == exchange.strip())
     if instrument_type.strip():
         q = q.filter(Instrument.instrument_type == instrument_type.strip())
+    if share_fwd_yield_min is not None:
+        q = q.filter(share_fwd_yield_expr >= share_fwd_yield_min)
+    if share_fwd_yield_max is not None:
+        q = q.filter(share_fwd_yield_expr <= share_fwd_yield_max)
+    if pe_ratio_min is not None:
+        q = q.filter(pe_ratio_expr >= pe_ratio_min)
+    if pe_ratio_max is not None:
+        q = q.filter(pe_ratio_expr <= pe_ratio_max)
+    if div_cover_min is not None:
+        q = q.filter(div_cover_expr >= div_cover_min)
+    if div_cover_max is not None:
+        q = q.filter(div_cover_expr <= div_cover_max)
+    if fcf_div_cover_min is not None:
+        q = q.filter(fcf_div_cover_expr >= fcf_div_cover_min)
+    if fcf_div_cover_max is not None:
+        q = q.filter(fcf_div_cover_expr <= fcf_div_cover_max)
     if held_only:
         if held_map:
             q = q.filter(Instrument.ticker.in_(list(held_map.keys())))
@@ -1564,6 +1734,10 @@ def api_instruments(
         "instrument_type": Instrument.instrument_type,
         "market_cap":      Instrument.market_cap,
         "currency_code":   Instrument.currency_code,
+        "share_fwd_yield": share_fwd_yield_expr,
+        "pe_ratio":        pe_ratio_expr,
+        "div_cover":       div_cover_expr,
+        "fcf_div_cover":   fcf_div_cover_expr,
     }
     col = _sort_cols.get(sort, Instrument.name)
     q = q.order_by(col.asc().nullslast() if order == "asc" else col.desc().nullslast())
@@ -1571,7 +1745,7 @@ def api_instruments(
     rows = q.offset(offset).limit(min(limit, 200)).all()
 
     items = []
-    for inst in rows:
+    for inst, current_price, annual_rate_per_share, share_fwd_yield, pe_ratio, div_cover, fcf_div_cover in rows:
         accounts = held_map.get(inst.ticker, [])
         items.append({
             "ticker":          inst.ticker,
@@ -1583,6 +1757,12 @@ def api_instruments(
             "instrument_type": inst.instrument_type,
             "currency_code":   inst.currency_code,
             "market_cap":      inst.market_cap,
+            "current_price":   float(current_price) if current_price is not None else None,
+            "annual_rate_per_share": float(annual_rate_per_share) if annual_rate_per_share is not None else None,
+            "share_fwd_yield": float(share_fwd_yield) if share_fwd_yield is not None else None,
+            "pe_ratio":        float(pe_ratio) if pe_ratio is not None else None,
+            "div_cover":       float(div_cover) if div_cover is not None else None,
+            "fcf_div_cover":   float(fcf_div_cover) if fcf_div_cover is not None else None,
             "fallback_price":  inst.fallback_price,
             "fallback_price_source": inst.fallback_price_source,
             "fallback_price_updated_at": (
@@ -2092,10 +2272,11 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         positions_list = db.query(Position).filter_by(ticker=ticker, user_id=user.id).all()
 
     currency = instrument.currency_code or "GBP"
-    gbx = (currency == "GBX")
-    price_mult = 0.01 if gbx else 1.0
-    fx = _get_fx_rates_to_gbp({"GBP"} if gbx else {currency}).get("GBP" if gbx else currency, 1.0)
-    # For GBX instruments fx=1.0 (GBP→GBP), price_mult=0.01 does the pence→pounds conversion
+    user_settings = db.query(UserSettings).filter_by(user_id=user.id).first()
+    display_currency = _resolve_display_currency(user_settings, account)
+    fx = _get_fx_rates_to_gbp({currency, display_currency})
+    native_to_display = _native_to_display_rate(currency, display_currency, fx)
+    # native_to_display converts listing-currency amounts into the active account display currency.
 
     total_quantity = sum(float(p.quantity or 0) for p in positions_list)
     total_cost_native = sum(float(p.quantity or 0) * float(p.average_price or 0) for p in positions_list)
@@ -2105,12 +2286,13 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     current_price_native = position_price or fallback_price
     current_price_source = "t212" if position_price else (instrument.fallback_price_source if fallback_price else None)
 
-    avg_price_gbp = avg_price_native * price_mult * fx
-    current_price_gbp = current_price_native * price_mult * fx
-    cost_gbp = total_cost_native * price_mult * fx
-    value_gbp = total_quantity * current_price_native * price_mult * fx
-    cap_pnl_gbp = value_gbp - cost_gbp
-    cap_pnl_pct = (cap_pnl_gbp / cost_gbp * 100) if cost_gbp else 0
+    avg_price_display = avg_price_native * native_to_display
+    current_price_display = current_price_native * native_to_display
+    cost_display = total_cost_native * native_to_display
+    value_display = total_quantity * current_price_native * native_to_display
+    market_cap_display = (float(instrument.market_cap or 0) * native_to_display) if instrument.market_cap else 0
+    cap_pnl_display = value_display - cost_display
+    cap_pnl_pct = (cap_pnl_display / cost_display * 100) if cost_display else 0
 
     # Actual dividends received by user
     div_q = db.query(DividendPayment).filter_by(ticker=ticker, user_id=user.id)
@@ -2118,18 +2300,21 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         div_q = div_q.filter_by(account=account)
     div_payments = div_q.order_by(DividendPayment.paid_on.desc()).all()
     total_divs_gbp = sum(float(dp.amount or 0) for dp in div_payments)
+    total_divs_display = _convert_gbp_to_currency(total_divs_gbp, display_currency, fx)
+    for dp in div_payments:
+        dp.amount_display = _convert_gbp_to_currency(float(dp.amount or 0), display_currency, fx)
 
-    total_pnl_gbp = cap_pnl_gbp + total_divs_gbp
-    total_pnl_pct = (total_pnl_gbp / cost_gbp * 100) if cost_gbp else 0
-    actual_yield = (total_divs_gbp / cost_gbp * 100) if cost_gbp else 0
+    total_pnl_display = cap_pnl_display + total_divs_display
+    total_pnl_pct = (total_pnl_display / cost_display * 100) if cost_display else 0
+    actual_yield = (total_divs_display / cost_display * 100) if cost_display else 0
 
     # Forward dividend metrics
     annual_rate = db.execute(
         text("SELECT MAX(annual_rate) FROM dividend_forecast WHERE ticker = :t"),
         {"t": ticker},
     ).scalar() or 0
-    fwd_div_gbp = float(annual_rate) * total_quantity * price_mult * fx
-    personal_fwd_yield = (fwd_div_gbp / cost_gbp * 100) if cost_gbp else 0
+    fwd_div_display = float(annual_rate) * total_quantity * native_to_display
+    personal_fwd_yield = (fwd_div_display / cost_display * 100) if cost_display else 0
     share_fwd_yield = (float(annual_rate) / float(current_price_native) * 100) if (annual_rate and current_price_native) else 0
 
     # Valuation / coverage
@@ -2184,20 +2369,22 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         "instrument": instrument,
         "ticker": ticker,
         "account_filter": account,
+        "display_currency": display_currency,
         "positions": positions_list,
         "total_quantity": total_quantity,
-        "avg_price_gbp": avg_price_gbp,
-        "current_price_gbp": current_price_gbp,
+        "avg_price_display": avg_price_display,
+        "current_price_display": current_price_display,
         "current_price_source": current_price_source,
-        "cost_gbp": cost_gbp,
-        "value_gbp": value_gbp,
-        "cap_pnl_gbp": cap_pnl_gbp,
+        "market_cap_display": market_cap_display,
+        "cost_display": cost_display,
+        "value_display": value_display,
+        "cap_pnl_display": cap_pnl_display,
         "cap_pnl_pct": cap_pnl_pct,
-        "total_divs_gbp": total_divs_gbp,
-        "total_pnl_gbp": total_pnl_gbp,
+        "total_divs_display": total_divs_display,
+        "total_pnl_display": total_pnl_display,
         "total_pnl_pct": total_pnl_pct,
         "actual_yield": actual_yield,
-        "fwd_div_gbp": fwd_div_gbp,
+        "fwd_div_display": fwd_div_display,
         "personal_fwd_yield": personal_fwd_yield,
         "share_fwd_yield": share_fwd_yield,
         "pe_ratio": pe_ratio,
