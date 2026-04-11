@@ -1766,6 +1766,50 @@ _ANALYSIS_ACCOUNT_SQL = text("""
 """)
 
 
+def _build_portfolio_history(db: Session, user_id: int, account: str, selected_pie_ids: list[int]) -> str:
+    params: dict = {"user_id": user_id}
+
+    if selected_pie_ids:
+        safe_ids = ", ".join(str(int(i)) for i in selected_pie_ids)
+        if account in ("ISA", "Trading"):
+            params["account"] = account
+            account_filter = "AND ps.account = :account"
+        else:
+            account_filter = ""
+        rows = db.execute(text(f"""
+            SELECT ps.snapshot_date, SUM(ps.total_value_gbp) AS total_value_gbp
+            FROM portfolio_snapshots ps
+            WHERE ps.user_id = :user_id
+              AND ps.scope_type = 'pie'
+              AND ps.pie_id IN ({safe_ids})
+              {account_filter}
+            GROUP BY ps.snapshot_date
+            ORDER BY ps.snapshot_date
+        """), params).fetchall()
+    else:
+        if account in ("ISA", "Trading"):
+            params["account"] = account
+            account_filter = "AND ps.account = :account"
+        else:
+            account_filter = ""
+        rows = db.execute(text(f"""
+            SELECT ps.snapshot_date, SUM(ps.total_value_gbp) AS total_value_gbp
+            FROM portfolio_snapshots ps
+            WHERE ps.user_id = :user_id
+              AND ps.scope_type = 'account'
+              {account_filter}
+            GROUP BY ps.snapshot_date
+            ORDER BY ps.snapshot_date
+        """), params).fetchall()
+
+    values = [round(float(r.total_value_gbp or 0), 2) for r in rows]
+    return json.dumps({
+        "labels": [r.snapshot_date.strftime("%d %b %Y") for r in rows],
+        "values": values,
+        "latest": values[-1] if values else 0.0,
+    })
+
+
 def _analysis_pie_query(pie_ids: list[int], account: str) -> str:
     safe_ids = ", ".join(str(int(i)) for i in pie_ids)
     pos_account_filter = "AND pos.account = :account" if account in ("ISA", "Trading") else ""
@@ -1950,6 +1994,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "values": [round(float(r.total), 2) for r in div_rows],
         "total":  round(sum(float(r.total) for r in div_rows), 2),
     })
+    portfolio_history = _build_portfolio_history(db, user.id, account, selected_pie_ids)
 
     return templates.TemplateResponse(request, "analysis.html", {
         "user": user,
@@ -1965,6 +2010,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "div_holdings_table": div_holdings_top,
         "div_holdings_data": _build_chart_json(div_holdings_top),
         "div_by_month": div_by_month,
+        "portfolio_history": portfolio_history,
         "fmt": _fmt,
         "cfmt": _cfmt,
     })

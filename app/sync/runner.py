@@ -1,12 +1,16 @@
 import datetime
 import time
 import requests
+import yfinance as yf
 from sqlalchemy import literal_column
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
 
 from app.client.trading212 import Trading212Client
-from app.models import Instrument, Pie, PieHolding, Position, Order, Transaction, DividendPayment
+from app.models import (
+    Instrument, Pie, PieHolding, Position, Order, Transaction,
+    DividendPayment, PortfolioSnapshot,
+)
 
 
 class SyncRunner:
@@ -102,7 +106,101 @@ class SyncRunner:
         self._run_step(self.sync_transactions)
         self._run_step(self.sync_dividend_payments)
         self._run_step(self.sync_instrument_metadata, fatal=False)
+        self._run_step(self.snapshot_portfolio_day, fatal=False)
         print("Sync complete.")
+
+    def _get_fx_rates_to_gbp(self, currencies: set[str]) -> dict[str, float]:
+        rates: dict[str, float] = {"GBP": 1.0, "GBX": 0.01}
+        needed = {c for c in currencies if c and c not in {"GBP", "GBX", "-", "—"}}
+        for currency in needed:
+            try:
+                ticker = yf.Ticker(f"{currency}GBP=X")
+                rates[currency] = float(ticker.fast_info["last_price"])
+            except Exception:
+                continue
+        return rates
+
+    def snapshot_portfolio_day(self):
+        """Store the latest daily account and pie totals for this user/account."""
+        from sqlalchemy import text as _text
+
+        if self.user_id is None:
+            return
+
+        now = datetime.datetime.utcnow()
+        snapshot_date = now.date()
+
+        position_rows = self.session.execute(_text("""
+            SELECT
+                p.ticker,
+                p.quantity,
+                COALESCE(p.current_price, p.average_price, 0) AS price,
+                COALESCE(i.currency_code, 'GBP') AS currency
+            FROM positions p
+            JOIN instruments i ON i.ticker = p.ticker
+            WHERE p.user_id = :user_id
+              AND p.account = :account
+        """), {"user_id": self.user_id, "account": self.account}).fetchall()
+
+        fx = self._get_fx_rates_to_gbp({row.currency for row in position_rows if row.currency})
+        account_total = 0.0
+        per_ticker_value_gbp: dict[str, float] = {}
+        per_ticker_quantity: dict[str, float] = {}
+
+        for row in position_rows:
+            quantity = float(row.quantity or 0)
+            value_gbp = quantity * float(row.price or 0) * fx.get(row.currency or "GBP", 1.0)
+            account_total += value_gbp
+            per_ticker_value_gbp[row.ticker] = value_gbp
+            per_ticker_quantity[row.ticker] = quantity
+
+        self.session.query(PortfolioSnapshot).filter(
+            PortfolioSnapshot.user_id == self.user_id,
+            PortfolioSnapshot.snapshot_date == snapshot_date,
+            PortfolioSnapshot.account == self.account,
+        ).delete()
+
+        self.session.add(PortfolioSnapshot(
+            user_id=self.user_id,
+            snapshot_date=snapshot_date,
+            captured_at=now,
+            account=self.account,
+            scope_type="account",
+            pie_id=None,
+            total_value_gbp=account_total,
+        ))
+
+        pie_rows = self.session.execute(_text("""
+            SELECT pie.pk AS pie_id, ph.ticker, ph.owned_quantity
+            FROM pies pie
+            JOIN pie_holdings ph ON ph.pie_id = pie.pk
+            WHERE pie.user_id = :user_id
+              AND (pie.account = :account OR pie.account IS NULL)
+        """), {"user_id": self.user_id, "account": self.account}).fetchall()
+
+        pie_totals: dict[int, float] = {}
+        for row in pie_rows:
+            position_quantity = per_ticker_quantity.get(row.ticker, 0.0)
+            if position_quantity <= 0:
+                continue
+            ticker_value = per_ticker_value_gbp.get(row.ticker, 0.0)
+            pie_totals[int(row.pie_id)] = pie_totals.get(int(row.pie_id), 0.0) + (
+                float(row.owned_quantity or 0) / position_quantity
+            ) * ticker_value
+
+        for pie_id, total_value_gbp in pie_totals.items():
+            self.session.add(PortfolioSnapshot(
+                user_id=self.user_id,
+                snapshot_date=snapshot_date,
+                captured_at=now,
+                account=self.account,
+                scope_type="pie",
+                pie_id=pie_id,
+                total_value_gbp=total_value_gbp,
+            ))
+
+        self.session.commit()
+        print(f"  Stored portfolio snapshot for {self.account}: account + {len(pie_totals)} pie totals.")
 
     def sync_instruments(self, full_catalogue: bool = False):
         """Sync T212 instrument metadata.
