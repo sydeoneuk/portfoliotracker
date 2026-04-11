@@ -1583,6 +1583,11 @@ def api_instruments(
             "instrument_type": inst.instrument_type,
             "currency_code":   inst.currency_code,
             "market_cap":      inst.market_cap,
+            "fallback_price":  inst.fallback_price,
+            "fallback_price_source": inst.fallback_price_source,
+            "fallback_price_updated_at": (
+                inst.fallback_price_updated_at.isoformat() if inst.fallback_price_updated_at else None
+            ),
             "isin":            inst.isin,
             "yf_ticker":       inst.yf_ticker,
             "figi":            inst.figi,
@@ -2095,7 +2100,10 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     total_quantity = sum(float(p.quantity or 0) for p in positions_list)
     total_cost_native = sum(float(p.quantity or 0) * float(p.average_price or 0) for p in positions_list)
     avg_price_native = total_cost_native / total_quantity if total_quantity else 0
-    current_price_native = float(positions_list[0].current_price or 0) if positions_list else 0
+    position_price = float(positions_list[0].current_price or 0) if positions_list else 0
+    fallback_price = float(instrument.fallback_price or 0)
+    current_price_native = position_price or fallback_price
+    current_price_source = "t212" if position_price else (instrument.fallback_price_source if fallback_price else None)
 
     avg_price_gbp = avg_price_native * price_mult * fx
     current_price_gbp = current_price_native * price_mult * fx
@@ -2121,7 +2129,12 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         {"t": ticker},
     ).scalar() or 0
     fwd_div_gbp = float(annual_rate) * total_quantity * price_mult * fx
-    fwd_yield = (fwd_div_gbp / cost_gbp * 100) if cost_gbp else 0
+    if cost_gbp:
+        fwd_yield = (fwd_div_gbp / cost_gbp * 100)
+    elif annual_rate and current_price_native:
+        fwd_yield = (float(annual_rate) / float(current_price_native) * 100)
+    else:
+        fwd_yield = 0
 
     # Valuation / coverage
     eps_ttm = float(instrument.eps_ttm or 0)
@@ -2179,6 +2192,7 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         "total_quantity": total_quantity,
         "avg_price_gbp": avg_price_gbp,
         "current_price_gbp": current_price_gbp,
+        "current_price_source": current_price_source,
         "cost_gbp": cost_gbp,
         "value_gbp": value_gbp,
         "cap_pnl_gbp": cap_pnl_gbp,

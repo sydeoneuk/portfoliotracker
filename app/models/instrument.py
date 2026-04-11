@@ -24,6 +24,9 @@ class Instrument(Base):
     description = Column(String)
     country = Column(String(100))
     last_enriched_at = Column(DateTime)
+    fallback_price = Column(Float)
+    fallback_price_source = Column(String(20))
+    fallback_price_updated_at = Column(DateTime)
 
     # Yahoo Finance ticker mapping (auto-derived or manually set)
     # e.g. T212 "VWRPl_EQ" → yf_ticker "VWRP.L"

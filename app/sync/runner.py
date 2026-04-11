@@ -94,6 +94,28 @@ class SyncRunner:
 
         raise ValueError("No usable yfinance metadata returned")
 
+    @staticmethod
+    def _extract_yf_price(ticker_obj, info: dict | None) -> float | None:
+        """Return the latest Yahoo price when available."""
+        try:
+            fast_info = getattr(ticker_obj, "fast_info", None) or {}
+            price = fast_info.get("last_price")
+            if price is not None:
+                return float(price)
+        except Exception:
+            pass
+
+        if isinstance(info, dict):
+            for field in ("currentPrice", "regularMarketPrice", "previousClose"):
+                price = info.get(field)
+                if price is not None:
+                    try:
+                        return float(price)
+                    except (TypeError, ValueError):
+                        continue
+
+        return None
+
     def sync_all(self, full_catalogue: bool = False):
         print(f"Starting full sync for account: {self.account}...")
         # Positions and pies are synced first so we know which tickers are held.
@@ -1132,6 +1154,11 @@ class SyncRunner:
 
                 if info.get("marketCap"):
                     instrument.market_cap = info["marketCap"]
+                yf_price = self._extract_yf_price(ticker_obj, info)
+                if yf_price is not None:
+                    instrument.fallback_price = yf_price
+                    instrument.fallback_price_source = "yahoo"
+                    instrument.fallback_price_updated_at = now
                 fundamentals = _extract_yf_fundamentals(ticker_obj, info)
                 if fundamentals.get("eps_ttm") is not None:
                     instrument.eps_ttm = fundamentals["eps_ttm"]
@@ -1354,6 +1381,11 @@ class SyncRunner:
                     )
                 if info.get("marketCap"):
                     instrument.market_cap = info["marketCap"]
+                yf_price = self._extract_yf_price(ticker_obj, info)
+                if yf_price is not None:
+                    instrument.fallback_price = yf_price
+                    instrument.fallback_price_source = "yahoo"
+                    instrument.fallback_price_updated_at = now
                 fundamentals = _extract_yf_fundamentals(ticker_obj, info)
                 if fundamentals.get("eps_ttm") is not None:
                     instrument.eps_ttm = fundamentals["eps_ttm"]
@@ -1462,6 +1494,11 @@ class SyncRunner:
                     instrument.country = info["country"]
                 if info.get("marketCap"):
                     instrument.market_cap = info["marketCap"]
+                yf_price = self._extract_yf_price(ticker_obj, info)
+                if yf_price is not None:
+                    instrument.fallback_price = yf_price
+                    instrument.fallback_price_source = "yahoo"
+                    instrument.fallback_price_updated_at = now
                 fundamentals = _extract_yf_fundamentals(ticker_obj, info)
                 if fundamentals.get("eps_ttm") is not None:
                     instrument.eps_ttm = fundamentals["eps_ttm"]
@@ -1558,6 +1595,11 @@ class SyncRunner:
             )
         if info.get("marketCap"):
             instrument.market_cap = info["marketCap"]
+        yf_price = self._extract_yf_price(ticker_obj, info)
+        if yf_price is not None:
+            instrument.fallback_price = yf_price
+            instrument.fallback_price_source = "yahoo"
+            instrument.fallback_price_updated_at = now
 
         fundamentals = _extract_yf_fundamentals(ticker_obj, info)
         if fundamentals.get("eps_ttm") is not None:
@@ -1598,6 +1640,8 @@ class SyncRunner:
         return {
             "ticker": instrument.ticker,
             "yf_ticker": instrument.yf_ticker,
+            "fallback_price": instrument.fallback_price,
+            "fallback_price_source": instrument.fallback_price_source,
             "eps_ttm": instrument.eps_ttm,
             "fcf_per_share_3y_avg": instrument.fcf_per_share_3y_avg,
         }
