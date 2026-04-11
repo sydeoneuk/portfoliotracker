@@ -2129,12 +2129,8 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         {"t": ticker},
     ).scalar() or 0
     fwd_div_gbp = float(annual_rate) * total_quantity * price_mult * fx
-    if cost_gbp:
-        fwd_yield = (fwd_div_gbp / cost_gbp * 100)
-    elif annual_rate and current_price_native:
-        fwd_yield = (float(annual_rate) / float(current_price_native) * 100)
-    else:
-        fwd_yield = 0
+    personal_fwd_yield = (fwd_div_gbp / cost_gbp * 100) if cost_gbp else 0
+    share_fwd_yield = (float(annual_rate) / float(current_price_native) * 100) if (annual_rate and current_price_native) else 0
 
     # Valuation / coverage
     eps_ttm = float(instrument.eps_ttm or 0)
@@ -2202,7 +2198,8 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         "total_pnl_pct": total_pnl_pct,
         "actual_yield": actual_yield,
         "fwd_div_gbp": fwd_div_gbp,
-        "fwd_yield": fwd_yield,
+        "personal_fwd_yield": personal_fwd_yield,
+        "share_fwd_yield": share_fwd_yield,
         "pe_ratio": pe_ratio,
         "fcf_cov": fcf_cov,
         "div_cov": div_cov,

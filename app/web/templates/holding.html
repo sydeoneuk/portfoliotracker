@@ -318,8 +318,11 @@
         <div class="value {% if fwd_div_gbp > 0 %}pnl-pos{% endif %}">
           {{ cfmt(fwd_div_gbp, "GBP") if fwd_div_gbp else '—' }}
         </div>
-        <div class="sub {% if fwd_yield > 0 %}pnl-pos{% endif %}">
-          {% if fwd_yield > 0 %}{{ fmt(fwd_yield, 2) }}% fwd yield{% else %}No forecast{% endif %}
+        <div class="sub {% if personal_fwd_yield > 0 %}pnl-pos{% endif %}">
+          {% if personal_fwd_yield > 0 %}Personal fwd yield: {{ fmt(personal_fwd_yield, 2) }}%{% else %}Personal fwd yield: —{% endif %}
+        </div>
+        <div class="sub {% if share_fwd_yield > 0 %}pnl-pos{% endif %}">
+          {% if share_fwd_yield > 0 %}Share fwd yield: {{ fmt(share_fwd_yield, 2) }}%{% else %}Share fwd yield: —{% endif %}
         </div>
       </div>
     </div>
