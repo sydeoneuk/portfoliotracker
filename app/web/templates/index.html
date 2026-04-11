@@ -12,7 +12,7 @@
   </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Trading 212 — Portfolio</title>
+  <title>Trading 212 Portfolio</title>
 
   <!-- Bootstrap 5 -->
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
@@ -65,7 +65,7 @@
       box-shadow: 0 1px 4px rgba(0,0,0,.08);
       overflow: hidden;
     }
-    /* Horizontal scroll lives here — header and body scroll as one table */
+    /* Horizontal scroll lives here - header and body scroll as one table */
     .table-card .card-body { overflow-x: auto; }
 
     #positions-table thead th {
@@ -96,6 +96,49 @@
 
     .dt-search input, .dt-length select {
       font-size: .8rem !important;
+    }
+    .holdings-toolbar {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .holdings-toolbar .btn {
+      white-space: nowrap;
+    }
+    .holdings-controls-bar {
+      display: flex !important;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: nowrap;
+      width: 100%;
+    }
+    .holdings-controls-bar .dt-length,
+    .holdings-controls-bar .holdings-toolbar {
+      flex: 0 0 auto;
+    }
+    .holdings-controls-bar .dt-search {
+      flex: 1 1 260px;
+      display: flex;
+      justify-content: flex-end;
+      min-width: 0;
+      margin: 0;
+    }
+    .holdings-controls-bar .dt-search input {
+      width: min(280px, 100%);
+      min-width: 0;
+    }
+    @media (max-width: 768px) {
+      .holdings-controls-bar {
+        flex-wrap: wrap;
+      }
+      .holdings-controls-bar .dt-search {
+        flex-basis: 100%;
+        justify-content: flex-start;
+      }
+      .holdings-controls-bar .dt-search input {
+        width: 100%;
+      }
     }
 
     .pie-filter-bar {
@@ -141,12 +184,64 @@
       line-height: 1;
     }
     .filter-chip-close:hover { color: #bf360c; }
+    .section-header-row {
+      display: inline-flex;
+      align-items: center;
+      gap: .45rem;
+      font-size: .8rem;
+      font-weight: 600;
+      color: #fff;
+      text-decoration: none;
+      background: #0f1923;
+      border-radius: 10px;
+      padding: .7rem .9rem;
+      width: 100%;
+      justify-content: flex-start;
+    }
+    .section-header-row .section-title {
+      color: #fff;
+    }
+    .section-header-row .section-meta {
+      font-size: .68rem;
+      font-weight: 500;
+      color: #8a9bb0;
+      margin-left: .35rem;
+    }
+    .secondary-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: .45rem;
+      font-size: .8rem;
+      font-weight: 600;
+      color: #fff;
+      text-decoration: none;
+      background: #0f1923;
+      border-radius: 10px;
+      padding: .7rem .9rem;
+      width: 100%;
+      justify-content: flex-start;
+    }
+    .secondary-toggle:hover { color: var(--t212-green); }
+    .secondary-toggle .chevron {
+      transition: transform .2s ease;
+      font-size: .72rem;
+    }
+    .secondary-toggle[aria-expanded="true"] .chevron {
+      transform: rotate(90deg);
+    }
+    .secondary-panel {
+      background: #fbfcfd;
+      border: 1px solid #e8edf2;
+      border-radius: 12px;
+      padding: 1rem 1rem .5rem;
+      margin-bottom: 1rem;
+    }
   </style>
   <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-6145203907417515" crossorigin="anonymous"></script>
 </head>
 <body>
 
-<!-- ── Side nav (offcanvas) ─────────────────────────────────── -->
+<!-- ââ Side nav (offcanvas) âââââââââââââââââââââââââââââââââââ -->
 <div class="offcanvas offcanvas-start side-nav" tabindex="-1" id="sideNav"
      style="width:210px; background:#0f1923; border-right:1px solid rgba(255,255,255,0.08);">
   <div class="offcanvas-header pb-2">
@@ -155,18 +250,18 @@
   </div>
   <div class="offcanvas-body p-0">
     <nav class="nav flex-column pt-1">
-      <a class="nav-link text-white px-4 py-3 active" href="/">&#9;📊&nbsp; Portfolio</a>
-      <a class="nav-link text-white px-4 py-3" href="/transactions">&#9;🔄&nbsp; Transactions</a>
-      <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
-      <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
-      <a class="nav-link text-white px-4 py-3" href="/instruments">&#9;🔍&nbsp; Instruments</a>
-      <a class="nav-link text-white px-4 py-3" href="/help">&#9;❓&nbsp; Help</a>
-      <a class="nav-link text-white px-4 py-3" href="/settings">&#9;⚙️&nbsp; Settings</a>
+      <a class="nav-link text-white px-4 py-3 active" href="/">&#9;ð&nbsp; Portfolio</a>
+      <a class="nav-link text-white px-4 py-3" href="/transactions">&#9;ð&nbsp; Transactions</a>
+      <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;ð°&nbsp; Dividends</a>
+      <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;ð&nbsp; Analysis</a>
+      <a class="nav-link text-white px-4 py-3" href="/instruments">&#9;ð&nbsp; Instruments</a>
+      <a class="nav-link text-white px-4 py-3" href="/help">&#9;â&nbsp; Help</a>
+      <a class="nav-link text-white px-4 py-3" href="/settings">&#9;âï¸&nbsp; Settings</a>
     </nav>
   </div>
 </div>
 
-<!-- ── Top bar ─────────────────────────────────────────────── -->
+<!-- ââ Top bar âââââââââââââââââââââââââââââââââââââââââââââââ -->
 <div class="top-bar">
   <div class="d-flex align-items-center gap-3">
     <button class="btn btn-link text-white p-0" data-bs-toggle="offcanvas" data-bs-target="#sideNav" aria-label="Menu">
@@ -199,7 +294,7 @@
   </div>
 </div>
 
-<!-- ── Pie filter bar ──────────────────────────────────────── -->
+<!-- ââ Pie filter bar ââââââââââââââââââââââââââââââââââââââââ -->
 {% if available_pies %}
 <div class="pie-filter-bar">
   <span class="pf-label">Pies:</span>
@@ -214,44 +309,46 @@
 </div>
 {% endif %}
 
-<!-- ── Active filter indicator ─────────────────────────────── -->
+<!-- ââ Active filter indicator âââââââââââââââââââââââââââââââ -->
 {% if country_filter or sector_filter %}
 <div class="active-filter-bar">
   <span style="font-size:.72rem; color:#795548; font-weight:600;">Filtered by:</span>
   {% if country_filter %}
   <span class="filter-chip">
-    🌍 {{ country_filter }}
-    <a class="filter-chip-close" href="/?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}" title="Clear country filter">×</a>
+    ð {{ country_filter }}
+    <a class="filter-chip-close" href="/?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}" title="Clear country filter">Ã</a>
   </span>
   {% endif %}
   {% if sector_filter %}
   <span class="filter-chip">
-    🏭 {{ sector_filter }}
-    <a class="filter-chip-close" href="/?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}" title="Clear sector filter">×</a>
+    ð­ {{ sector_filter }}
+    <a class="filter-chip-close" href="/?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}" title="Clear sector filter">Ã</a>
   </span>
   {% endif %}
-  <a href="/analysis?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}" style="margin-left:.25rem; font-size:.72rem; color:#795548;">← back to Analysis</a>
+  <a href="/analysis?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}" style="margin-left:.25rem; font-size:.72rem; color:#795548;">â back to Analysis</a>
 </div>
 {% endif %}
 
-<!-- ── Summary cards ───────────────────────────────────────── -->
+<!-- ââ Summary cards âââââââââââââââââââââââââââââââââââââââââ -->
 <div class="container-fluid px-4 py-3">
-  <!-- ── Grand total (GBP) ─────────────────────────────────── -->
+  <!-- ââ Grand total (GBP) âââââââââââââââââââââââââââââââââââ -->
   <div class="row g-3 mb-3">
     <div class="col-12 d-flex align-items-center gap-2">
-      <small class="text-muted fw-semibold">
-        {% if account_filter == 'ISA' %}ISA Portfolio (GBP)
-        {% elif account_filter == 'Trading' %}Trading Portfolio (GBP)
-        {% else %}Total Portfolio (GBP){% endif %}
+      <small class="section-header-row">
+        <span class="section-title">
+          {% if account_filter == 'ISA' %}ISA Portfolio (GBP)
+          {% elif account_filter == 'Trading' %}Trading Portfolio (GBP)
+          {% else %}Total Portfolio (GBP){% endif %}
+        </span>
+        {% if fx_rates_used %}
+        <span class="section-meta">
+          FX:
+          {% for ccy, rate in fx_rates_used.items() %}
+            1 {{ ccy }} = £{{ "%.4f"|format(rate) }}{% if not loop.last %}, {% endif %}
+          {% endfor %}
+        </span>
+        {% endif %}
       </small>
-      {% if fx_rates_used %}
-      <small class="text-muted" style="font-size:.68rem">
-        FX:
-        {% for ccy, rate in fx_rates_used.items() %}
-          1 {{ ccy }} = £{{ "%.4f"|format(rate) }}{% if not loop.last %},{% endif %}
-        {% endfor %}
-      </small>
-      {% endif %}
     </div>
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
@@ -304,48 +401,68 @@
   </div>
   <hr class="my-2">
 
-  {% for ccy, t in totals.items() %}
-  <div class="row g-3 mb-2">
-    <div class="col-12">
-      <small class="text-muted fw-semibold">{{ ccy }} positions</small>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3">
-        <div class="label">Total Cost</div>
-        <div class="amount">{{ cfmt(t.cost, ccy) }}</div>
-      </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3">
-        <div class="label">Market Value</div>
-        <div class="amount">{{ cfmt(t.value, ccy) }}</div>
-      </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3">
-        <div class="label">Unrealised P&L</div>
-        <div class="amount {% if t.ppl > 0 %}pnl-pos{% elif t.ppl < 0 %}pnl-neg{% endif %}">
-          {% if t.ppl >= 0 %}+{% endif %}{{ cfmt(t.ppl, ccy) }}
+  {% if totals %}
+  <div class="mb-3">
+    <a class="secondary-toggle"
+       data-bs-toggle="collapse"
+       href="#currencyBreakdown"
+       role="button"
+       aria-expanded="false"
+       aria-controls="currencyBreakdown">
+      <span class="chevron">&#9654;</span>
+      <span>By currency breakdown</span>
+    </a>
+    <div id="currencyBreakdown" class="collapse mt-2">
+      <div class="secondary-panel">
+        {% for ccy, t in totals.items() %}
+        <div class="row g-3 mb-2">
+          <div class="col-12">
+            <small class="text-muted fw-semibold">{{ ccy }} positions</small>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card summary-card p-3">
+              <div class="label">Total Cost</div>
+              <div class="amount">{{ cfmt(t.cost, ccy) }}</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card summary-card p-3">
+              <div class="label">Market Value</div>
+              <div class="amount">{{ cfmt(t.value, ccy) }}</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card summary-card p-3">
+              <div class="label">Unrealised P&L</div>
+              <div class="amount {% if t.ppl > 0 %}pnl-pos{% elif t.ppl < 0 %}pnl-neg{% endif %}">
+                {% if t.ppl >= 0 %}+{% endif %}{{ cfmt(t.ppl, ccy) }}
+              </div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card summary-card p-3">
+              <div class="label">Dividends Actual</div>
+              <div class="amount pnl-pos">{{ cfmt(t.dividends, ccy) }}</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card summary-card p-3">
+              <div class="label">Forward Div. (12m)</div>
+              <div class="amount pnl-pos">{{ cfmt(t.fwd_dividends, ccy) }}</div>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3">
-        <div class="label">Dividends Actual</div>
-        <div class="amount pnl-pos">{{ cfmt(t.dividends, ccy) }}</div>
-      </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3">
-        <div class="label">Forward Div. (12m)</div>
-        <div class="amount pnl-pos">{{ cfmt(t.fwd_dividends, ccy) }}</div>
+        {% endfor %}
       </div>
     </div>
   </div>
-  {% endfor %}
+  {% endif %}
 
-  <!-- ── Positions table ──────────────────────────────────── -->
-  <div class="d-flex justify-content-end mb-2">
+  <!-- ââ Positions table ââââââââââââââââââââââââââââââââââââ -->
+  <div class="mb-2">
+    <small class="section-header-row">Holdings</small>
+  </div>
+  <div id="holdingsCsvButton" class="d-none">
     <button onclick="exportTableCSV()" class="btn btn-sm btn-outline-secondary">
       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
         <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5"/>
@@ -406,49 +523,49 @@
             {% set ppl_val = (p.ppl or 0)|float %}
             {% set ppl_gbp = ppl_val * fx %}
             <td data-order="{{ ppl_gbp }}" class="text-end {% if ppl_gbp > 0 %}pnl-pos{% elif ppl_gbp < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if ppl_gbp != 0 %}{% if ppl_gbp > 0 %}+{% endif %}{{ cfmt(ppl_gbp, "GBP") }}{% else %}—{% endif %}
+              {% if ppl_gbp != 0 %}{% if ppl_gbp > 0 %}+{% endif %}{{ cfmt(ppl_gbp, "GBP") }}{% else %}-{% endif %}
             </td>
             {% set total_pnl = ppl_gbp + divs_gbp %}
             <td data-order="{{ total_pnl }}" class="text-end {% if total_pnl > 0 %}pnl-pos{% elif total_pnl < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if total_pnl != 0 %}{% if total_pnl > 0 %}+{% endif %}{{ cfmt(total_pnl, "GBP") }}{% else %}—{% endif %}
+              {% if total_pnl != 0 %}{% if total_pnl > 0 %}+{% endif %}{{ cfmt(total_pnl, "GBP") }}{% else %}-{% endif %}
             </td>
             <td data-order="{{ pct }}" class="text-end {% if pct > 0 %}pnl-pos{% elif pct < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if pct != 0 %}{% if pct > 0 %}+{% endif %}{{ fmt(pct, 2) }}%{% else %}—{% endif %}
+              {% if pct != 0 %}{% if pct > 0 %}+{% endif %}{{ fmt(pct, 2) }}%{% else %}-{% endif %}
             </td>
             <td data-order="{{ total_pnl_pct }}" class="text-end {% if total_pnl_pct > 0 %}pnl-pos{% elif total_pnl_pct < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if total_pnl_pct != 0 %}{% if total_pnl_pct > 0 %}+{% endif %}{{ fmt(total_pnl_pct, 2) }}%{% else %}—{% endif %}
+              {% if total_pnl_pct != 0 %}{% if total_pnl_pct > 0 %}+{% endif %}{{ fmt(total_pnl_pct, 2) }}%{% else %}-{% endif %}
             </td>
             {% set divs_val = (p.total_dividends or 0)|float %}
             <td data-order="{{ divs_val }}" class="text-end fw-semibold">
-              {% if divs_val > 0 %}{{ cfmt(divs_val, "GBP") }}{% else %}—{% endif %}
+              {% if divs_val > 0 %}{{ cfmt(divs_val, "GBP") }}{% else %}-{% endif %}
             </td>
             {% set div_return_pct = (divs_val / cost_gbp * 100) if cost_gbp != 0 else 0 %}
             <td data-order="{{ div_return_pct }}" class="text-end fw-semibold">
-              {% if div_return_pct > 0 %}{{ fmt(div_return_pct, 2) }}%{% else %}—{% endif %}
+              {% if div_return_pct > 0 %}{{ fmt(div_return_pct, 2) }}%{% else %}-{% endif %}
             </td>
             {% set annual_dps = (p.annual_rate_per_share or 0)|float %}
             {% set fcf_ps = (p.fcf_per_share_3y_avg or 0)|float %}
             {% set fcf_cov = (annual_dps / fcf_ps * 100) if (fcf_ps > 0 and annual_dps > 0) else 0 %}
             <td data-order="{{ fcf_cov }}" class="text-end {% if fcf_cov > 0 %}{% if fcf_cov > 75 %}cov-bad{% elif fcf_cov > 50 %}cov-warn{% else %}cov-good{% endif %}{% endif %}">
-              {% if fcf_cov > 0 %}{{ fmt(fcf_cov, 1) }}%{% elif fcf_ps < 0 and annual_dps > 0 %}<span class="cov-bad">—ve FCF</span>{% else %}—{% endif %}
+              {% if fcf_cov > 0 %}{{ fmt(fcf_cov, 1) }}%{% elif fcf_ps < 0 and annual_dps > 0 %}<span class="cov-bad">-ve FCF</span>{% else %}-{% endif %}
             </td>
             {% set eps = (p.eps_ttm or 0)|float %}
             {% set div_cov = (eps / annual_dps) if (annual_dps > 0 and eps > 0) else 0 %}
             <td data-order="{{ div_cov }}" class="text-end {% if div_cov > 0 %}{% if div_cov >= 2 %}cov-good{% elif div_cov >= 1 %}cov-warn{% else %}cov-bad{% endif %}{% elif eps < 0 and annual_dps > 0 %}cov-bad{% endif %}">
-              {% if div_cov > 0 %}{{ fmt(div_cov, 1) }}x{% elif eps < 0 and annual_dps > 0 %}<span class="cov-bad">—ve EPS</span>{% else %}—{% endif %}
+              {% if div_cov > 0 %}{{ fmt(div_cov, 1) }}x{% elif eps < 0 and annual_dps > 0 %}<span class="cov-bad">-ve EPS</span>{% else %}-{% endif %}
             </td>
             {% set fwd_val = (p.forward_dividends or 0)|float %}
             {% set fwd_gbp = fwd_val * fx %}
             <td data-order="{{ fwd_gbp }}" class="text-end fw-semibold">
-              {% if fwd_gbp > 0 %}{{ cfmt(fwd_gbp, "GBP") }}{% else %}—{% endif %}
+              {% if fwd_gbp > 0 %}{{ cfmt(fwd_gbp, "GBP") }}{% else %}-{% endif %}
             </td>
             {% set fwd_yield = (fwd_gbp / cost_gbp * 100) if cost_gbp > 0 else 0 %}
             <td data-order="{{ fwd_yield }}" class="text-end fw-semibold">
-              {% if fwd_yield > 0 %}{{ fmt(fwd_yield, 2) }}%{% else %}—{% endif %}
+              {% if fwd_yield > 0 %}{{ fmt(fwd_yield, 2) }}%{% else %}-{% endif %}
             </td>
             {% set pc = (p.pie_count or 0)|int %}
             <td data-order="{{ pc }}" class="text-end">
-              {% if pc > 0 %}{{ pc }}{% else %}—{% endif %}
+              {% if pc > 0 %}{{ pc }}{% else %}-{% endif %}
             </td>
           </tr>
           {% endfor %}
@@ -458,14 +575,43 @@
   </div>
 </div>
 
-<!-- ── Scripts ─────────────────────────────────────────────── -->
+<!-- ââ Scripts âââââââââââââââââââââââââââââââââââââââââââââââ -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/2.0.8/js/dataTables.min.js"></script>
 <script src="https://cdn.datatables.net/2.0.8/js/dataTables.bootstrap5.min.js"></script>
 <script>
+  function attachCsvButtonToToolbar(tableApi) {
+    var wrapper = $(tableApi.table().container());
+    var topRow = wrapper.find('.dt-layout-row').first();
+    if (!topRow.length) {
+      topRow = wrapper.children().first();
+    }
+    var lengthBlock = topRow.find('.dt-length').first();
+    var searchBlock = topRow.find('.dt-search').first();
+    if (!lengthBlock.length || !searchBlock.length) {
+      return;
+    }
+
+    var controlsBar = wrapper.find('.holdings-controls-bar');
+    var host = wrapper.find('.holdings-toolbar');
+    if (!controlsBar.length) {
+      controlsBar = $('<div class="holdings-controls-bar"></div>');
+      host = $('<div class="holdings-toolbar"></div>');
+      controlsBar.append(lengthBlock);
+      controlsBar.append(host);
+      controlsBar.append(searchBlock);
+      topRow.empty().append(controlsBar);
+    }
+
+    var buttonMarkup = $('#holdingsCsvButton').html();
+    if (buttonMarkup) {
+      host.html(buttonMarkup);
+    }
+  }
+
   $(document).ready(function () {
-    $('#positions-table').DataTable({
+    var positionsTable = $('#positions-table').DataTable({
       pageLength: 50,
       order: [[9, 'desc']],   // sort by Value desc by default
       columnDefs: [
@@ -476,22 +622,26 @@
       language: {
         search: 'Filter:',
         lengthMenu: 'Show _MENU_ positions'
+      },
+      initComplete: function () {
+        attachCsvButtonToToolbar(this.api());
       }
     });
 
+    attachCsvButtonToToolbar(positionsTable);
   });
 
   function exportTableCSV() {
     var dt = $('#positions-table').DataTable();
 
-    // Headers — use the visible header text
+    // Headers - use the visible header text
     var headers = [];
     $('#positions-table thead th').each(function () {
       headers.push('"' + $(this).text().trim().replace(/"/g, '""') + '"');
     });
 
-    // Rows — use DataTables' own filtered/sorted row set; prefer data-order value
-    // for numeric cells (clean number) over display text (formatted with £/% etc.)
+    // Rows - use DataTables' own filtered/sorted row set; prefer data-order value
+    // for numeric cells (clean number) over display text (formatted with Â£/% etc.)
     var rows = [];
     dt.rows({ search: 'applied' }).every(function () {
       var node = this.node();
@@ -505,7 +655,7 @@
           // Strip currency symbols, thousands commas, +/- signs and % so
           // Excel sees plain numbers rather than formatted display text
           val = $(this).text().trim()
-            .replace(/£/g, '')
+            .replace(/Â£/g, '')
             .replace(/,/g, '')
             .replace(/^\+/, '')
             .replace(/%$/, '')
@@ -527,7 +677,7 @@
     URL.revokeObjectURL(url);
   }
 
-  // Pie toggle — adds/removes individual pie IDs from the pies URL param
+  // Pie toggle - adds/removes individual pie IDs from the pies URL param
   document.querySelectorAll('.pie-btn').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var pieId = this.dataset.pieId;
@@ -560,7 +710,7 @@
   This application is a <strong style="color:#c8d6e5;">technology demonstration only</strong> and is provided strictly for informational purposes.
   It does <strong style="color:#c8d6e5;">not</strong> constitute financial advice, investment recommendations, or any form of regulated financial service.
   We make no guarantee as to the accuracy, completeness, or timeliness of any figures, valuations, or data presented.
-  You should <strong style="color:#c8d6e5;">not</strong> rely on this application when making investment decisions — always consult a qualified financial adviser.
+  You should <strong style="color:#c8d6e5;">not</strong> rely on this application when making investment decisions - always consult a qualified financial adviser.
   No liability is accepted for any loss or damage arising directly or indirectly from the use of, or reliance on, this application.
   <br><span style="color:#4a5a6a; margin-top:.4rem; display:inline-block;">&copy; {{ now().year }} <a href="https://www.sydeone.co.uk" target="_blank" rel="noopener noreferrer" style="color:#8a9bb0; text-decoration:underline;">Sydeone Ltd</a>. All rights reserved.</span>
 </footer>
