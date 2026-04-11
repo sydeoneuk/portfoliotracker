@@ -93,6 +93,7 @@ _enrich_state:    dict = {"status": "idle", "done": 0, "total": 0, "current": ""
 _t212_state:      dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
 _catalogue_state: dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
 _figi_state:      dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
+_yf_fix_state:    dict = {"status": "idle", "done": 0, "total": 0, "current": "", "result": None}
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────
@@ -816,6 +817,47 @@ def openfigi_enrich_status(request: Request, db: Session = Depends(get_session))
     if isinstance(user, RedirectResponse):
         return user
     return JSONResponse(_figi_state)
+
+
+def _run_yf_ticker_fix() -> None:
+    """Background task: bulk-fix persisted Yahoo Finance tickers."""
+    global _yf_fix_state
+    db = SessionLocal()
+    try:
+        from app.sync.runner import SyncRunner
+
+        runner = SyncRunner(db, user_id=None)
+
+        def _progress(done, total, ticker):
+            _yf_fix_state.update({"done": done, "total": total, "current": ticker})
+
+        _yf_fix_state.update({"status": "running", "done": 0, "total": 0, "current": "", "result": None})
+        result = runner.revalidate_yf_tickers(progress_callback=_progress)
+        _yf_fix_state.update({"status": "done", "result": result})
+    except Exception as exc:
+        traceback.print_exc()
+        _yf_fix_state.update({"status": "error", "result": {"error": str(exc)}})
+    finally:
+        db.close()
+
+
+@app.post("/admin/instruments/fix-yf-tickers")
+def trigger_yf_ticker_fix(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    if _yf_fix_state["status"] == "running":
+        return JSONResponse({"error": "Yahoo ticker fix already running"}, status_code=409)
+    _sync_executor.submit(_run_yf_ticker_fix)
+    return JSONResponse({"queued": True})
+
+
+@app.get("/admin/instruments/fix-yf-tickers/status")
+def yf_ticker_fix_status(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    return JSONResponse(_yf_fix_state)
 
 
 def _run_full_catalogue_load(api_key: str, api_secret: str) -> None:

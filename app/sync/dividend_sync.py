@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models import Instrument, DividendHistory, DividendForecast
-from app.enrichment.ticker_mapper import derive_yf_ticker
+from app.enrichment.ticker_mapper import build_yf_ticker_candidates, derive_yf_ticker
 from app.enrichment.yfinance_enricher import YFinanceDividendEnricher
 from app.enrichment.fmp_enricher import FmpDividendEnricher
 
@@ -209,10 +209,17 @@ class DividendSync:
         )
 
     def _resolve_yf_ticker(self, instrument: Instrument) -> Optional[str]:
-        """Return stored yf_ticker or derive it."""
+        """Prefer a fresh derived ticker so stale stored mappings can self-correct."""
+        derived = derive_yf_ticker(instrument.ticker, instrument.short_name, instrument.exchange)
+        if derived:
+            return derived
         if instrument.yf_ticker:
             return instrument.yf_ticker
-        return derive_yf_ticker(instrument.ticker, instrument.short_name, instrument.exchange)
+
+        candidates = build_yf_ticker_candidates(
+            instrument.ticker, instrument.short_name, instrument.exchange
+        )
+        return candidates[0] if candidates else None
 
     def _load_fmp_calendar(self) -> dict[str, list]:
         """Load FMP dividend calendar grouped by symbol."""

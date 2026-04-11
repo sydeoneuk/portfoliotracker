@@ -233,12 +233,41 @@
         </button>
       </div>
     </div>
-    <div id="t212-progress-wrap" style="display:none; padding: 0 1.25rem 1rem;">
-      <div class="progress" style="height:6px; border-radius:3px;">
-        <div id="t212-progress-bar" class="progress-bar"
+  <div id="t212-progress-wrap" style="display:none; padding: 0 1.25rem 1rem;">
+    <div class="progress" style="height:6px; border-radius:3px;">
+      <div id="t212-progress-bar" class="progress-bar"
              style="background:#0d6efd; width:0%; transition:width .3s;"></div>
+    </div>
+    <div id="t212-progress-text" class="text-muted mt-1" style="font-size:.75rem;"></div>
+  </div>
+  </div>
+
+  <!-- Bulk Yahoo ticker fix panel -->
+  <div class="card mb-4" style="border:none; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,.08);">
+    <div class="card-body d-flex align-items-center justify-content-between flex-wrap gap-3">
+      <div>
+        <div class="fw-semibold" style="font-size:.9rem;">Bulk Fix Stored Yahoo Tickers</div>
+        <div class="text-muted" style="font-size:.8rem;">
+          Revalidates every stored <code>yf_ticker</code> using the app's latest mapping rules and
+          updates stale values in bulk. This repairs bad persisted symbols such as incorrect London
+          suffixes without waiting for each instrument to self-correct on a later sync.
+        </div>
       </div>
-      <div id="t212-progress-text" class="text-muted mt-1" style="font-size:.75rem;"></div>
+      <div class="d-flex align-items-center gap-3 flex-shrink-0">
+        <div id="yf-fix-status" style="font-size:.82rem; color:#6c757d; display:none;"></div>
+        <button id="yf-fix-btn" class="btn btn-sm"
+                style="background:#fd7e14; color:#fff; font-weight:600; border:none; white-space:nowrap;"
+                onclick="startYfTickerFix()">
+          Repair Yahoo Tickers
+        </button>
+      </div>
+    </div>
+    <div id="yf-fix-progress-wrap" style="display:none; padding: 0 1.25rem 1rem;">
+      <div class="progress" style="height:6px; border-radius:3px;">
+        <div id="yf-fix-progress-bar" class="progress-bar"
+             style="background:#fd7e14; width:0%; transition:width .3s;"></div>
+      </div>
+      <div id="yf-fix-progress-text" class="text-muted mt-1" style="font-size:.75rem;"></div>
     </div>
   </div>
 
@@ -782,6 +811,94 @@
     });
 
   // ── Load Full Catalogue ────────────────────────────────────────────────
+  // Bulk fix stored Yahoo tickers
+  var yfFixPollTimer = null;
+
+  function startYfTickerFix() {
+    var btn = document.getElementById('yf-fix-btn');
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+    setYfFixStatus('', '');
+    fetch('/admin/instruments/fix-yf-tickers', {method: 'POST'})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.error) {
+          setYfFixStatus('Error: ' + d.error, 'text-danger');
+          btn.disabled = false;
+          btn.textContent = 'Repair Yahoo Tickers';
+        } else {
+          pollYfTickerFix();
+          yfFixPollTimer = setInterval(pollYfTickerFix, 2000);
+        }
+      })
+      .catch(function(e) {
+        setYfFixStatus('Failed to start: ' + e, 'text-danger');
+        btn.disabled = false;
+        btn.textContent = 'Repair Yahoo Tickers';
+      });
+  }
+
+  function pollYfTickerFix() {
+    fetch('/admin/instruments/fix-yf-tickers/status')
+      .then(function(r) { return r.json(); })
+      .then(function(s) {
+        var btn  = document.getElementById('yf-fix-btn');
+        var wrap = document.getElementById('yf-fix-progress-wrap');
+        var bar  = document.getElementById('yf-fix-progress-bar');
+        var txt  = document.getElementById('yf-fix-progress-text');
+
+        if (s.status === 'running') {
+          btn.textContent = 'Running...';
+          wrap.style.display = 'block';
+          var pct = s.total > 0 ? Math.round(s.done / s.total * 100) : 0;
+          bar.style.width = pct + '%';
+          txt.textContent = s.done + ' / ' + s.total + (s.current ? ' - ' + s.current : '');
+          setYfFixStatus(pct + '% complete', 'text-muted');
+
+        } else if (s.status === 'done') {
+          clearInterval(yfFixPollTimer);
+          bar.style.width = '100%';
+          var r = s.result || {};
+          var examples = Array.isArray(r.examples) && r.examples.length
+            ? ' Examples: ' + r.examples.slice(0, 3).map(function(item) {
+                return item.ticker + ' (' + (item.from || 'blank') + ' -> ' + item.to + ')';
+              }).join(', ')
+            : '';
+          txt.textContent = 'Complete - ' + (r.updated || 0) + ' updated, ' +
+                            (r.unchanged || 0) + ' unchanged, ' +
+                            (r.skipped || 0) + ' skipped.' + examples;
+          setYfFixStatus('Done - reload page to review repaired mappings', 'text-success');
+          btn.disabled = false;
+          btn.textContent = 'Repair Yahoo Tickers';
+
+        } else if (s.status === 'error') {
+          clearInterval(yfFixPollTimer);
+          var msg = (s.result && s.result.error) ? s.result.error : 'Unknown error';
+          setYfFixStatus('Error: ' + msg, 'text-danger');
+          btn.disabled = false;
+          btn.textContent = 'Repair Yahoo Tickers';
+        }
+      });
+  }
+
+  function setYfFixStatus(msg, cls) {
+    var el = document.getElementById('yf-fix-status');
+    el.style.display = msg ? 'block' : 'none';
+    el.className = cls;
+    el.textContent = msg;
+  }
+
+  fetch('/admin/instruments/fix-yf-tickers/status')
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      if (s.status === 'running') {
+        document.getElementById('yf-fix-btn').disabled = true;
+        document.getElementById('yf-fix-btn').textContent = 'Running...';
+        document.getElementById('yf-fix-progress-wrap').style.display = 'block';
+        yfFixPollTimer = setInterval(pollYfTickerFix, 2000);
+      }
+    });
+
   var cataloguePollTimer = null;
 
   function startCatalogueLoad() {

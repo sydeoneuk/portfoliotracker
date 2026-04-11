@@ -59,17 +59,19 @@ class SyncRunner:
         return {r[0] for r in position_q.all()} | {r[0] for r in pie_q.all()}
 
     def _resolve_yfinance_metadata(self, instrument, yf):
-        """Try stored and derived Yahoo symbols until one returns usable metadata."""
+        """Try derived Yahoo symbols first, then fall back to any stored mapping.
+
+        This lets the app self-heal when an older bad yf_ticker was persisted in
+        the database. If the freshly-derived candidates fail, we still fall back
+        to the stored value as a last resort for manual/legacy mappings.
+        """
         from app.enrichment.ticker_mapper import build_yf_ticker_candidates
 
-        candidates: list[str] = []
-        if instrument.yf_ticker:
-            candidates.append(instrument.yf_ticker)
-        for candidate in build_yf_ticker_candidates(
+        candidates = build_yf_ticker_candidates(
             instrument.ticker, instrument.short_name, instrument.exchange
-        ):
-            if candidate not in candidates:
-                candidates.append(candidate)
+        )
+        if instrument.yf_ticker and instrument.yf_ticker not in candidates:
+            candidates.append(instrument.yf_ticker)
 
         if not candidates:
             return None, None
@@ -428,6 +430,74 @@ class SyncRunner:
         print(
             f"[t212-reload] Complete — {len(relevant)} updated from catalogue, "
             f"{not_in_catalogue} not in catalogue, {backfilled} currency back-filled."
+        )
+        return result
+
+    def revalidate_yf_tickers(self, progress_callback=None) -> dict:
+        """Bulk-fix stored Yahoo tickers using the latest derivation rules.
+
+        This is a fast, local repair pass intended to clean up stale or bad
+        persisted mappings without needing to hit external providers.
+
+        Args:
+            progress_callback: optional callable(done, total, ticker)
+
+        Returns:
+            dict with keys: total, updated, unchanged, skipped, examples
+        """
+        from app.enrichment.ticker_mapper import build_yf_ticker_candidates
+
+        instruments = self.session.query(Instrument).order_by(Instrument.ticker).all()
+        total = len(instruments)
+        updated = 0
+        unchanged = 0
+        skipped = 0
+        examples: list[dict[str, str | None]] = []
+
+        print(f"[yf-fix] Revalidating stored Yahoo tickers for {total} instruments...")
+
+        for idx, instrument in enumerate(instruments, 1):
+            if progress_callback:
+                progress_callback(idx, total, instrument.ticker)
+
+            candidates = build_yf_ticker_candidates(
+                instrument.ticker,
+                instrument.short_name,
+                instrument.exchange,
+            )
+            preferred = candidates[0] if candidates else None
+
+            if not preferred:
+                skipped += 1
+                continue
+
+            current = (instrument.yf_ticker or "").strip() or None
+            if current == preferred:
+                unchanged += 1
+                continue
+
+            instrument.yf_ticker = preferred
+            updated += 1
+            if len(examples) < 10:
+                examples.append({
+                    "ticker": instrument.ticker,
+                    "from": current,
+                    "to": preferred,
+                })
+
+            if idx % 200 == 0:
+                self.session.commit()
+
+        self.session.commit()
+        result = {
+            "total": total,
+            "updated": updated,
+            "unchanged": unchanged,
+            "skipped": skipped,
+            "examples": examples,
+        }
+        print(
+            f"[yf-fix] Complete - {updated} updated, {unchanged} unchanged, {skipped} skipped."
         )
         return result
 
