@@ -84,6 +84,8 @@ class YFinanceDividendEnricher:
 
             annual_rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
             div_yield = info.get("dividendYield") or info.get("trailingAnnualDividendYield")
+            if annual_rate is not None:
+                annual_rate = float(annual_rate)
 
             raw_ex = info.get("exDividendDate")
             if raw_ex:
@@ -99,7 +101,10 @@ class YFinanceDividendEnricher:
             description = sector = industry = country = None
 
         frequency = _infer_frequency(history)
-        last_amount = history[-1].amount if history else None
+        last_amount = _latest_amount(history)
+        computed_annual_rate = _estimate_forward_annual_rate(last_amount, frequency)
+        if computed_annual_rate is not None:
+            annual_rate = computed_annual_rate
         if last_amount is None and annual_rate:
             last_amount = _annual_to_per_payment(annual_rate, frequency)
 
@@ -151,6 +156,23 @@ def _infer_frequency(history: list[HistoricalDividend]) -> str:
 def _annual_to_per_payment(annual_rate: float, frequency: str) -> float:
     divisors = {"MONTHLY": 12, "QUARTERLY": 4, "SEMI_ANNUAL": 2, "ANNUAL": 1}
     return annual_rate / divisors.get(frequency, 1)
+
+
+def _latest_amount(history: list[HistoricalDividend]) -> Optional[float]:
+    if not history:
+        return None
+    latest = max(history, key=lambda d: d.ex_date)
+    return float(latest.amount or 0)
+
+
+def _estimate_forward_annual_rate(
+    last_amount: Optional[float],
+    frequency: str,
+) -> Optional[float]:
+    periods = {"MONTHLY": 12, "QUARTERLY": 4, "SEMI_ANNUAL": 2, "ANNUAL": 1}.get(frequency)
+    if not periods or last_amount is None:
+        return None
+    return float(last_amount) * periods
 
 
 def _project_payments(
