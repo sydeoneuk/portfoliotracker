@@ -146,6 +146,12 @@
       </div>
     </div>
     <div class="col-6 col-md-3">
+      <div class="card stat-card p-3" style="border-left: 3px solid #3b82f6;">
+        <div class="label">Users With BYO AI Keys</div>
+        <div class="amount">{{ users | selectattr('has_anthropic_ai_key') | list | length + users | selectattr('has_openai_ai_key') | list | length - users | selectattr('has_anthropic_ai_key') | selectattr('has_openai_ai_key') | list | length }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
       <div class="card stat-card p-3" style="border-left: 3px solid #e0334c;">
         <div class="label">Sync Errors</div>
         <div class="amount">{{ users | selectattr('sync_status', 'equalto', 'error') | list | length }}</div>
@@ -172,6 +178,24 @@
     </div>
   </div>
 
+  <div class="card admin-card mb-4">
+    <div class="card-header">AI Usage Limits</div>
+    <div class="card-body">
+      <p class="text-muted mb-3" style="font-size:.82rem;">
+        This limit applies only when a user is using the app's shared AI provider keys. Users who add their own Anthropic or OpenAI keys in Settings are not affected.
+      </p>
+      <form method="post" action="/admin/ai-settings" class="row g-3 align-items-end">
+        <div class="col-sm-4">
+          <label class="form-label text-muted">Shared AI analyses per user per day</label>
+          <input type="number" min="0" step="1" name="shared_ai_daily_limit" class="form-control" value="{{ shared_ai_daily_limit }}">
+        </div>
+        <div class="col-sm-auto">
+          <button type="submit" class="btn btn-sm" style="background:var(--t212-green); color:#fff; font-weight:600; border:none;">Save Limit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Quick links -->
   <div class="d-flex gap-2 mb-4 flex-wrap">
     <a href="/admin/instruments" class="btn btn-sm btn-outline-secondary">
@@ -191,6 +215,7 @@
             <th>Joined</th>
             <th>Last Login</th>
             <th>API Keys</th>
+            <th>AI Keys</th>
             <th>Sync Status</th>
             <th>Last Synced</th>
             <th class="text-center">Auto</th>
@@ -222,6 +247,11 @@
               {% if u.has_trading_key %}<span class="key-yes">T</span>{% else %}<span class="key-no">T</span>{% endif %}
               &nbsp;
               {% if u.has_isa_key %}<span class="key-yes">ISA</span>{% else %}<span class="key-no">ISA</span>{% endif %}
+            </td>
+            <td style="font-size:.8rem;">
+              {% if u.has_anthropic_ai_key %}<span class="key-yes">Claude</span>{% else %}<span class="key-no">Claude</span>{% endif %}
+              &nbsp;
+              {% if u.has_openai_ai_key %}<span class="key-yes">OpenAI</span>{% else %}<span class="key-no">OpenAI</span>{% endif %}
             </td>
             <td>
               {% set status = u.sync_status or 'idle' %}

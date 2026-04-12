@@ -28,6 +28,8 @@ class UserSettings(Base):
     t212_api_secret_enc = Column(Text)     # encrypted Trading account API secret
     t212_isa_api_key_enc = Column(Text)    # encrypted ISA account API key (optional)
     t212_isa_api_secret_enc = Column(Text) # encrypted ISA account API secret (optional)
+    anthropic_api_key_enc = Column(Text)   # encrypted user-provided Anthropic API key
+    openai_api_key_enc = Column(Text)      # encrypted user-provided OpenAI API key
     last_sync_at = Column(DateTime)
     sync_status = Column(String(20), default="idle")  # idle | running | done | error
     sync_message = Column(Text)

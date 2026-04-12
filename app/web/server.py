@@ -26,6 +26,8 @@ from app.auth.models import User, UserSettings
 from app.auth.crypto import encrypt, decrypt
 from app.auth.oauth import oauth
 from app.models.ai_portfolio_analysis_cache import AIPortfolioAnalysisCache
+from app.models.ai_analysis_usage import AIAnalysisUsage
+from app.models.app_setting import AppSetting
 
 app = FastAPI(title="Trading 212 Dashboard")
 app.mount(
@@ -177,6 +179,7 @@ def _classify(instrument_type: str, sector: str, industry: str,
 _fx_cache: dict[str, float] = {}
 _fx_cache_ts: float = 0.0
 _FX_TTL = 3600
+_DEFAULT_SHARED_AI_DAILY_LIMIT = 3
 
 
 def _get_fx_rates_to_gbp(currencies: set[str]) -> dict[str, float]:
@@ -303,6 +306,95 @@ def _get_or_create_settings(db: Session, user_id: int) -> UserSettings:
         db.commit()
         db.refresh(s)
     return s
+
+
+def _get_app_setting(db: Session, key: str, default: str) -> str:
+    setting = db.query(AppSetting).filter_by(key=key).first()
+    if setting:
+        return setting.value
+    setting = AppSetting(key=key, value=default)
+    db.add(setting)
+    db.commit()
+    return default
+
+
+def _set_app_setting(db: Session, key: str, value: str) -> None:
+    setting = db.query(AppSetting).filter_by(key=key).first()
+    if not setting:
+        setting = AppSetting(key=key, value=value)
+        db.add(setting)
+    else:
+        setting.value = value
+        setting.updated_at = datetime.datetime.utcnow()
+    db.commit()
+
+
+def _get_shared_ai_daily_limit(db: Session) -> int:
+    raw = _get_app_setting(db, "shared_ai_daily_limit", str(_DEFAULT_SHARED_AI_DAILY_LIMIT))
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_SHARED_AI_DAILY_LIMIT
+
+
+def _get_user_ai_api_key(user_settings: UserSettings | None, provider: str) -> str | None:
+    if not user_settings:
+        return None
+    if provider == "anthropic" and user_settings.anthropic_api_key_enc:
+        return decrypt(user_settings.anthropic_api_key_enc)
+    if provider == "openai" and user_settings.openai_api_key_enc:
+        return decrypt(user_settings.openai_api_key_enc)
+    return None
+
+
+def _get_shared_ai_api_key(provider: str) -> str | None:
+    if provider == "anthropic":
+        return settings.anthropic_api_key
+    if provider == "openai":
+        return settings.openai_api_key
+    return None
+
+
+def _get_available_ai_providers(user_settings: UserSettings | None = None) -> list[dict]:
+    providers: list[dict] = []
+    if _get_user_ai_api_key(user_settings, "anthropic") or settings.anthropic_api_key:
+        providers.append({"id": "anthropic", "label": "Claude"})
+    if _get_user_ai_api_key(user_settings, "openai") or settings.openai_api_key:
+        providers.append({"id": "openai", "label": "OpenAI"})
+    return providers
+
+
+def _resolve_ai_provider(requested_provider: str | None, user_settings: UserSettings | None = None) -> str:
+    available = _get_available_ai_providers(user_settings)
+    if not available:
+        return "anthropic"
+    available_ids = {p["id"] for p in available}
+    if requested_provider in available_ids:
+        return requested_provider
+    return available[0]["id"]
+
+
+def _resolve_ai_provider_access(user_settings: UserSettings | None, provider: str) -> tuple[str | None, bool]:
+    user_key = _get_user_ai_api_key(user_settings, provider)
+    if user_key:
+        return user_key, False
+    shared_key = _get_shared_ai_api_key(provider)
+    if shared_key:
+        return shared_key, True
+    return None, False
+
+
+def _count_shared_ai_usage_today(db: Session, user_id: int) -> int:
+    start_utc = datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    return (
+        db.query(AIAnalysisUsage)
+        .filter(
+            AIAnalysisUsage.user_id == user_id,
+            AIAnalysisUsage.used_shared_key.is_(True),
+            AIAnalysisUsage.created_at >= start_utc,
+        )
+        .count()
+    )
 
 
 # ── Background sync ────────────────────────────────────────────────────────
@@ -554,6 +646,8 @@ def admin_page(request: Request, db: Session = Depends(get_session)):
             s.auto_sync_enabled,
             (s.t212_api_key_enc IS NOT NULL AND s.t212_api_key_enc != '') AS has_trading_key,
             (s.t212_isa_api_key_enc IS NOT NULL AND s.t212_isa_api_key_enc != '') AS has_isa_key,
+            (s.anthropic_api_key_enc IS NOT NULL AND s.anthropic_api_key_enc != '') AS has_anthropic_ai_key,
+            (s.openai_api_key_enc IS NOT NULL AND s.openai_api_key_enc != '') AS has_openai_ai_key,
             (SELECT COUNT(*) FROM positions p WHERE p.user_id = u.id) AS position_count,
             (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS order_count,
             (SELECT COUNT(*) FROM dividend_payments dp WHERE dp.user_id = u.id) AS dividend_count
@@ -566,7 +660,21 @@ def admin_page(request: Request, db: Session = Depends(get_session)):
         "user": user,
         "users": rows,
         "admin_emails": sorted(settings.admin_email_set),
+        "shared_ai_daily_limit": _get_shared_ai_daily_limit(db),
     })
+
+
+@app.post("/admin/ai-settings")
+async def admin_ai_settings(
+    request: Request,
+    db: Session = Depends(get_session),
+    shared_ai_daily_limit: int = Form(...),
+):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    _set_app_setting(db, "shared_ai_daily_limit", str(max(0, int(shared_ai_daily_limit))))
+    return _redirect("/admin", status_code=303)
 
 
 @app.get("/admin/instruments", response_class=HTMLResponse)
@@ -1026,6 +1134,8 @@ def settings_page(request: Request, db: Session = Depends(get_session)):
         "has_trading_secret": bool(user_settings.t212_api_secret_enc),
         "has_isa_key": bool(user_settings.t212_isa_api_key_enc),
         "has_isa_secret": bool(user_settings.t212_isa_api_secret_enc),
+        "has_anthropic_ai_key": bool(user_settings.anthropic_api_key_enc),
+        "has_openai_ai_key": bool(user_settings.openai_api_key_enc),
         "auto_sync_enabled": user_settings.auto_sync_enabled if user_settings.auto_sync_enabled is not None else True,
         "is_admin": _is_admin(user),
         "server_ip": _get_server_ip(),
@@ -1040,6 +1150,8 @@ async def save_settings(
     t212_api_secret: str = Form(default=""),
     t212_isa_api_key: str = Form(default=""),
     t212_isa_api_secret: str = Form(default=""),
+    anthropic_api_key: str = Form(default=""),
+    openai_api_key: str = Form(default=""),
 ):
     user = _require_user(request, db)
     if isinstance(user, RedirectResponse):
@@ -1054,6 +1166,10 @@ async def save_settings(
         user_settings.t212_isa_api_key_enc = encrypt(t212_isa_api_key.strip())
     if t212_isa_api_secret.strip():
         user_settings.t212_isa_api_secret_enc = encrypt(t212_isa_api_secret.strip())
+    if anthropic_api_key.strip():
+        user_settings.anthropic_api_key_enc = encrypt(anthropic_api_key.strip())
+    if openai_api_key.strip():
+        user_settings.openai_api_key_enc = encrypt(openai_api_key.strip())
 
     db.commit()
     return _redirect("/settings", status_code=303)
@@ -1068,16 +1184,20 @@ async def clear_key(
     user = _require_user(request, db)
     if isinstance(user, RedirectResponse):
         return user
-    if key_type not in ("trading", "isa"):
+    if key_type not in ("trading", "isa", "anthropic", "openai"):
         from fastapi.responses import Response
         return Response(status_code=400)
     user_settings = _get_or_create_settings(db, user.id)
     if key_type == "trading":
         user_settings.t212_api_key_enc = None
         user_settings.t212_api_secret_enc = None
-    else:
+    elif key_type == "isa":
         user_settings.t212_isa_api_key_enc = None
         user_settings.t212_isa_api_secret_enc = None
+    elif key_type == "anthropic":
+        user_settings.anthropic_api_key_enc = None
+    else:
+        user_settings.openai_api_key_enc = None
     db.commit()
     return _redirect("/settings", status_code=303)
 
@@ -2074,25 +2194,6 @@ def _get_latest_ai_analysis_cache(
     )
 
 
-def _get_available_ai_providers() -> list[dict]:
-    providers: list[dict] = []
-    if settings.anthropic_api_key:
-        providers.append({"id": "anthropic", "label": "Claude"})
-    if settings.openai_api_key:
-        providers.append({"id": "openai", "label": "OpenAI"})
-    return providers
-
-
-def _resolve_ai_provider(requested_provider: str | None) -> str:
-    available = _get_available_ai_providers()
-    if not available:
-        return "anthropic"
-    available_ids = {p["id"] for p in available}
-    if requested_provider in available_ids:
-        return requested_provider
-    return available[0]["id"]
-
-
 def _build_ai_system_prompt() -> str:
     return (
         "You are writing a detailed educational portfolio review for a private investor dashboard. "
@@ -2204,14 +2305,14 @@ def _build_ai_holdings_hash(account: str, pie_filter_key: str, holdings_payload:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _request_anthropic_portfolio_analysis(holdings_payload: dict) -> tuple[str, str, str]:
-    if not settings.anthropic_api_key:
+def _request_anthropic_portfolio_analysis(holdings_payload: dict, api_key: str) -> tuple[str, str, str]:
+    if not api_key:
         raise RuntimeError("Anthropic API key is not configured.")
 
     import anthropic
 
     model = settings.anthropic_analysis_model
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic.Anthropic(api_key=api_key)
     system_prompt = _build_ai_system_prompt()
     user_prompt = _build_ai_user_prompt(holdings_payload)
     messages = [{"role": "user", "content": user_prompt}]
@@ -2249,14 +2350,14 @@ def _request_anthropic_portfolio_analysis(holdings_payload: dict) -> tuple[str, 
     return analysis_text, model, prompt_text
 
 
-def _request_openai_portfolio_analysis(holdings_payload: dict) -> tuple[str, str, str]:
-    if not settings.openai_api_key:
+def _request_openai_portfolio_analysis(holdings_payload: dict, api_key: str) -> tuple[str, str, str]:
+    if not api_key:
         raise RuntimeError("OpenAI API key is not configured.")
 
     from openai import OpenAI
 
     model = settings.openai_analysis_model
-    client = OpenAI(api_key=settings.openai_api_key)
+    client = OpenAI(api_key=api_key)
     system_prompt = _build_ai_system_prompt()
     user_prompt = _build_ai_user_prompt(holdings_payload)
     completion = client.chat.completions.create(
@@ -2279,10 +2380,10 @@ def _request_openai_portfolio_analysis(holdings_payload: dict) -> tuple[str, str
     return analysis_text, model, prompt_text
 
 
-def _request_ai_portfolio_analysis(provider: str, holdings_payload: dict) -> tuple[str, str, str]:
+def _request_ai_portfolio_analysis(provider: str, holdings_payload: dict, api_key: str) -> tuple[str, str, str]:
     if provider == "openai":
-        return _request_openai_portfolio_analysis(holdings_payload)
-    return _request_anthropic_portfolio_analysis(holdings_payload)
+        return _request_openai_portfolio_analysis(holdings_payload, api_key)
+    return _request_anthropic_portfolio_analysis(holdings_payload, api_key)
 
 
 def _build_portfolio_history(db: Session, user_id: int, account: str, selected_pie_ids: list[int]) -> str:
@@ -2365,8 +2466,11 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
 
     if account not in ("ISA", "Trading"):
         account = "combined"
-    available_ai_providers = _get_available_ai_providers()
-    selected_ai_provider = _resolve_ai_provider(ai_provider or None)
+    user_settings = _get_or_create_settings(db, user.id)
+    available_ai_providers = _get_available_ai_providers(user_settings)
+    selected_ai_provider = _resolve_ai_provider(ai_provider or None, user_settings)
+    shared_ai_daily_limit = _get_shared_ai_daily_limit(db)
+    shared_ai_usage_today = _count_shared_ai_usage_today(db, user.id)
 
     available_pies = _load_pies(db, user.id, account)
     selected_pie_ids = _resolve_selected_pie_ids(available_pies, pies)
@@ -2526,6 +2630,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "pies_param": pies,
         "available_ai_providers": available_ai_providers,
         "selected_ai_provider": selected_ai_provider,
+        "shared_ai_daily_limit": shared_ai_daily_limit,
+        "shared_ai_usage_today": shared_ai_usage_today,
         "total_value": total_value,
         "geo_table": geo_table,
         "sector_table": sector_table,
@@ -2554,13 +2660,17 @@ def portfolio_ai_analysis(
     user = _get_current_user(request, db)
     if not user:
         return JSONResponse({"error": "Authentication required."}, status_code=401)
+    user_settings = _get_or_create_settings(db, user.id)
 
     account = payload.get("account") or "combined"
     if account not in ("ISA", "Trading"):
         account = "combined"
     pies = str(payload.get("pies") or "")
     force_reanalyse = bool(payload.get("force_reanalyse"))
-    provider = _resolve_ai_provider(payload.get("provider"))
+    provider = _resolve_ai_provider(payload.get("provider"), user_settings)
+    provider_api_key, using_shared_key = _resolve_ai_provider_access(user_settings, provider)
+    if not provider_api_key:
+        return JSONResponse({"error": "The selected AI provider is not configured."}, status_code=400)
 
     available_pies = _load_pies(db, user.id, account)
     selected_pie_ids = _resolve_selected_pie_ids(available_pies, pies)
@@ -2608,8 +2718,23 @@ def portfolio_ai_analysis(
             "holdings_count": latest_cache_row.holdings_count,
         })
 
+    if using_shared_key:
+        shared_ai_daily_limit = _get_shared_ai_daily_limit(db)
+        shared_ai_usage_today = _count_shared_ai_usage_today(db, user.id)
+        if shared_ai_usage_today >= shared_ai_daily_limit:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"You have reached the shared AI analysis limit for today "
+                        f"({shared_ai_daily_limit} per day). Add your own {provider.title()} API key "
+                        f"in Settings to continue."
+                    )
+                },
+                status_code=429,
+            )
+
     try:
-        analysis_text, model, prompt_text = _request_ai_portfolio_analysis(provider, holdings_payload)
+        analysis_text, model, prompt_text = _request_ai_portfolio_analysis(provider, holdings_payload, provider_api_key)
     except Exception as exc:
         return JSONResponse(
             {"error": f"AI portfolio analysis failed: {exc}"},
@@ -2640,6 +2765,13 @@ def portfolio_ai_analysis(
             updated_at=now_utc,
         )
         db.add(cache_row)
+
+    db.add(AIAnalysisUsage(
+        user_id=user.id,
+        provider=provider,
+        used_shared_key=using_shared_key,
+        created_at=now_utc,
+    ))
 
     db.commit()
     return JSONResponse({

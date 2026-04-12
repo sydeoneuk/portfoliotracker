@@ -193,6 +193,62 @@
       </div>
     </div>
 
+    <!-- AI Keys -->
+    <div class="card mb-4">
+      <div class="card-body">
+        <h6 class="card-title mb-3">AI Provider API Keys</h6>
+        <p class="text-muted mb-3" style="font-size:.85rem;">
+          Add your own Anthropic and/or OpenAI API keys if you want AI analysis to run against your personal provider account.
+          If you do not add your own keys, the app may use shared server keys and apply a daily analysis limit.
+        </p>
+
+        <div class="mb-3">
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="text-muted">Claude / Anthropic:</span>
+            {% if has_anthropic_ai_key %}
+            <span class="key-status key-set">Configured</span>
+            <form method="post" action="/settings/clear-key" class="d-inline">
+              <input type="hidden" name="key_type" value="anthropic">
+              <button class="btn btn-sm btn-outline-danger py-0">Remove</button>
+            </form>
+            {% else %}
+            <span class="key-status key-unset">Not configured</span>
+            {% endif %}
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <span class="text-muted">OpenAI:</span>
+            {% if has_openai_ai_key %}
+            <span class="key-status key-set">Configured</span>
+            <form method="post" action="/settings/clear-key" class="d-inline">
+              <input type="hidden" name="key_type" value="openai">
+              <button class="btn btn-sm btn-outline-danger py-0">Remove</button>
+            </form>
+            {% else %}
+            <span class="key-status key-unset">Not configured</span>
+            {% endif %}
+          </div>
+        </div>
+
+        <hr class="my-3">
+
+        <form method="post" action="/settings">
+          <div class="row g-2 mb-3">
+            <div class="col">
+              <label class="form-label text-muted">Anthropic API Key</label>
+              <input type="password" name="anthropic_api_key" class="form-control"
+                     placeholder="{% if has_anthropic_ai_key %}Leave blank to keep existing{% else %}Paste Anthropic API key{% endif %}">
+            </div>
+            <div class="col">
+              <label class="form-label text-muted">OpenAI API Key</label>
+              <input type="password" name="openai_api_key" class="form-control"
+                     placeholder="{% if has_openai_ai_key %}Leave blank to keep existing{% else %}Paste OpenAI API key{% endif %}">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-t212">Save AI Keys</button>
+        </form>
+      </div>
+    </div>
+
     <!-- Sync -->
     <div class="card mb-4">
       <div class="card-body">
