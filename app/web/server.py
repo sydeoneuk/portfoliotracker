@@ -1483,7 +1483,7 @@ def index(request: Request, account: str = "combined", pies: str = "",
 
     for p in positions:
         if p["currency"] == "GBX":
-            for col in ("average_price", "current_price", "cost", "value"):
+            for col in ("average_price", "current_price", "cost", "value", "forward_dividends", "annual_rate_per_share"):
                 if p[col] is not None:
                     p[col] = round(float(p[col]) / 100, 2)
             p["currency"] = "GBP"
