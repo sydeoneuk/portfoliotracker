@@ -1559,6 +1559,96 @@ def _fetch_filtered_positions(
     return [dict(r._mapping) for r in rows]
 
 
+def _normalise_positions_for_display(positions: list[dict]) -> list[dict]:
+    for p in positions:
+        p["display_class"] = _classify(
+            p["instrument_type"], p["sector"], p["industry"],
+            p["name"], p["instrument_class"],
+        )
+
+    for p in positions:
+        if p["currency"] == "GBX":
+            for col in ("average_price", "current_price", "cost", "value", "forward_dividends", "annual_rate_per_share"):
+                if p[col] is not None:
+                    p[col] = round(float(p[col]) / 100, 2)
+            p["currency"] = "GBP"
+
+    return positions
+
+
+def _build_position_display_context(
+    db: Session,
+    user_id: int,
+    account: str,
+    positions: list[dict],
+) -> dict:
+    from app.auth.models import UserSettings as _UserSettings
+
+    totals: dict[str, dict] = {}
+    for p in positions:
+        ccy = p["currency"]
+        if ccy not in totals:
+            totals[ccy] = {"cost": 0.0, "value": 0.0, "ppl": 0.0, "dividends": 0.0, "fwd_dividends": 0.0}
+        totals[ccy]["cost"] += float(p["cost"] or 0)
+        totals[ccy]["value"] += float(p["value"] or 0)
+        totals[ccy]["ppl"] += float(p["ppl"] or 0)
+        totals[ccy]["dividends"] += float(p["total_dividends"] or 0)
+        totals[ccy]["fwd_dividends"] += float(p["forward_dividends"] or 0)
+
+    user_settings = db.query(_UserSettings).filter_by(user_id=user_id).first()
+    display_currency = _resolve_display_currency(user_settings, account)
+
+    fx_needed = set(totals.keys()) | {display_currency}
+    if user_settings:
+        if user_settings.trading_currency_code:
+            fx_needed.add(user_settings.trading_currency_code)
+        if user_settings.isa_currency_code:
+            fx_needed.add(user_settings.isa_currency_code)
+
+    fx = _get_fx_rates_to_gbp(fx_needed)
+    grand_total = {"cost": 0.0, "value": 0.0, "ppl": 0.0, "dividends": 0.0, "fwd_dividends": 0.0}
+    for ccy, t in totals.items():
+        rate = fx.get(ccy, 1.0)
+        grand_total["cost"] += t["cost"] * rate
+        grand_total["value"] += t["value"] * rate
+        grand_total["ppl"] += t["ppl"] * rate
+        grand_total["dividends"] += t["dividends"] * rate
+        grand_total["fwd_dividends"] += t["fwd_dividends"] * rate
+
+    grand_total_display = {
+        key: _convert_gbp_to_currency(value, display_currency, fx)
+        for key, value in grand_total.items()
+    }
+    fx_rates_display: dict[str, float] = {}
+    for ccy in totals.keys():
+        if ccy != display_currency:
+            fx_rates_display[ccy] = _native_to_display_rate(ccy, display_currency, fx)
+
+    for p in positions:
+        native_to_display = _native_to_display_rate(p["currency"], display_currency, fx)
+        p["avg_price_display"] = float(p["average_price"] or 0) * native_to_display
+        p["current_price_display"] = float(p["current_price"] or 0) * native_to_display
+        p["cost_display"] = float(p["cost"] or 0) * native_to_display
+        p["value_display"] = float(p["value"] or 0) * native_to_display
+        p["ppl_display"] = float(p["ppl"] or 0) * native_to_display
+        p["dividends_display"] = _convert_gbp_to_currency(float(p["total_dividends"] or 0), display_currency, fx)
+        p["forward_dividends_display"] = float(p["forward_dividends"] or 0) * native_to_display
+        p["total_pnl_display"] = p["ppl_display"] + p["dividends_display"]
+        p["total_pnl_pct_display"] = (p["total_pnl_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
+        p["div_return_pct_display"] = (p["dividends_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
+        p["fwd_yield_display"] = (p["forward_dividends_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
+
+    return {
+        "positions": positions,
+        "totals": totals,
+        "display_currency": display_currency,
+        "fx": fx,
+        "fx_rates_display": fx_rates_display,
+        "grand_total_display": grand_total_display,
+        "user_settings": user_settings,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, account: str = "combined", pies: str = "",
           country: str = "", sector: str = "",
@@ -1595,18 +1685,7 @@ def index(request: Request, account: str = "combined", pies: str = "",
 
     positions = [dict(r._mapping) for r in rows]
 
-    for p in positions:
-        p["display_class"] = _classify(
-            p["instrument_type"], p["sector"], p["industry"],
-            p["name"], p["instrument_class"],
-        )
-
-    for p in positions:
-        if p["currency"] == "GBX":
-            for col in ("average_price", "current_price", "cost", "value", "forward_dividends", "annual_rate_per_share"):
-                if p[col] is not None:
-                    p[col] = round(float(p[col]) / 100, 2)
-            p["currency"] = "GBP"
+    positions = _normalise_positions_for_display(positions)
 
     # Apply hidden country / sector filters (activated from the Analysis page)
     if country:
@@ -1621,37 +1700,14 @@ def index(request: Request, account: str = "combined", pies: str = "",
             return s if s else p["display_class"]
         positions = [p for p in positions if _eff_sector(p) == sector]
 
-    totals: dict[str, dict] = {}
-    for p in positions:
-        ccy = p["currency"]
-        if ccy not in totals:
-            totals[ccy] = {"cost": 0.0, "value": 0.0, "ppl": 0.0, "dividends": 0.0, "fwd_dividends": 0.0}
-        totals[ccy]["cost"] += float(p["cost"] or 0)
-        totals[ccy]["value"] += float(p["value"] or 0)
-        totals[ccy]["ppl"] += float(p["ppl"] or 0)
-        totals[ccy]["dividends"] += float(p["total_dividends"] or 0)
-        totals[ccy]["fwd_dividends"] += float(p["forward_dividends"] or 0)
-
-    from app.auth.models import UserSettings as _UserSettings
-    user_settings = db.query(_UserSettings).filter_by(user_id=user.id).first()
-    display_currency = _resolve_display_currency(user_settings, account)
-
-    fx_needed = set(totals.keys()) | {display_currency}
-    if user_settings:
-        if user_settings.trading_currency_code:
-            fx_needed.add(user_settings.trading_currency_code)
-        if user_settings.isa_currency_code:
-            fx_needed.add(user_settings.isa_currency_code)
-
-    fx = _get_fx_rates_to_gbp(fx_needed)
-    grand_total = {"cost": 0.0, "value": 0.0, "ppl": 0.0, "dividends": 0.0, "fwd_dividends": 0.0}
-    for ccy, t in totals.items():
-        rate = fx.get(ccy, 1.0)
-        grand_total["cost"] += t["cost"] * rate
-        grand_total["value"] += t["value"] * rate
-        grand_total["ppl"] += t["ppl"] * rate
-        grand_total["dividends"] += t["dividends"] * rate
-        grand_total["fwd_dividends"] += t["fwd_dividends"] * rate
+    display_context = _build_position_display_context(db, user.id, account, positions)
+    positions = display_context["positions"]
+    totals = display_context["totals"]
+    user_settings = display_context["user_settings"]
+    display_currency = display_context["display_currency"]
+    fx = display_context["fx"]
+    grand_total_display = display_context["grand_total_display"]
+    fx_rates_display = display_context["fx_rates_display"]
 
     last_synced = db.execute(text(
         "SELECT MAX(last_synced_at) FROM positions WHERE user_id = :uid"
@@ -1680,29 +1736,6 @@ def index(request: Request, account: str = "combined", pies: str = "",
             _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, fx)
             + _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, fx)
         )
-
-    grand_total_display = {
-        key: _convert_gbp_to_currency(value, display_currency, fx)
-        for key, value in grand_total.items()
-    }
-    fx_rates_display: dict[str, float] = {}
-    for ccy in totals.keys():
-        if ccy != display_currency:
-            fx_rates_display[ccy] = _native_to_display_rate(ccy, display_currency, fx)
-
-    for p in positions:
-        native_to_display = _native_to_display_rate(p["currency"], display_currency, fx)
-        p["avg_price_display"] = float(p["average_price"] or 0) * native_to_display
-        p["current_price_display"] = float(p["current_price"] or 0) * native_to_display
-        p["cost_display"] = float(p["cost"] or 0) * native_to_display
-        p["value_display"] = float(p["value"] or 0) * native_to_display
-        p["ppl_display"] = float(p["ppl"] or 0) * native_to_display
-        p["dividends_display"] = _convert_gbp_to_currency(float(p["total_dividends"] or 0), display_currency, fx)
-        p["forward_dividends_display"] = float(p["forward_dividends"] or 0) * native_to_display
-        p["total_pnl_display"] = p["ppl_display"] + p["dividends_display"]
-        p["total_pnl_pct_display"] = (p["total_pnl_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
-        p["div_return_pct_display"] = (p["dividends_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
-        p["fwd_yield_display"] = (p["forward_dividends_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
 
     return templates.TemplateResponse(request, "index.html", {
         "user": user,
@@ -2475,6 +2508,10 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     available_pies = _load_pies(db, user.id, account)
     selected_pie_ids = _resolve_selected_pie_ids(available_pies, pies)
     positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids)
+    positions = _normalise_positions_for_display(positions)
+    display_context = _build_position_display_context(db, user.id, account, positions)
+    positions = display_context["positions"]
+    display_currency = display_context["display_currency"]
 
     currencies = {p["currency"] for p in positions if p.get("currency")}
     fx = _get_fx_rates_to_gbp(currencies)
@@ -2633,6 +2670,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "shared_ai_daily_limit": shared_ai_daily_limit,
         "shared_ai_usage_today": shared_ai_usage_today,
         "total_value": total_value,
+        "positions": positions,
+        "display_currency": display_currency,
         "geo_table": geo_table,
         "sector_table": sector_table,
         "geo_data": _build_chart_json(geo_table),

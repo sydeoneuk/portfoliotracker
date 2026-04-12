@@ -14,6 +14,7 @@
 
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.datatables.net/2.0.8/css/dataTables.bootstrap5.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
@@ -57,6 +58,17 @@
     .ai-analysis-output table { width: 100%; margin-bottom: 1rem; border-collapse: collapse; }
     .ai-analysis-output th, .ai-analysis-output td { border: 1px solid #d9e2ec; padding: .5rem .65rem; vertical-align: top; }
     .ai-analysis-output th { background: #f0f4f8; }
+    .table-card { border: none; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.08); overflow: hidden; }
+    #analysis-positions-table thead th { background: #3a4450; color: #c8d6e5; font-size: .72rem; text-transform: uppercase; letter-spacing: .6px; border: none; white-space: nowrap; }
+    #analysis-positions-table tbody tr:hover { background: #f0fbf7; cursor: pointer; }
+    #analysis-positions-table td { vertical-align: middle; border-color: #f0f2f5; }
+    .badge-exchange { display: inline-block; padding: .18rem .48rem; font-size: .68rem; font-weight: 600; line-height: 1.1; color: #445; background: #eef2f6; border: 1px solid #d9e2ec; border-radius: 999px; }
+    .pnl-pos { color: #0fa968 !important; font-weight: 600; }
+    .pnl-neg { color: #e0334c !important; font-weight: 600; }
+    .pnl-zero { color: #6c757d !important; }
+    .cov-good { color: #0fa968 !important; font-weight: 400; }
+    .cov-warn { color: #fd7e14 !important; font-weight: 400; }
+    .cov-bad { color: #e0334c !important; font-weight: 400; }
   </style>
   <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-6145203907417515" crossorigin="anonymous"></script>
 </head>
@@ -117,8 +129,73 @@
     </div></div>
     <div class="col-12 col-xl-6"><div class="card analysis-card"><div class="card-header d-flex justify-content-between align-items-center"><span>Sector / Type Split</span><span style="font-weight:400; color:rgba(255,255,255,.5); font-size:.72rem; text-transform:none; letter-spacing:0;">{{ sector_table|length }} categor{{ 'y' if sector_table|length == 1 else 'ies' }}</span></div><div class="card-body p-3"><div class="chart-wrap"><canvas id="sectorChart"></canvas></div></div><div class="card-body p-0" style="border-top: 1px solid #f0f2f5;">{% if sector_table %}<table class="table breakdown-table mb-0 w-100"><thead><tr><th>Sector / Type</th><th class="text-end">Value (GBP)</th><th class="text-end" style="min-width:60px">%</th><th style="min-width:110px; padding-right:1rem;"></th></tr></thead><tbody>{% for row in sector_table %}<tr onclick="window.location.href='{{ row.href }}'"><td><div class="d-flex align-items-center gap-2"><span class="color-swatch" style="background:{{ row.color }};"></span>{{ row.label }}</div></td><td class="text-end">&pound;{{ "{:,.0f}".format(row.value) }}</td><td class="text-end fw-semibold">{{ "{:.1f}".format(row.pct) }}%</td><td style="padding-right:1rem;"><div class="progress" style="height:5px; border-radius:3px;"><div class="progress-bar" style="width:{{ [row.pct, 100]|min | round(1) }}%; background:{{ row.color }};"></div></div></td></tr>{% endfor %}</tbody></table>{% else %}<p class="text-muted p-3 mb-0">No data available.</p>{% endif %}</div></div></div>
   </div>
+  <div class="mt-4">
+    <div class="card table-card">
+      <div class="card-header" style="background: var(--t212-dark); color: #fff; font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .8px;">Filtered Holdings</div>
+      <div class="card-body p-0">
+        <table id="analysis-positions-table" class="table table-hover mb-0 w-100">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Tik.</th>
+              <th>Curr.</th>
+              <th>Acc.</th>
+              <th>Type</th>
+              <th class="text-end">Qty</th>
+              <th class="text-end">Cost ({{ display_currency }})</th>
+              <th class="text-end">Value ({{ display_currency }})</th>
+              <th class="text-end">Cap. P&amp;L ({{ display_currency }})</th>
+              <th class="text-end">Total P&amp;L ({{ display_currency }})</th>
+              <th class="text-end">Cap. P&amp;L %</th>
+              <th class="text-end">Total P&amp;L %</th>
+              <th class="text-end">Dividends Actual ({{ display_currency }})</th>
+              <th class="text-end">Div Return%</th>
+              <th class="text-end">FCF Div. Cov.</th>
+              <th class="text-end">Div. Cov.</th>
+              <th class="text-end">Fwd Yield</th>
+              <th class="text-end">Pies</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in positions %}
+            {% set pct = ((p.current_price - p.average_price) / p.average_price * 100) if (p.average_price and p.average_price != 0) else 0 %}
+            <tr onclick="window.location.href='/holding/{{ p.ticker }}?account={{ account_filter }}'">
+              <td>{{ p.name }}</td>
+              <td><code>{{ p.short_name }}</code></td>
+              <td>{{ p.currency }}</td>
+              <td><span class="badge-exchange">{{ p.account }}</span></td>
+              <td><span class="badge-exchange">{{ p.display_class }}</span></td>
+              <td class="text-end">{{ fmt(p.quantity, 4) }}</td>
+              <td class="text-end">{{ cfmt(p.cost_display, display_currency) }}</td>
+              <td data-order="{{ p.value_display }}" class="text-end fw-semibold {% if p.value_display >= p.cost_display %}pnl-pos{% else %}pnl-neg{% endif %}">{{ cfmt(p.value_display, display_currency) }}</td>
+              <td data-order="{{ p.ppl_display }}" class="text-end {% if p.ppl_display > 0 %}pnl-pos{% elif p.ppl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">{% if p.ppl_display != 0 %}{% if p.ppl_display > 0 %}+{% endif %}{{ cfmt(p.ppl_display, display_currency) }}{% else %}-{% endif %}</td>
+              <td data-order="{{ p.total_pnl_display }}" class="text-end {% if p.total_pnl_display > 0 %}pnl-pos{% elif p.total_pnl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">{% if p.total_pnl_display != 0 %}{% if p.total_pnl_display > 0 %}+{% endif %}{{ cfmt(p.total_pnl_display, display_currency) }}{% else %}-{% endif %}</td>
+              <td data-order="{{ pct }}" class="text-end {% if pct > 0 %}pnl-pos{% elif pct < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">{% if pct != 0 %}{% if pct > 0 %}+{% endif %}{{ fmt(pct, 2) }}%{% else %}-{% endif %}</td>
+              <td data-order="{{ p.total_pnl_pct_display }}" class="text-end {% if p.total_pnl_pct_display > 0 %}pnl-pos{% elif p.total_pnl_pct_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">{% if p.total_pnl_pct_display != 0 %}{% if p.total_pnl_pct_display > 0 %}+{% endif %}{{ fmt(p.total_pnl_pct_display, 2) }}%{% else %}-{% endif %}</td>
+              <td data-order="{{ p.dividends_display }}" class="text-end fw-semibold">{% if p.dividends_display > 0 %}{{ cfmt(p.dividends_display, display_currency) }}{% else %}-{% endif %}</td>
+              <td data-order="{{ p.div_return_pct_display }}" class="text-end fw-semibold">{% if p.div_return_pct_display > 0 %}{{ fmt(p.div_return_pct_display, 2) }}%{% else %}-{% endif %}</td>
+              {% set annual_dps = (p.annual_rate_per_share or 0)|float %}
+              {% set fcf_ps = (p.fcf_per_share_3y_avg or 0)|float %}
+              {% set fcf_cov = (annual_dps / fcf_ps * 100) if (fcf_ps > 0 and annual_dps > 0) else 0 %}
+              <td data-order="{{ fcf_cov }}" class="text-end {% if fcf_cov > 0 %}{% if fcf_cov > 75 %}cov-bad{% elif fcf_cov > 50 %}cov-warn{% else %}cov-good{% endif %}{% endif %}">{% if fcf_cov > 0 %}{{ fmt(fcf_cov, 1) }}%{% elif fcf_ps < 0 and annual_dps > 0 %}<span class="cov-bad">-ve FCF</span>{% else %}-{% endif %}</td>
+              {% set eps = (p.eps_ttm or 0)|float %}
+              {% set div_cov = (eps / annual_dps) if (annual_dps > 0 and eps > 0) else 0 %}
+              <td data-order="{{ div_cov }}" class="text-end {% if div_cov > 0 %}{% if div_cov >= 2 %}cov-good{% elif div_cov >= 1 %}cov-warn{% else %}cov-bad{% endif %}{% elif eps < 0 and annual_dps > 0 %}cov-bad{% endif %}">{% if div_cov > 0 %}{{ fmt(div_cov, 1) }}x{% elif eps < 0 and annual_dps > 0 %}<span class="cov-bad">-ve EPS</span>{% else %}-{% endif %}</td>
+              <td data-order="{{ p.fwd_yield_display }}" class="text-end fw-semibold">{% if p.fwd_yield_display > 0 %}{{ fmt(p.fwd_yield_display, 2) }}%{% else %}-{% endif %}</td>
+              {% set pc = (p.pie_count or 0)|int %}
+              <td data-order="{{ pc }}" class="text-end">{% if pc > 0 %}{{ pc }}{% else %}-{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/2.0.8/js/dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/2.0.8/js/dataTables.bootstrap5.min.js"></script>
 <script>
   const centerLabelPlugin = { id: 'centerLabel', afterDraw(chart) { if (!chart.config.options.plugins?.centerLabel) return; const meta = chart.getDatasetMeta(0); if (!meta?.data?.length) return; const { ctx } = chart; const cx = meta.data[0].x; const cy = meta.data[0].y; const { line1, line2 } = chart.config.options.plugins.centerLabel; ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = 'bold 15px system-ui, -apple-system, sans-serif'; ctx.fillStyle = '#0f1923'; ctx.fillText(line1, cx, cy - 9); ctx.font = '11px system-ui, -apple-system, sans-serif'; ctx.fillStyle = '#6c757d'; ctx.fillText(line2, cx, cy + 10); ctx.restore(); } };
   Chart.register(centerLabelPlugin);
@@ -278,6 +355,20 @@
       window.location.href = '/analysis?' + params.toString();
     });
   }
+  $(document).ready(function () {
+    $('#analysis-positions-table').DataTable({
+      pageLength: 25,
+      order: [[7, 'desc']],
+      columnDefs: [
+        { targets: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17], type: 'num-fmt' }
+      ],
+      lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, 'All']],
+      language: {
+        search: 'Filter holdings:',
+        lengthMenu: 'Show _MENU_ holdings'
+      }
+    });
+  });
   document.querySelectorAll('.pie-btn').forEach(function(btn) { btn.addEventListener('click', function() { const pieId = this.dataset.pieId; const params = new URLSearchParams(window.location.search); let current = params.get('pies') === 'all' ? {{ available_pies | map(attribute='id') | map('string') | list | tojson }} : (params.get('pies') || '').split(',').filter(Boolean); const idx = current.indexOf(pieId); if (idx > -1) { current.splice(idx, 1); } else { current.push(pieId); } params.set('pies', current.join(',')); if (selectedAiProvider) params.set('ai_provider', selectedAiProvider); window.location.href = '/analysis?' + params.toString(); }); });
 </script>
 <div style="max-width:1400px; margin:0 auto; padding:.5rem 1.5rem 1rem;"><ins class="adsbygoogle" style="display:block" data-ad-client="ca-pub-6145203907417515" data-ad-slot="auto" data-ad-format="auto" data-full-width-responsive="true"></ins><script>(adsbygoogle = window.adsbygoogle || []).push({});</script></div>
