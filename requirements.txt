@@ -14,4 +14,5 @@ itsdangerous>=2.1
 cryptography>=42.0
 python-multipart>=0.0.9
 anthropic>=0.26
+openai>=1.0
 apscheduler>=3.10

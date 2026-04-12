@@ -177,7 +177,6 @@ def _classify(instrument_type: str, sector: str, industry: str,
 _fx_cache: dict[str, float] = {}
 _fx_cache_ts: float = 0.0
 _FX_TTL = 3600
-_AI_PORTFOLIO_ANALYSIS_TTL = 3600
 
 
 def _get_fx_rates_to_gbp(currencies: set[str]) -> dict[str, float]:
@@ -2040,6 +2039,10 @@ def _format_analysis_timestamp(ts: datetime.datetime) -> str:
     return ts.strftime("%d %b %Y %H:%M UTC")
 
 
+def _format_analysis_timestamp_iso(ts: datetime.datetime) -> str:
+    return ts.replace(microsecond=0).isoformat() + "Z"
+
+
 def _format_analysis_age(ts: datetime.datetime) -> str:
     age_seconds = max(int((datetime.datetime.utcnow() - ts).total_seconds()), 0)
     if age_seconds < 60:
@@ -2049,6 +2052,75 @@ def _format_analysis_age(ts: datetime.datetime) -> str:
         return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
     hours = age_seconds // 3600
     return f"{hours} hour{'s' if hours != 1 else ''} ago"
+
+
+def _get_latest_ai_analysis_cache(
+    db: Session,
+    user_id: int,
+    provider: str,
+    account: str,
+    pie_filter_key: str,
+) -> AIPortfolioAnalysisCache | None:
+    return (
+        db.query(AIPortfolioAnalysisCache)
+        .filter_by(
+            user_id=user_id,
+            provider=provider,
+            account_filter=account,
+            pie_filter_key=pie_filter_key,
+        )
+        .order_by(AIPortfolioAnalysisCache.updated_at.desc())
+        .first()
+    )
+
+
+def _get_available_ai_providers() -> list[dict]:
+    providers: list[dict] = []
+    if settings.anthropic_api_key:
+        providers.append({"id": "anthropic", "label": "Claude"})
+    if settings.openai_api_key:
+        providers.append({"id": "openai", "label": "OpenAI"})
+    return providers
+
+
+def _resolve_ai_provider(requested_provider: str | None) -> str:
+    available = _get_available_ai_providers()
+    if not available:
+        return "anthropic"
+    available_ids = {p["id"] for p in available}
+    if requested_provider in available_ids:
+        return requested_provider
+    return available[0]["id"]
+
+
+def _build_ai_system_prompt() -> str:
+    return (
+        "You are writing a detailed educational portfolio review for a private investor dashboard. "
+        "Be rigorous, balanced, and practical. Do not claim certainty or provide regulated financial advice. "
+        "Use only the supplied data and call out missing data clearly. "
+        "This portfolio is held on Trading 212, so avoid overemphasising traditional platform dealing fees, "
+        "custody charges, or other legacy broker transaction-cost structures unless they are directly relevant."
+    )
+
+
+def _build_ai_user_prompt(holdings_payload: dict) -> str:
+    return (
+        "Analyse this portfolio as deeply as possible.\n\n"
+        "Requirements:\n"
+        "- Give the most in-depth investment analysis possible from the supplied holdings data.\n"
+        "- Assess concentration, diversification quality, sector exposure, country exposure, "
+        "position sizing, income dependence, overlap risk, and any obvious valuation or "
+        "quality signals from the available metrics.\n"
+        "- Highlight strengths as well as vulnerabilities.\n"
+        "- Give concrete recommendations for risks to monitor and potential portfolio changes.\n"
+        "- Be specific and avoid generic filler.\n"
+        "- Format the answer in Markdown with these sections: Executive Summary, Portfolio Snapshot, "
+        "Strengths, Risks and Weaknesses, Recommendations, Questions to Consider, Disclaimer.\n"
+        "- This is a Trading 212 portfolio, so do not spend much time discussing traditional broker fee models, "
+        "ticket charges, or custody-fee structures unless the supplied data makes that specifically relevant.\n"
+        "- Do not stop mid-section. If you need more space, continue from exactly where you left off.\n\n"
+        f"Portfolio data JSON:\n{json.dumps(holdings_payload, indent=2)}"
+    )
 
 
 def _build_ai_holdings_payload(
@@ -2132,7 +2204,7 @@ def _build_ai_holdings_hash(account: str, pie_filter_key: str, holdings_payload:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _request_ai_portfolio_analysis(holdings_payload: dict) -> tuple[str, str]:
+def _request_anthropic_portfolio_analysis(holdings_payload: dict) -> tuple[str, str, str]:
     if not settings.anthropic_api_key:
         raise RuntimeError("Anthropic API key is not configured.")
 
@@ -2140,30 +2212,8 @@ def _request_ai_portfolio_analysis(holdings_payload: dict) -> tuple[str, str]:
 
     model = settings.anthropic_analysis_model
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    system_prompt = (
-        "You are writing a detailed educational portfolio review for a private investor dashboard. "
-        "Be rigorous, balanced, and practical. Do not claim certainty or provide regulated financial advice. "
-        "Use only the supplied data and call out missing data clearly. "
-        "This portfolio is held on Trading 212, so avoid overemphasising traditional platform dealing fees, "
-        "custody charges, or other legacy broker transaction-cost structures unless they are directly relevant."
-    )
-    user_prompt = (
-        "Analyse this portfolio as deeply as possible.\n\n"
-        "Requirements:\n"
-        "- Give the most in-depth investment analysis possible from the supplied holdings data.\n"
-        "- Assess concentration, diversification quality, sector exposure, country exposure, "
-        "position sizing, income dependence, overlap risk, and any obvious valuation or "
-        "quality signals from the available metrics.\n"
-        "- Highlight strengths as well as vulnerabilities.\n"
-        "- Give concrete recommendations for risks to monitor and potential portfolio changes.\n"
-        "- Be specific and avoid generic filler.\n"
-        "- Format the answer in Markdown with these sections: Executive Summary, Portfolio Snapshot, "
-        "Strengths, Risks and Weaknesses, Recommendations, Questions to Consider, Disclaimer.\n"
-        "- This is a Trading 212 portfolio, so do not spend much time discussing traditional broker fee models, "
-        "ticket charges, or custody-fee structures unless the supplied data makes that specifically relevant.\n"
-        "- Do not stop mid-section. If you need more space, continue from exactly where you left off.\n\n"
-        f"Portfolio data JSON:\n{json.dumps(holdings_payload, indent=2)}"
-    )
+    system_prompt = _build_ai_system_prompt()
+    user_prompt = _build_ai_user_prompt(holdings_payload)
     messages = [{"role": "user", "content": user_prompt}]
     collected_parts: list[str] = []
 
@@ -2195,7 +2245,44 @@ def _request_ai_portfolio_analysis(holdings_payload: dict) -> tuple[str, str]:
     analysis_text = "\n\n".join(p for p in collected_parts if p).strip()
     if not analysis_text:
         raise RuntimeError("Claude returned an empty analysis.")
-    return analysis_text, model
+    prompt_text = f"System:\n{system_prompt}\n\nUser:\n{user_prompt}"
+    return analysis_text, model, prompt_text
+
+
+def _request_openai_portfolio_analysis(holdings_payload: dict) -> tuple[str, str, str]:
+    if not settings.openai_api_key:
+        raise RuntimeError("OpenAI API key is not configured.")
+
+    from openai import OpenAI
+
+    model = settings.openai_analysis_model
+    client = OpenAI(api_key=settings.openai_api_key)
+    system_prompt = _build_ai_system_prompt()
+    user_prompt = _build_ai_user_prompt(holdings_payload)
+    completion = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    analysis_text = (
+        completion.choices[0].message.content.strip()
+        if getattr(completion, "choices", None)
+        and completion.choices[0].message
+        and completion.choices[0].message.content
+        else ""
+    )
+    if not analysis_text:
+        raise RuntimeError("OpenAI returned an empty analysis.")
+    prompt_text = f"System:\n{system_prompt}\n\nUser:\n{user_prompt}"
+    return analysis_text, model, prompt_text
+
+
+def _request_ai_portfolio_analysis(provider: str, holdings_payload: dict) -> tuple[str, str, str]:
+    if provider == "openai":
+        return _request_openai_portfolio_analysis(holdings_payload)
+    return _request_anthropic_portfolio_analysis(holdings_payload)
 
 
 def _build_portfolio_history(db: Session, user_id: int, account: str, selected_pie_ids: list[int]) -> str:
@@ -2270,7 +2357,7 @@ def _analysis_pie_query(pie_ids: list[int], account: str) -> str:
 
 
 @app.get("/analysis", response_class=HTMLResponse)
-def portfolio_analysis(request: Request, account: str = "combined", pies: str = "",
+def portfolio_analysis(request: Request, account: str = "combined", pies: str = "", ai_provider: str = "",
                        db: Session = Depends(get_session)):
     user = _get_current_user(request, db)
     if not user:
@@ -2278,6 +2365,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
 
     if account not in ("ISA", "Trading"):
         account = "combined"
+    available_ai_providers = _get_available_ai_providers()
+    selected_ai_provider = _resolve_ai_provider(ai_provider or None)
 
     available_pies = _load_pies(db, user.id, account)
     selected_pie_ids = _resolve_selected_pie_ids(available_pies, pies)
@@ -2407,6 +2496,27 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "total":  round(sum(float(r.total) for r in div_rows), 2),
     })
     portfolio_history = _build_portfolio_history(db, user.id, account, selected_pie_ids)
+    pie_filter_key = _build_ai_pie_filter_key(pies, selected_pie_ids)
+    cached_ai_analysis = _get_latest_ai_analysis_cache(
+        db, user.id, selected_ai_provider, account, pie_filter_key
+    )
+    initial_ai_analysis = None
+    ai_analysis_header_text = "No cached analysis yet"
+    ai_analysis_button_label = "Analyse now"
+    if cached_ai_analysis:
+        initial_ai_analysis = {
+            "analysis": cached_ai_analysis.analysis_text,
+            "cached": True,
+            "provider": cached_ai_analysis.provider,
+            "model": cached_ai_analysis.model,
+            "prompt_text": cached_ai_analysis.prompt_text,
+            "generated_at": _format_analysis_timestamp(cached_ai_analysis.updated_at),
+            "generated_at_iso": _format_analysis_timestamp_iso(cached_ai_analysis.updated_at),
+            "age": _format_analysis_age(cached_ai_analysis.updated_at),
+            "holdings_count": cached_ai_analysis.holdings_count,
+        }
+        ai_analysis_header_text = "Last run previously saved"
+        ai_analysis_button_label = "Reanalyse"
 
     return templates.TemplateResponse(request, "analysis.html", {
         "user": user,
@@ -2414,6 +2524,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "available_pies": available_pies,
         "selected_pie_ids": [str(i) for i in selected_pie_ids],
         "pies_param": pies,
+        "available_ai_providers": available_ai_providers,
+        "selected_ai_provider": selected_ai_provider,
         "total_value": total_value,
         "geo_table": geo_table,
         "sector_table": sector_table,
@@ -2423,6 +2535,9 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "div_holdings_data": _build_chart_json(div_holdings_top),
         "div_by_month": div_by_month,
         "portfolio_history": portfolio_history,
+        "initial_ai_analysis": initial_ai_analysis,
+        "ai_analysis_header_text": ai_analysis_header_text,
+        "ai_analysis_button_label": ai_analysis_button_label,
         "fmt": _fmt,
         "cfmt": _cfmt,
     })
@@ -2444,6 +2559,8 @@ def portfolio_ai_analysis(
     if account not in ("ISA", "Trading"):
         account = "combined"
     pies = str(payload.get("pies") or "")
+    force_reanalyse = bool(payload.get("force_reanalyse"))
+    provider = _resolve_ai_provider(payload.get("provider"))
 
     available_pies = _load_pies(db, user.id, account)
     selected_pie_ids = _resolve_selected_pie_ids(available_pies, pies)
@@ -2464,11 +2581,13 @@ def portfolio_ai_analysis(
     )
     pie_filter_key = _build_ai_pie_filter_key(pies, selected_pie_ids)
     holdings_hash = _build_ai_holdings_hash(account, pie_filter_key, holdings_payload)
+    latest_cache_row = _get_latest_ai_analysis_cache(db, user.id, provider, account, pie_filter_key)
 
-    cache_row = (
+    exact_cache_row = (
         db.query(AIPortfolioAnalysisCache)
         .filter_by(
             user_id=user.id,
+            provider=provider,
             account_filter=account,
             pie_filter_key=pie_filter_key,
             holdings_hash=holdings_hash,
@@ -2476,36 +2595,45 @@ def portfolio_ai_analysis(
         .first()
     )
     now_utc = datetime.datetime.utcnow()
-    if cache_row and (now_utc - cache_row.updated_at).total_seconds() < _AI_PORTFOLIO_ANALYSIS_TTL:
+    if latest_cache_row and not force_reanalyse:
         return JSONResponse({
-            "analysis": cache_row.analysis_text,
+            "analysis": latest_cache_row.analysis_text,
             "cached": True,
-            "model": cache_row.model,
-            "generated_at": _format_analysis_timestamp(cache_row.updated_at),
-            "age": _format_analysis_age(cache_row.updated_at),
-            "holdings_count": cache_row.holdings_count,
+            "provider": latest_cache_row.provider,
+            "model": latest_cache_row.model,
+            "prompt_text": latest_cache_row.prompt_text or _build_ai_user_prompt(holdings_payload),
+            "generated_at": _format_analysis_timestamp(latest_cache_row.updated_at),
+            "generated_at_iso": _format_analysis_timestamp_iso(latest_cache_row.updated_at),
+            "age": _format_analysis_age(latest_cache_row.updated_at),
+            "holdings_count": latest_cache_row.holdings_count,
         })
 
     try:
-        analysis_text, model = _request_ai_portfolio_analysis(holdings_payload)
+        analysis_text, model, prompt_text = _request_ai_portfolio_analysis(provider, holdings_payload)
     except Exception as exc:
         return JSONResponse(
             {"error": f"AI portfolio analysis failed: {exc}"},
             status_code=503,
         )
 
+    cache_row = exact_cache_row or latest_cache_row
     if cache_row:
         cache_row.analysis_text = analysis_text
+        cache_row.provider = provider
         cache_row.model = model
+        cache_row.prompt_text = prompt_text
         cache_row.holdings_count = len(holdings_payload["holdings"])
+        cache_row.holdings_hash = holdings_hash
         cache_row.updated_at = now_utc
     else:
         cache_row = AIPortfolioAnalysisCache(
             user_id=user.id,
+            provider=provider,
             account_filter=account,
             pie_filter_key=pie_filter_key,
             holdings_hash=holdings_hash,
             model=model,
+            prompt_text=prompt_text,
             analysis_text=analysis_text,
             holdings_count=len(holdings_payload["holdings"]),
             created_at=now_utc,
@@ -2517,8 +2645,11 @@ def portfolio_ai_analysis(
     return JSONResponse({
         "analysis": analysis_text,
         "cached": False,
+        "provider": provider,
         "model": model,
+        "prompt_text": prompt_text,
         "generated_at": _format_analysis_timestamp(cache_row.updated_at),
+        "generated_at_iso": _format_analysis_timestamp_iso(cache_row.updated_at),
         "age": "just now",
         "holdings_count": cache_row.holdings_count,
     })
