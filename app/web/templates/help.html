@@ -259,6 +259,18 @@
             <li><strong>Dividends by Holding</strong> - which holdings have produced the most income</li>
           </ul>
           <p>All of these charts respect the current account filter, and the portfolio-history chart also respects the active pie filter.</p>
+          <h5>AI portfolio analysis</h5>
+          <p>The Analysis page also includes an optional <strong>AI Portfolio Analysis</strong> panel for generating a written review of the holdings in your current filter.</p>
+          <ul>
+            <li>The AI review uses the currently selected <strong>account</strong> and <strong>pie</strong> filters, so changing filters changes the analysis context.</li>
+            <li>You can choose the AI provider from the dropdown in the analysis header. The app currently supports <strong>Claude</strong> and <strong>OpenAI</strong> when their API keys are configured.</li>
+            <li>Analysis results are cached <strong>per provider and per filter</strong>. If a saved result already exists for the selected provider and filter, it is preloaded automatically when you open the page.</li>
+            <li>The AI header shows the <strong>last run time in your browser's local timezone</strong>, so the saved timestamp reflects where you are viewing it from.</li>
+            <li>Once a saved analysis exists, the action button changes from <strong>Analyse now</strong> to <strong>Reanalyse</strong>.</li>
+            <li>The <strong>Copy Prompt</strong> button copies the exact prompt sent to the AI engine, so you can continue the same line of analysis in your own ChatGPT or Claude account outside the app if you want to.</li>
+          </ul>
+          <div class="tip-box"><strong>What gets sent:</strong> The AI request includes detailed filtered holdings data such as tickers, names, quantities, values, weights, geography, sector, dividend information, and selected valuation fields when available.</div>
+          <div class="tip-box"><strong>Reminder:</strong> The AI analysis is for educational insight only. It does not trade, rebalance, or replace professional financial advice.</div>
           <div class="tip-box"><strong>Drill-down:</strong> Clicking a geography or sector row sends you back to the Portfolio page with the matching filter applied.</div>
         </div>
       </div>
@@ -336,6 +348,12 @@
 
           <h5>Is this app read-only?</h5>
           <p>Yes. It is designed around read access and analysis. It does not place or cancel trades.</p>
+
+          <h5>How does the AI analysis feature work?</h5>
+          <p>It sends the currently filtered holdings to the selected AI provider and asks for a detailed portfolio review. The saved result is kept per provider and per filter, so switching provider or changing filters can show a different cached analysis. You can also use <strong>Copy Prompt</strong> to continue the same analysis outside the app.</p>
+
+          <h5>Why do I only see Claude or OpenAI sometimes?</h5>
+          <p>The provider dropdown only shows AI providers that have valid API keys configured in the app environment. If no AI provider key is configured, the AI analysis controls stay disabled.</p>
 
           <h5>What does Clear Portfolio Data remove?</h5>
           <p>It clears synced portfolio datasets for your user so you can repopulate them with a fresh sync, while keeping your account and stored credentials intact.</p>
