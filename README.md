@@ -1,6 +1,6 @@
 # Trading 212 Portfolio Dashboard
 
-A self-hosted portfolio tracker that syncs your [Trading 212](https://www.trading212.com) data into a multi-user web app with portfolio views, pie-aware analysis, dividends, transactions, instrument enrichment, and daily portfolio history.
+A self-hosted portfolio tracker that syncs your [Trading 212](https://www.trading212.com) data into a multi-user web app with portfolio views, pie-aware analysis, AI portfolio reviews, dividends, transactions, instrument enrichment, and daily portfolio history.
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.11x-green)
@@ -16,12 +16,14 @@ A self-hosted portfolio tracker that syncs your [Trading 212](https://www.tradin
 - **Portfolio history** - each sync stores a daily portfolio snapshot; the Analysis page charts portfolio value over time and respects the current pie/account filters
 - **Dividends** - dividend payment history with month/account filters, monthly income charts, and holding-level breakdowns
 - **Transactions and orders** - open orders, historical orders, and cash transaction history
-- **Analysis page** - portfolio total over time, geographic split, sector/type split, and dividends by holding
+- **Analysis page** - portfolio total over time, geographic split, sector/type split, dividends by holding, and on-demand AI portfolio analysis
+- **AI provider support** - choose between Claude and OpenAI on the Analysis page, with provider-specific cached results and a copyable prompt for continuing the conversation elsewhere
+- **Bring your own AI keys** - users can add their own Anthropic and/or OpenAI API keys in Settings; otherwise the app can use shared server keys with a configurable daily limit
 - **Instrument enrichment** - sector, industry, country, description, EPS, FCF/share, and OpenFIGI fields from yfinance, FMP, Claude, and OpenFIGI
 - **Multi-user auth** - isolated per-user data with Google and Microsoft OAuth login
-- **Encrypted credentials** - Trading 212 API credentials are stored per user and encrypted at rest
+- **Encrypted credentials** - Trading 212 and user-provided AI API credentials are stored per user and encrypted at rest
 - **Scheduled background jobs** - optional automatic daily sync at `03:00 UTC`, plus nightly catalogue enrichment at `04:00 UTC`
-- **Admin tools** - optional admin access for user/sync visibility and catalogue maintenance
+- **Admin tools** - optional admin access for user/sync visibility, catalogue maintenance, and shared AI usage limits
 
 ---
 
@@ -35,6 +37,7 @@ Browser -> Caddy (TLS) -> FastAPI (Python) -> PostgreSQL
                              +-> Financial Modeling Prep
                              +-> OpenFIGI
                              +-> Anthropic Claude
+                             +-> OpenAI
 ```
 
 | Component | Technology |
@@ -96,10 +99,11 @@ GOOGLE_CLIENT_SECRET=...
 # OAuth callback base URL
 APP_BASE_URL=http://localhost:8001
 
-# Optional enrichment APIs
+# Optional enrichment / AI APIs
 # FMP_API_KEY=...
 # OPENFIGI_API_KEY=...
 # ANTHROPIC_API_KEY=...
+# OPENAI_API_KEY=...
 
 # Optional admin users
 # ADMIN_EMAILS=you@example.com
@@ -129,9 +133,18 @@ On first run, Alembic migrations run automatically and create the database schem
 2. Go to **Settings**
 3. Paste your Trading 212 API credentials for `Trading`, `ISA`, or both
 4. Click **Sync Now**
-5. Optionally enable **Automatic Daily Sync**
+5. Optionally add your own **Anthropic** and/or **OpenAI** API keys in **Settings** if you want AI analysis to run against your own provider account
+6. Optionally enable **Automatic Daily Sync**
 
 The first sync may take a few minutes while positions, pies, orders, transactions, dividends, and the first portfolio-history snapshots are populated.
+
+Once data has synced, open the **Analysis** page to use the charts and optional AI portfolio analysis panel. AI analysis is:
+
+- scoped to the current account and pie filters
+- provider-specific (`Claude` / `OpenAI`)
+- cached per provider and per filter
+- preloaded automatically when a saved result already exists
+- copyable via **Copy Prompt** if you want to continue in your own ChatGPT or Claude session outside the app
 
 ### Useful local commands
 
@@ -306,7 +319,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 | `ADMIN_EMAILS` | Optional | Comma-separated list of admin email addresses |
 | `FMP_API_KEY` | Optional | Financial Modeling Prep key for dividend/date enrichment |
 | `OPENFIGI_API_KEY` | Optional | OpenFIGI key for FIGI/MIC/security-type enrichment |
-| `ANTHROPIC_API_KEY` | Optional | Claude key for description fallback |
+| `ANTHROPIC_API_KEY` | Optional | Shared Anthropic key used for description fallback and optional shared AI portfolio analysis |
+| `OPENAI_API_KEY` | Optional | Shared OpenAI key used for optional AI portfolio analysis |
 | `DOMAIN_NAME` | Production | Domain name used by the production stack |
 | `T212_API_KEY` | Legacy optional | Legacy single-user sync script credential |
 | `T212_API_SECRET` | Legacy optional | Legacy single-user sync script secret |
@@ -327,7 +341,7 @@ docker compose exec web alembic upgrade head
 docker compose -f docker-compose.prod.yml exec web alembic upgrade head
 ```
 
-The current schema includes daily portfolio snapshots used by the Analysis page's portfolio-history chart.
+The current schema includes daily portfolio snapshots, AI analysis cache records, AI usage tracking, and app settings used for shared AI limits.
 
 ---
 
