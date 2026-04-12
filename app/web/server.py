@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import time
 import traceback
@@ -11,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 import yfinance as yf
-from fastapi import FastAPI, Depends, Request, Form
+from fastapi import FastAPI, Depends, Request, Form, Body
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -24,6 +25,7 @@ from app.database import get_session, SessionLocal
 from app.auth.models import User, UserSettings
 from app.auth.crypto import encrypt, decrypt
 from app.auth.oauth import oauth
+from app.models.ai_portfolio_analysis_cache import AIPortfolioAnalysisCache
 
 app = FastAPI(title="Trading 212 Dashboard")
 app.mount(
@@ -175,6 +177,7 @@ def _classify(instrument_type: str, sector: str, industry: str,
 _fx_cache: dict[str, float] = {}
 _fx_cache_ts: float = 0.0
 _FX_TTL = 3600
+_AI_PORTFOLIO_ANALYSIS_TTL = 3600
 
 
 def _get_fx_rates_to_gbp(currencies: set[str]) -> dict[str, float]:
@@ -1316,6 +1319,19 @@ def _load_pies(db: Session, user_id: int, account: str) -> list[dict]:
     return [{"id": r.id, "name": r.name} for r in rows]
 
 
+def _resolve_selected_pie_ids(available_pies: list[dict], pies: str) -> list[int]:
+    all_pie_ids = {p["id"] for p in available_pies}
+    if pies == "all":
+        return sorted(all_pie_ids)
+    if not pies:
+        return []
+    return [
+        int(p)
+        for p in pies.split(",")
+        if p.strip().isdigit() and int(p) in all_pie_ids
+    ]
+
+
 def _pie_query(pie_ids: list[int], account: str) -> str:
     """Build pie-filtered SQL using position pricing for consistency with non-pie views.
 
@@ -1403,6 +1419,25 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
                  i.sector, i.industry, i.instrument_class, i.country, i.fcf_per_share_3y_avg, i.eps_ttm
         ORDER BY SUM(pa.quantity * pos.current_price) DESC NULLS LAST
     """
+
+
+def _fetch_filtered_positions(
+    db: Session,
+    user_id: int,
+    account: str,
+    selected_pie_ids: list[int],
+) -> list[dict]:
+    params: dict = {"user_id": user_id}
+    if selected_pie_ids:
+        if account in ("ISA", "Trading"):
+            params["account"] = account
+        rows = db.execute(text(_pie_query(selected_pie_ids, account)), params).fetchall()
+    elif account in ("ISA", "Trading"):
+        params["account"] = account
+        rows = db.execute(_ACCOUNT_SQL, params).fetchall()
+    else:
+        rows = db.execute(_COMBINED_SQL, params).fetchall()
+    return [dict(r._mapping) for r in rows]
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1993,6 +2028,176 @@ _ANALYSIS_ACCOUNT_SQL = text("""
 """)
 
 
+def _build_ai_pie_filter_key(pies: str, selected_pie_ids: list[int]) -> str:
+    if pies == "all":
+        return "all"
+    if selected_pie_ids:
+        return ",".join(str(i) for i in selected_pie_ids)
+    return "none"
+
+
+def _format_analysis_timestamp(ts: datetime.datetime) -> str:
+    return ts.strftime("%d %b %Y %H:%M UTC")
+
+
+def _format_analysis_age(ts: datetime.datetime) -> str:
+    age_seconds = max(int((datetime.datetime.utcnow() - ts).total_seconds()), 0)
+    if age_seconds < 60:
+        return "just now"
+    if age_seconds < 3600:
+        minutes = age_seconds // 60
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    hours = age_seconds // 3600
+    return f"{hours} hour{'s' if hours != 1 else ''} ago"
+
+
+def _build_ai_holdings_payload(
+    positions: list[dict],
+    fx_to_gbp: dict[str, float],
+    account: str,
+    selected_pie_ids: list[int],
+    pies_param: str,
+) -> dict:
+    holdings: list[dict] = []
+    total_value_gbp = 0.0
+
+    for row in positions:
+        currency = row.get("currency") or "GBP"
+        rate_to_gbp = float(fx_to_gbp.get(currency, 1.0) or 1.0)
+        value_native = float(row.get("value") or 0.0)
+        cost_native = float(row.get("cost") or 0.0)
+        value_gbp = value_native * rate_to_gbp
+        cost_gbp = cost_native * rate_to_gbp
+        total_value_gbp += value_gbp
+        holdings.append({
+            "ticker": row.get("ticker"),
+            "name": row.get("name"),
+            "account": row.get("account") or account,
+            "quantity": round(float(row.get("quantity") or 0.0), 6),
+            "currency": currency,
+            "current_price": round(float(row.get("current_price") or 0.0), 6),
+            "average_price": round(float(row.get("average_price") or 0.0), 6),
+            "cost_native": round(cost_native, 2),
+            "value_native": round(value_native, 2),
+            "cost_gbp": round(cost_gbp, 2),
+            "value_gbp": round(value_gbp, 2),
+            "pnl_native": round(float(row.get("ppl") or 0.0), 2),
+            "return_pct": round(float(row.get("result_coef") or 0.0) * 100, 2),
+            "total_dividends_gbp": round(float(row.get("total_dividends") or 0.0), 2),
+            "forward_dividends_native": round(float(row.get("forward_dividends") or 0.0), 2),
+            "annual_dividend_per_share_native": round(float(row.get("annual_rate_per_share") or 0.0), 4),
+            "exchange": row.get("exchange"),
+            "country": row.get("country") or "Unknown",
+            "sector": row.get("sector") or "",
+            "industry": row.get("industry") or "",
+            "instrument_type": row.get("instrument_type") or "",
+            "instrument_class": row.get("instrument_class") or "",
+            "pie_count": int(row.get("pie_count") or 0),
+            "fcf_per_share_3y_avg": row.get("fcf_per_share_3y_avg"),
+            "eps_ttm": row.get("eps_ttm"),
+        })
+
+    total_value_gbp = round(total_value_gbp, 2)
+    for holding in holdings:
+        holding["weight_pct"] = round(
+            (holding["value_gbp"] / total_value_gbp * 100) if total_value_gbp else 0.0,
+            2,
+        )
+
+    holdings.sort(key=lambda h: h["value_gbp"], reverse=True)
+    return {
+        "filter": {
+            "account": account,
+            "pies": pies_param or "",
+            "selected_pie_ids": selected_pie_ids,
+        },
+        "portfolio": {
+            "total_value_gbp": total_value_gbp,
+            "holdings_count": len(holdings),
+        },
+        "holdings": holdings,
+    }
+
+
+def _build_ai_holdings_hash(account: str, pie_filter_key: str, holdings_payload: dict) -> str:
+    canonical = json.dumps(
+        {
+            "account": account,
+            "pie_filter_key": pie_filter_key,
+            "payload": holdings_payload,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _request_ai_portfolio_analysis(holdings_payload: dict) -> tuple[str, str]:
+    if not settings.anthropic_api_key:
+        raise RuntimeError("Anthropic API key is not configured.")
+
+    import anthropic
+
+    model = settings.anthropic_analysis_model
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    system_prompt = (
+        "You are writing a detailed educational portfolio review for a private investor dashboard. "
+        "Be rigorous, balanced, and practical. Do not claim certainty or provide regulated financial advice. "
+        "Use only the supplied data and call out missing data clearly. "
+        "This portfolio is held on Trading 212, so avoid overemphasising traditional platform dealing fees, "
+        "custody charges, or other legacy broker transaction-cost structures unless they are directly relevant."
+    )
+    user_prompt = (
+        "Analyse this portfolio as deeply as possible.\n\n"
+        "Requirements:\n"
+        "- Give the most in-depth investment analysis possible from the supplied holdings data.\n"
+        "- Assess concentration, diversification quality, sector exposure, country exposure, "
+        "position sizing, income dependence, overlap risk, and any obvious valuation or "
+        "quality signals from the available metrics.\n"
+        "- Highlight strengths as well as vulnerabilities.\n"
+        "- Give concrete recommendations for risks to monitor and potential portfolio changes.\n"
+        "- Be specific and avoid generic filler.\n"
+        "- Format the answer in Markdown with these sections: Executive Summary, Portfolio Snapshot, "
+        "Strengths, Risks and Weaknesses, Recommendations, Questions to Consider, Disclaimer.\n"
+        "- This is a Trading 212 portfolio, so do not spend much time discussing traditional broker fee models, "
+        "ticket charges, or custody-fee structures unless the supplied data makes that specifically relevant.\n"
+        "- Do not stop mid-section. If you need more space, continue from exactly where you left off.\n\n"
+        f"Portfolio data JSON:\n{json.dumps(holdings_payload, indent=2)}"
+    )
+    messages = [{"role": "user", "content": user_prompt}]
+    collected_parts: list[str] = []
+
+    for attempt in range(3):
+        message = client.messages.create(
+            model=model,
+            max_tokens=7000,
+            system=system_prompt,
+            messages=messages,
+        )
+        text_blocks = [
+            block.text.strip()
+            for block in (message.content or [])
+            if getattr(block, "type", "") == "text" and getattr(block, "text", "").strip()
+        ]
+        part = "\n\n".join(text_blocks).strip()
+        if part:
+            collected_parts.append(part)
+
+        stop_reason = getattr(message, "stop_reason", None)
+        if stop_reason != "max_tokens":
+            break
+
+        messages.extend([
+            {"role": "assistant", "content": part},
+            {"role": "user", "content": "Continue exactly where you left off and finish the remaining sections without repeating earlier content."},
+        ])
+
+    analysis_text = "\n\n".join(p for p in collected_parts if p).strip()
+    if not analysis_text:
+        raise RuntimeError("Claude returned an empty analysis.")
+    return analysis_text, model
+
+
 def _build_portfolio_history(db: Session, user_id: int, account: str, selected_pie_ids: list[int]) -> str:
     params: dict = {"user_id": user_id}
 
@@ -2075,28 +2280,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         account = "combined"
 
     available_pies = _load_pies(db, user.id, account)
-    all_pie_ids = {p["id"] for p in available_pies}
-
-    if pies == "all":
-        selected_pie_ids = sorted(all_pie_ids)
-    elif pies:
-        selected_pie_ids = [int(p) for p in pies.split(",")
-                            if p.strip().isdigit() and int(p) in all_pie_ids]
-    else:
-        selected_pie_ids = []
-
-    params: dict = {"user_id": user.id}
-    if selected_pie_ids:
-        if account in ("ISA", "Trading"):
-            params["account"] = account
-        rows = db.execute(text(_analysis_pie_query(selected_pie_ids, account)), params).fetchall()
-    elif account in ("ISA", "Trading"):
-        params["account"] = account
-        rows = db.execute(_ANALYSIS_ACCOUNT_SQL, params).fetchall()
-    else:
-        rows = db.execute(_ANALYSIS_COMBINED_SQL, params).fetchall()
-
-    positions = [dict(r._mapping) for r in rows]
+    selected_pie_ids = _resolve_selected_pie_ids(available_pies, pies)
+    positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids)
 
     currencies = {p["currency"] for p in positions if p.get("currency")}
     fx = _get_fx_rates_to_gbp(currencies)
@@ -2244,6 +2429,100 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
 
 
 # ── Holding detail ─────────────────────────────────────────────────────────
+
+@app.post("/analysis/ai")
+def portfolio_ai_analysis(
+    request: Request,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_session),
+):
+    user = _get_current_user(request, db)
+    if not user:
+        return JSONResponse({"error": "Authentication required."}, status_code=401)
+
+    account = payload.get("account") or "combined"
+    if account not in ("ISA", "Trading"):
+        account = "combined"
+    pies = str(payload.get("pies") or "")
+
+    available_pies = _load_pies(db, user.id, account)
+    selected_pie_ids = _resolve_selected_pie_ids(available_pies, pies)
+    positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids)
+    if not positions:
+        return JSONResponse(
+            {"error": "No holdings are available for the current filter."},
+            status_code=400,
+        )
+
+    fx = _get_fx_rates_to_gbp({p["currency"] for p in positions if p.get("currency")})
+    holdings_payload = _build_ai_holdings_payload(
+        positions,
+        fx,
+        account,
+        selected_pie_ids,
+        pies,
+    )
+    pie_filter_key = _build_ai_pie_filter_key(pies, selected_pie_ids)
+    holdings_hash = _build_ai_holdings_hash(account, pie_filter_key, holdings_payload)
+
+    cache_row = (
+        db.query(AIPortfolioAnalysisCache)
+        .filter_by(
+            user_id=user.id,
+            account_filter=account,
+            pie_filter_key=pie_filter_key,
+            holdings_hash=holdings_hash,
+        )
+        .first()
+    )
+    now_utc = datetime.datetime.utcnow()
+    if cache_row and (now_utc - cache_row.updated_at).total_seconds() < _AI_PORTFOLIO_ANALYSIS_TTL:
+        return JSONResponse({
+            "analysis": cache_row.analysis_text,
+            "cached": True,
+            "model": cache_row.model,
+            "generated_at": _format_analysis_timestamp(cache_row.updated_at),
+            "age": _format_analysis_age(cache_row.updated_at),
+            "holdings_count": cache_row.holdings_count,
+        })
+
+    try:
+        analysis_text, model = _request_ai_portfolio_analysis(holdings_payload)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"AI portfolio analysis failed: {exc}"},
+            status_code=503,
+        )
+
+    if cache_row:
+        cache_row.analysis_text = analysis_text
+        cache_row.model = model
+        cache_row.holdings_count = len(holdings_payload["holdings"])
+        cache_row.updated_at = now_utc
+    else:
+        cache_row = AIPortfolioAnalysisCache(
+            user_id=user.id,
+            account_filter=account,
+            pie_filter_key=pie_filter_key,
+            holdings_hash=holdings_hash,
+            model=model,
+            analysis_text=analysis_text,
+            holdings_count=len(holdings_payload["holdings"]),
+            created_at=now_utc,
+            updated_at=now_utc,
+        )
+        db.add(cache_row)
+
+    db.commit()
+    return JSONResponse({
+        "analysis": analysis_text,
+        "cached": False,
+        "model": model,
+        "generated_at": _format_analysis_timestamp(cache_row.updated_at),
+        "age": "just now",
+        "holdings_count": cache_row.holdings_count,
+    })
+
 
 @app.get("/holding/{ticker:path}", response_class=HTMLResponse)
 def holding_detail(ticker: str, request: Request, account: str = "combined",

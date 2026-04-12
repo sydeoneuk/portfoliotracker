@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     # Optional: Anthropic Claude — used as fallback description enricher
     anthropic_api_key: str | None = None
+    anthropic_analysis_model: str = "claude-sonnet-4-5"
 
     postgres_db: str = "trading212"
     postgres_user: str = "trading212"
