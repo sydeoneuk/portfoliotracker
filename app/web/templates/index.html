@@ -487,11 +487,11 @@
             <th class="text-end">Cost ({{ display_currency }})</th>
             <th class="text-end">Value ({{ display_currency }})</th>
             <th class="text-end">Cap. P&amp;L ({{ display_currency }})</th>
-            <th class="text-end">Total P&amp;L ({{ display_currency }})</th>
             <th class="text-end">Cap. P&amp;L %</th>
-            <th class="text-end">Total P&amp;L %</th>
             <th class="text-end">Dividends Actual ({{ display_currency }})</th>
             <th class="text-end">Div Return%</th>
+            <th class="text-end">Total P&amp;L ({{ display_currency }})</th>
+            <th class="text-end">Total P&amp;L %</th>
             <th class="text-end">FCF Div. Cov.</th>
             <th class="text-end">Div. Cov.</th>
             <th class="text-end">Forward Div. (12m, {{ display_currency }})</th>
@@ -516,20 +516,20 @@
             <td data-order="{{ p.ppl_display }}" class="text-end {% if p.ppl_display > 0 %}pnl-pos{% elif p.ppl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
               {% if p.ppl_display != 0 %}{% if p.ppl_display > 0 %}+{% endif %}{{ cfmt(p.ppl_display, display_currency) }}{% else %}-{% endif %}
             </td>
-            <td data-order="{{ p.total_pnl_display }}" class="text-end {% if p.total_pnl_display > 0 %}pnl-pos{% elif p.total_pnl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if p.total_pnl_display != 0 %}{% if p.total_pnl_display > 0 %}+{% endif %}{{ cfmt(p.total_pnl_display, display_currency) }}{% else %}-{% endif %}
-            </td>
             <td data-order="{{ pct }}" class="text-end {% if pct > 0 %}pnl-pos{% elif pct < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
               {% if pct != 0 %}{% if pct > 0 %}+{% endif %}{{ fmt(pct, 2) }}%{% else %}-{% endif %}
-            </td>
-            <td data-order="{{ p.total_pnl_pct_display }}" class="text-end {% if p.total_pnl_pct_display > 0 %}pnl-pos{% elif p.total_pnl_pct_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if p.total_pnl_pct_display != 0 %}{% if p.total_pnl_pct_display > 0 %}+{% endif %}{{ fmt(p.total_pnl_pct_display, 2) }}%{% else %}-{% endif %}
             </td>
             <td data-order="{{ p.dividends_display }}" class="text-end fw-semibold">
               {% if p.dividends_display > 0 %}{{ cfmt(p.dividends_display, display_currency) }}{% else %}-{% endif %}
             </td>
             <td data-order="{{ p.div_return_pct_display }}" class="text-end fw-semibold">
               {% if p.div_return_pct_display > 0 %}{{ fmt(p.div_return_pct_display, 2) }}%{% else %}-{% endif %}
+            </td>
+            <td data-order="{{ p.total_pnl_display }}" class="text-end {% if p.total_pnl_display > 0 %}pnl-pos{% elif p.total_pnl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
+              {% if p.total_pnl_display != 0 %}{% if p.total_pnl_display > 0 %}+{% endif %}{{ cfmt(p.total_pnl_display, display_currency) }}{% else %}-{% endif %}
+            </td>
+            <td data-order="{{ p.total_pnl_pct_display }}" class="text-end {% if p.total_pnl_pct_display > 0 %}pnl-pos{% elif p.total_pnl_pct_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
+              {% if p.total_pnl_pct_display != 0 %}{% if p.total_pnl_pct_display > 0 %}+{% endif %}{{ fmt(p.total_pnl_pct_display, 2) }}%{% else %}-{% endif %}
             </td>
             {% set annual_dps = (p.annual_rate_per_share or 0)|float %}
             {% set fcf_ps = (p.fcf_per_share_3y_avg or 0)|float %}
@@ -601,7 +601,7 @@
       order: [[9, 'desc']],   // sort by Value desc by default
       columnDefs: [
         // Right-align numeric columns for sorting by stripping commas
-        { targets: [5,6,7,8,9,10,11,13,14,18,19], type: 'num-fmt' }
+        { targets: [5,6,7,8,9,10,11,12,13,14,15,18,19], type: 'num-fmt' }
       ],
       lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, 'All']],
       language: {
