@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 from app.client.trading212 import Trading212Client
 from app.models import (
     Instrument, Pie, PieHolding, Position, Order, Transaction,
-    DividendPayment, PortfolioSnapshot,
+    DividendPayment, PortfolioSnapshot, HoldingSnapshot,
 )
 
 
@@ -184,6 +184,11 @@ class SyncRunner:
             PortfolioSnapshot.snapshot_date == snapshot_date,
             PortfolioSnapshot.account == self.account,
         ).delete()
+        self.session.query(HoldingSnapshot).filter(
+            HoldingSnapshot.user_id == self.user_id,
+            HoldingSnapshot.snapshot_date == snapshot_date,
+            HoldingSnapshot.account == self.account,
+        ).delete()
 
         self.session.add(PortfolioSnapshot(
             user_id=self.user_id,
@@ -194,6 +199,21 @@ class SyncRunner:
             pie_id=None,
             total_value_gbp=account_total,
         ))
+
+        for row in position_rows:
+            quantity = float(row.quantity or 0)
+            price_native = float(row.price or 0)
+            value_gbp = quantity * price_native * fx.get(row.currency or "GBP", 1.0)
+            self.session.add(HoldingSnapshot(
+                user_id=self.user_id,
+                snapshot_date=snapshot_date,
+                captured_at=now,
+                account=self.account,
+                ticker=row.ticker,
+                quantity=quantity,
+                price_native=price_native,
+                value_gbp=value_gbp,
+            ))
 
         pie_rows = self.session.execute(_text("""
             SELECT pie.pk AS pie_id, ph.ticker, ph.owned_quantity

@@ -2463,6 +2463,31 @@ def _build_portfolio_history(db: Session, user_id: int, account: str, selected_p
     })
 
 
+def _build_holding_history(db: Session, user_id: int, ticker: str, account: str) -> str:
+    params: dict = {"user_id": user_id, "ticker": ticker}
+    account_filter = ""
+    if account in ("ISA", "Trading"):
+        params["account"] = account
+        account_filter = "AND hs.account = :account"
+
+    rows = db.execute(text(f"""
+        SELECT hs.snapshot_date, SUM(hs.value_gbp) AS value_gbp
+        FROM holding_snapshots hs
+        WHERE hs.user_id = :user_id
+          AND hs.ticker = :ticker
+          {account_filter}
+        GROUP BY hs.snapshot_date
+        ORDER BY hs.snapshot_date
+    """), params).fetchall()
+
+    values = [round(float(r.value_gbp or 0), 2) for r in rows]
+    return json.dumps({
+        "labels": [r.snapshot_date.strftime("%d %b %Y") for r in rows],
+        "values": values,
+        "latest": values[-1] if values else 0.0,
+    })
+
+
 def _analysis_pie_query(pie_ids: list[int], account: str) -> str:
     safe_ids = ", ".join(str(int(i)) for i in pie_ids)
     pos_account_filter = "AND pos.account = :account" if account in ("ISA", "Trading") else ""
@@ -2944,6 +2969,7 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         ORDER BY pie.name
     """), {"ticker": ticker, "account": account, "user_id": user.id}).fetchall()
     pies_in = [dict(r._mapping) for r in pie_rows]
+    holding_history = _build_holding_history(db, user.id, ticker, account)
 
     return templates.TemplateResponse(request, "holding.html", {
         "user": user,
@@ -2979,6 +3005,7 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         "hist_divs": hist_divs,
         "forecast_divs": forecast_divs,
         "pies_in": pies_in,
+        "holding_history": holding_history,
         "fmt": _fmt,
         "cfmt": _cfmt,
     })
