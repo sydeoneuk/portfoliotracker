@@ -9,7 +9,8 @@ from sqlalchemy.dialects.postgresql import insert
 from app.client.trading212 import Trading212Client
 from app.models import (
     Instrument, Pie, PieHolding, Position, Order, Transaction,
-    DividendPayment, PortfolioSnapshot, HoldingSnapshot,
+    DividendPayment, DividendPaymentAllocation, PortfolioSnapshot,
+    HoldingSnapshot, PieHoldingSnapshot,
 )
 
 
@@ -48,13 +49,16 @@ class SyncRunner:
         return response is not None and response.status_code in (401, 403)
 
     def _held_tickers(self) -> set[str]:
-        """Return tickers held directly or inside pies for the current user."""
+        """Return tickers held directly or inside pies for the current user/account."""
         position_q = self.session.query(Position.ticker)
         pie_q = self.session.query(PieHolding.ticker)
 
         if self.user_id is not None:
             position_q = position_q.filter(Position.user_id == self.user_id)
             pie_q = pie_q.filter(PieHolding.user_id == self.user_id)
+        if self.account:
+            position_q = position_q.filter(Position.account == self.account)
+            pie_q = pie_q.filter(PieHolding.account == self.account)
 
         return {r[0] for r in position_q.all()} | {r[0] for r in pie_q.all()}
 
@@ -115,6 +119,11 @@ class SyncRunner:
                         continue
 
         return None
+
+    @staticmethod
+    def _mark_enrichment_attempt(instrument, attempted_at: datetime.datetime) -> None:
+        """Record a normal enrichment attempt so failed lookups back off for 24 hours."""
+        instrument.last_enriched_at = attempted_at
 
     def sync_all(self, full_catalogue: bool = False):
         print(f"Starting full sync for account: {self.account}...")
@@ -634,6 +643,7 @@ class SyncRunner:
         print("Syncing pies...")
         pie_list = self.client.get_pies()
         now = datetime.datetime.utcnow()
+        snapshot_date = now.date()
 
         for summary in pie_list:
             pie_id = summary["id"]
@@ -730,6 +740,31 @@ class SyncRunner:
                     synced_at=now,
                 )
                 self.session.add(holding)
+                snapshot_stmt = (
+                    insert(PieHoldingSnapshot)
+                    .values(
+                        user_id=self.user_id,
+                        pie_id=surrogate_pie_pk,
+                        ticker=item["ticker"],
+                        account=self.account,
+                        snapshot_date=snapshot_date,
+                        captured_at=now,
+                        owned_quantity=item.get("ownedQuantity") or 0.0,
+                        current_share=item.get("currentShare"),
+                        expected_share=item.get("expectedShare"),
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["user_id", "pie_id", "ticker", "snapshot_date"],
+                        set_={
+                            "account": self.account,
+                            "captured_at": now,
+                            "owned_quantity": item.get("ownedQuantity") or 0.0,
+                            "current_share": item.get("currentShare"),
+                            "expected_share": item.get("expectedShare"),
+                        },
+                    )
+                )
+                self.session.execute(snapshot_stmt)
 
         self.session.commit()
         print(f"  Synced {len(pie_list)} pies.")
@@ -1050,6 +1085,7 @@ class SyncRunner:
         now = datetime.datetime.utcnow()
         next_page = None
         total = 0
+        rebuilt_payment_ids: set[int] = set()
 
         from sqlalchemy import text as _text
         latest = self.session.execute(
@@ -1125,20 +1161,141 @@ class SyncRunner:
                 )
                 self.session.execute(stmt)
 
+            self.session.flush()
+            references = list({item.get("reference") for item in items if item.get("reference")})
+            if references:
+                payments = (
+                    self.session.query(DividendPayment)
+                    .filter(
+                        DividendPayment.user_id == self.user_id,
+                        DividendPayment.reference.in_(references),
+                    )
+                    .all()
+                )
+                for payment in payments:
+                    self._rebuild_dividend_payment_allocations(payment, now)
+                    rebuilt_payment_ids.add(int(payment.id))
+
             total += len(items)
             next_page = response.get("nextPagePath")
             print(f"  Dividend payments page {page}: {len(items)} items (total so far: {total}), more={bool(next_page)}")
             if not next_page:
                 break
 
+        self.session.flush()
+        missing_allocations = (
+            self.session.query(DividendPayment)
+            .outerjoin(
+                DividendPaymentAllocation,
+                DividendPaymentAllocation.dividend_payment_id == DividendPayment.id,
+            )
+            .filter(
+                DividendPayment.user_id == self.user_id,
+                DividendPayment.account == self.account,
+                DividendPaymentAllocation.id.is_(None),
+            )
+            .all()
+        )
+        for payment in missing_allocations:
+            if int(payment.id) in rebuilt_payment_ids:
+                continue
+            self._rebuild_dividend_payment_allocations(payment, now)
+
         self.session.commit()
         print(f"  Synced {total} dividend payments.")
+
+    def _rebuild_dividend_payment_allocations(
+        self,
+        payment: DividendPayment,
+        now: datetime.datetime,
+    ) -> None:
+        from sqlalchemy import text as _text
+
+        self.session.query(DividendPaymentAllocation).filter(
+            DividendPaymentAllocation.dividend_payment_id == payment.id
+        ).delete()
+
+        if self.user_id is None or not payment.ticker or not payment.paid_on:
+            return
+
+        paid_date = payment.paid_on.date()
+        snapshot_rows = self.session.execute(_text("""
+            WITH basis AS (
+                SELECT MAX(snapshot_date) AS snapshot_date
+                FROM pie_holding_snapshots
+                WHERE user_id = :user_id
+                  AND ticker = :ticker
+                  AND account = :account
+                  AND snapshot_date <= :paid_date
+            )
+            SELECT phs.pie_id, phs.owned_quantity, phs.snapshot_date
+            FROM pie_holding_snapshots phs
+            JOIN basis b ON b.snapshot_date = phs.snapshot_date
+            WHERE phs.user_id = :user_id
+              AND phs.ticker = :ticker
+              AND phs.account = :account
+        """), {
+            "user_id": self.user_id,
+            "ticker": payment.ticker,
+            "account": payment.account,
+            "paid_date": paid_date,
+        }).fetchall()
+
+        if not snapshot_rows:
+            snapshot_rows = self.session.execute(_text("""
+                WITH basis AS (
+                    SELECT MIN(snapshot_date) AS snapshot_date
+                    FROM pie_holding_snapshots
+                    WHERE user_id = :user_id
+                      AND ticker = :ticker
+                      AND account = :account
+                )
+                SELECT phs.pie_id, phs.owned_quantity, phs.snapshot_date
+                FROM pie_holding_snapshots phs
+                JOIN basis b ON b.snapshot_date = phs.snapshot_date
+                WHERE phs.user_id = :user_id
+                  AND phs.ticker = :ticker
+                  AND phs.account = :account
+            """), {
+                "user_id": self.user_id,
+                "ticker": payment.ticker,
+                "account": payment.account,
+            }).fetchall()
+
+        if not snapshot_rows:
+            return
+
+        total_snapshot_quantity = sum(float(row.owned_quantity or 0) for row in snapshot_rows)
+        payment_quantity = float(payment.quantity or 0)
+        denominator = max(payment_quantity, total_snapshot_quantity, 0.0)
+        if denominator <= 0:
+            return
+
+        basis_snapshot_date = snapshot_rows[0].snapshot_date
+        for row in snapshot_rows:
+            owned_quantity = float(row.owned_quantity or 0)
+            if owned_quantity <= 0:
+                continue
+            allocation_ratio = owned_quantity / denominator
+            self.session.add(DividendPaymentAllocation(
+                dividend_payment_id=payment.id,
+                user_id=self.user_id,
+                pie_id=int(row.pie_id),
+                ticker=payment.ticker,
+                account=payment.account,
+                amount_gbp=float(payment.amount or 0) * allocation_ratio,
+                quantity=float(payment.quantity or 0) * allocation_ratio,
+                allocation_ratio=allocation_ratio,
+                basis_snapshot_date=basis_snapshot_date,
+                synced_at=now,
+            ))
 
     def sync_instrument_metadata(self):
         """Enrich held instruments with metadata from yfinance (primary) and FMP (fallback).
 
         Fetches description, sector, industry and country. Only processes instruments
-        where last_enriched_at IS NULL or older than 7 days so subsequent syncs are fast.
+        where last_enriched_at IS NULL or older than 24 hours so user-triggered syncs
+        do not repeatedly re-enrich the same holdings across accounts.
         """
         import yfinance as yf
         from app.config import settings as _settings
@@ -1177,7 +1334,12 @@ class SyncRunner:
             self.session.commit()
             print(f"  Back-filled country from exchange for {backfilled} instrument(s).")
 
-        cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+        held_instruments = (
+            self.session.query(Instrument)
+            .filter(Instrument.ticker.in_(held_tickers))
+            .all()
+        )
         instruments = (
             self.session.query(Instrument)
             .filter(Instrument.ticker.in_(held_tickers))
@@ -1187,12 +1349,21 @@ class SyncRunner:
             )
             .all()
         )
+        skipped_fresh = max(len(held_instruments) - len(instruments), 0)
 
         if not instruments:
-            print("  Instrument metadata up to date, skipping.")
+            print(
+                "  Instrument metadata up to date, skipping. "
+                f"Account={self.account}, held={len(held_instruments)}, "
+                f"skipped_fresh={skipped_fresh}, window=24h."
+            )
             return
 
-        print(f"Enriching metadata for {len(instruments)} instruments...")
+        print(
+            f"Enriching metadata for {len(instruments)} instruments "
+            f"(account={self.account}, held={len(held_instruments)}, "
+            f"skipped_fresh={skipped_fresh}, window=24h)..."
+        )
         now = datetime.datetime.utcnow()
         enriched = 0
 
@@ -1200,6 +1371,7 @@ class SyncRunner:
             try:
                 yf_ticker, info, ticker_obj = self._resolve_yfinance_metadata(instrument, yf)
                 if not yf_ticker or not info:
+                    self._mark_enrichment_attempt(instrument, now)
                     continue
                 if info.get("longBusinessSummary"):
                     instrument.description = info["longBusinessSummary"]
@@ -1278,6 +1450,7 @@ class SyncRunner:
                 enriched += 1
                 print(f"  Enriched {instrument.ticker} ({yf_ticker})")
             except Exception as exc:
+                self._mark_enrichment_attempt(instrument, now)
                 print(f"  Failed to enrich {instrument.ticker}: {exc}")
 
         self.session.commit()
@@ -1432,10 +1605,12 @@ class SyncRunner:
             try:
                 yf_ticker, info, ticker_obj = self._resolve_yfinance_metadata(instrument, yf)
             except Exception as exc:
+                self._mark_enrichment_attempt(instrument, now)
                 print(f"  [enrich-batch] {instrument.ticker}: {exc}")
                 continue
 
             if not yf_ticker or not info:
+                self._mark_enrichment_attempt(instrument, now)
                 continue
 
             try:
