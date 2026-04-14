@@ -248,6 +248,14 @@ def _native_to_display_rate(native_currency: str, display_currency: str, fx_to_g
     return native_to_gbp / display_to_gbp
 
 
+def _major_unit_native_value(value: float | int | None, currency: str | None) -> float:
+    if value is None:
+        return 0.0
+    if (currency or "GBP") == "GBX":
+        return float(value) / 100.0
+    return float(value)
+
+
 def _convert_amount_between_currencies(
     value: float | int | None,
     source_currency: str | None,
@@ -2028,6 +2036,14 @@ def api_instruments(
         .scalar_subquery()
     )
     current_price_expr = func.coalesce(price_sq.c.current_price, Instrument.fallback_price)
+    current_price_major_expr = case(
+        (Instrument.currency_code == "GBX", current_price_expr / 100.0),
+        else_=current_price_expr,
+    )
+    annual_rate_major_expr = case(
+        (Instrument.currency_code == "GBX", annual_rate_sq / 100.0),
+        else_=annual_rate_sq,
+    )
     share_fwd_yield_expr = case(
         (
             and_(annual_rate_sq.is_not(None), annual_rate_sq > 0, current_price_expr.is_not(None), current_price_expr > 0),
@@ -2037,22 +2053,22 @@ def api_instruments(
     )
     pe_ratio_expr = case(
         (
-            and_(Instrument.eps_ttm.is_not(None), Instrument.eps_ttm > 0, current_price_expr.is_not(None), current_price_expr > 0),
-            current_price_expr / Instrument.eps_ttm,
+            and_(Instrument.eps_ttm.is_not(None), Instrument.eps_ttm > 0, current_price_major_expr.is_not(None), current_price_major_expr > 0),
+            current_price_major_expr / Instrument.eps_ttm,
         ),
         else_=None,
     )
     div_cover_expr = case(
         (
-            and_(Instrument.eps_ttm.is_not(None), Instrument.eps_ttm > 0, annual_rate_sq.is_not(None), annual_rate_sq > 0),
-            Instrument.eps_ttm / annual_rate_sq,
+            and_(Instrument.eps_ttm.is_not(None), Instrument.eps_ttm > 0, annual_rate_major_expr.is_not(None), annual_rate_major_expr > 0),
+            Instrument.eps_ttm / annual_rate_major_expr,
         ),
         else_=None,
     )
     fcf_div_cover_expr = case(
         (
-            and_(Instrument.fcf_per_share_3y_avg.is_not(None), Instrument.fcf_per_share_3y_avg > 0, annual_rate_sq.is_not(None), annual_rate_sq > 0),
-            Instrument.fcf_per_share_3y_avg / annual_rate_sq,
+            and_(Instrument.fcf_per_share_3y_avg.is_not(None), Instrument.fcf_per_share_3y_avg > 0, annual_rate_major_expr.is_not(None), annual_rate_major_expr > 0),
+            Instrument.fcf_per_share_3y_avg / annual_rate_major_expr,
         ),
         else_=None,
     )
@@ -3332,10 +3348,12 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     # Valuation / coverage
     eps_ttm = float(instrument.eps_ttm or 0)
     annual_dps = float(annual_rate)
-    pe_ratio = (current_price_native / eps_ttm) if (eps_ttm > 0 and current_price_native) else None
+    current_price_major = _major_unit_native_value(current_price_native, currency)
+    annual_dps_major = _major_unit_native_value(annual_dps, currency)
+    pe_ratio = (current_price_major / eps_ttm) if (eps_ttm > 0 and current_price_major) else None
     fcf_ps = float(instrument.fcf_per_share_3y_avg or 0)
-    fcf_cov = (annual_dps / fcf_ps * 100) if (fcf_ps > 0 and annual_dps > 0) else None
-    div_cov = (eps_ttm / annual_dps) if (eps_ttm > 0 and annual_dps > 0) else None
+    fcf_cov = (annual_dps_major / fcf_ps * 100) if (fcf_ps > 0 and annual_dps_major > 0) else None
+    div_cov = (eps_ttm / annual_dps_major) if (eps_ttm > 0 and annual_dps_major > 0) else None
 
     # Trade history (filled orders)
     orders_q = (
