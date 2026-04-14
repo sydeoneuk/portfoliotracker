@@ -1862,6 +1862,7 @@ def _build_position_display_context(
         p["cost_display"] = float(p["cost"] or 0) * native_to_display
         p["value_display"] = float(p["value"] or 0) * native_to_display
         p["ppl_display"] = p["value_display"] - p["cost_display"]
+        p["cap_pnl_pct_display"] = (p["ppl_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
         p["dividends_display"] = _convert_gbp_to_currency(float(p["total_dividends"] or 0), display_currency, fx)
         p["forward_dividends_display"] = float(p["forward_dividends"] or 0) * native_to_display
         p["total_pnl_display"] = p["ppl_display"] + p["dividends_display"]

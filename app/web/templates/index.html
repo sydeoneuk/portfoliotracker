@@ -501,7 +501,6 @@
         </thead>
         <tbody>
           {% for p in positions %}
-          {% set pct = ((p.current_price - p.average_price) / p.average_price * 100) if (p.average_price and p.average_price != 0) else 0 %}
           <tr onclick="window.location.href='/holding/{{ p.ticker }}?account={{ account_filter }}'" style="cursor:pointer">
             <td>{{ p.name }}</td>
             <td><code>{{ p.short_name }}</code></td>
@@ -516,8 +515,8 @@
             <td data-order="{{ p.ppl_display }}" class="text-end {% if p.ppl_display > 0 %}pnl-pos{% elif p.ppl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
               {% if p.ppl_display != 0 %}{% if p.ppl_display > 0 %}+{% endif %}{{ cfmt(p.ppl_display, display_currency) }}{% else %}-{% endif %}
             </td>
-            <td data-order="{{ pct }}" class="text-end {% if pct > 0 %}pnl-pos{% elif pct < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if pct != 0 %}{% if pct > 0 %}+{% endif %}{{ fmt(pct, 2) }}%{% else %}-{% endif %}
+            <td data-order="{{ p.cap_pnl_pct_display }}" class="text-end {% if p.cap_pnl_pct_display > 0 %}pnl-pos{% elif p.cap_pnl_pct_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
+              {% if p.cap_pnl_pct_display != 0 %}{% if p.cap_pnl_pct_display > 0 %}+{% endif %}{{ fmt(p.cap_pnl_pct_display, 2) }}%{% else %}-{% endif %}
             </td>
             <td data-order="{{ p.dividends_display }}" class="text-end fw-semibold">
               {% if p.dividends_display > 0 %}{{ cfmt(p.dividends_display, display_currency) }}{% else %}-{% endif %}
