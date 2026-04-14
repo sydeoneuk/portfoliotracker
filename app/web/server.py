@@ -1842,9 +1842,9 @@ def _build_position_display_context(
         rate = fx.get(ccy, 1.0)
         grand_total["cost"] += t["cost"] * rate
         grand_total["value"] += t["value"] * rate
-        grand_total["ppl"] += t["ppl"] * rate
         grand_total["dividends"] += t["dividends"] * rate
         grand_total["fwd_dividends"] += t["fwd_dividends"] * rate
+    grand_total["ppl"] = grand_total["value"] - grand_total["cost"]
 
     grand_total_display = {
         key: _convert_gbp_to_currency(value, display_currency, fx)
@@ -1861,7 +1861,7 @@ def _build_position_display_context(
         p["current_price_display"] = float(p["current_price"] or 0) * native_to_display
         p["cost_display"] = float(p["cost"] or 0) * native_to_display
         p["value_display"] = float(p["value"] or 0) * native_to_display
-        p["ppl_display"] = float(p["ppl"] or 0) * native_to_display
+        p["ppl_display"] = p["value_display"] - p["cost_display"]
         p["dividends_display"] = _convert_gbp_to_currency(float(p["total_dividends"] or 0), display_currency, fx)
         p["forward_dividends_display"] = float(p["forward_dividends"] or 0) * native_to_display
         p["total_pnl_display"] = p["ppl_display"] + p["dividends_display"]
