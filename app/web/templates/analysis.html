@@ -96,9 +96,9 @@
     <div class="brand">Trading 212 <span>Analysis</span></div>
   </div>
   <div class="btn-group btn-group-sm ms-4" role="group">
-    <a href="/analysis?account=combined{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}" class="btn {% if account_filter == 'combined' %}btn-light active{% else %}btn-outline-light{% endif %}">Combined</a>
-    <a href="/analysis?account=ISA{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}" class="btn {% if account_filter == 'ISA' %}btn-light active{% else %}btn-outline-light{% endif %}">ISA</a>
-    <a href="/analysis?account=Trading{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}" class="btn {% if account_filter == 'Trading' %}btn-light active{% else %}btn-outline-light{% endif %}">Trading</a>
+    <a href="/analysis?account=combined{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode }}{% endif %}{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}" class="btn {% if account_filter == 'combined' %}btn-light active{% else %}btn-outline-light{% endif %}">Combined</a>
+    <a href="/analysis?account=ISA{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode }}{% endif %}{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}" class="btn {% if account_filter == 'ISA' %}btn-light active{% else %}btn-outline-light{% endif %}">ISA</a>
+    <a href="/analysis?account=Trading{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode }}{% endif %}{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}" class="btn {% if account_filter == 'Trading' %}btn-light active{% else %}btn-outline-light{% endif %}">Trading</a>
   </div>
   <div class="user-info">
     {% if user.avatar_url %}<img src="{{ user.avatar_url }}" class="avatar" alt="">{% endif %}
@@ -109,8 +109,8 @@
 {% if available_pies %}
 <div class="pie-filter-bar">
   <span class="pf-label">Pies:</span>
-  <a href="/analysis?account={{ account_filter }}&pies=all{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}" class="btn {% if pies_param == 'all' or (selected_pie_ids and selected_pie_ids|length == available_pies|length) %}btn-light{% else %}btn-outline-light{% endif %}">All</a>
-  <a href="/analysis?account={{ account_filter }}{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}" class="btn {% if not pies_param %}btn-light{% else %}btn-outline-light{% endif %}">Clear</a>
+  <a href="/analysis?account={{ account_filter }}&pies=all{% if country_filter %}&country={{ country_filter | urlencode }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode }}{% endif %}{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}" class="btn {% if pies_param == 'all' or (selected_pie_ids and selected_pie_ids|length == available_pies|length) %}btn-light{% else %}btn-outline-light{% endif %}">All</a>
+  <a href="/analysis?account={{ account_filter }}{% if country_filter %}&country={{ country_filter | urlencode }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode }}{% endif %}{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}" class="btn {% if not pies_param %}btn-light{% else %}btn-outline-light{% endif %}">Clear</a>
   {% for pie in available_pies %}<button class="btn {% if pie.id|string in selected_pie_ids %}btn-light{% else %}btn-outline-light{% endif %} pie-btn" data-pie-id="{{ pie.id }}">{{ pie.name }}</button>{% endfor %}
 </div>
 {% endif %}

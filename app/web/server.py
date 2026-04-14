@@ -2758,6 +2758,7 @@ def _analysis_pie_query(pie_ids: list[int], account: str) -> str:
 
 @app.get("/analysis", response_class=HTMLResponse)
 def portfolio_analysis(request: Request, account: str = "combined", pies: str = "", ai_provider: str = "",
+                       country: str = "", sector: str = "",
                        db: Session = Depends(get_session)):
     user = _get_current_user(request, db)
     if not user:
@@ -2776,6 +2777,28 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     selected_pie_ids, include_no_pie = _split_selected_pies(selected_pie_tokens)
     positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids, include_no_pie)
     positions = _normalise_positions_for_display(positions)
+    # Apply hidden country / sector filters from analysis drill-down links.
+    if country:
+        if country == "Unknown":
+            positions = [p for p in positions if not (p.get("country") or "").strip()]
+        else:
+            positions = [p for p in positions if (p.get("country") or "").strip() == country]
+
+    if sector:
+        def _effective_sector(row: dict) -> str:
+            value = (row.get("sector") or "").strip()
+            if value:
+                return value
+            return _classify(
+                row.get("instrument_type") or "",
+                row.get("sector") or "",
+                row.get("industry") or "",
+                row.get("name") or "",
+                row.get("instrument_class"),
+            )
+
+        positions = [p for p in positions if _effective_sector(p) == sector]
+
     display_context = _build_position_display_context(db, user.id, account, positions)
     positions = display_context["positions"]
     display_currency = display_context["display_currency"]
@@ -2834,14 +2857,18 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     geo_table    = _build_rows(geo)
     sector_table = _build_rows(sector_agg)
 
-    # Add click-through hrefs — rows link to main portfolio with that filter applied
+    # Add click-through hrefs — rows loop back to analysis with that filter applied
     _base = {"account": account}
     if pies:
         _base["pies"] = pies
+    if country:
+        _base["country"] = country
+    if sector:
+        _base["sector"] = sector
     for row in geo_table:
-        row["href"] = "/?" + urlencode({**_base, "country": row["label"]})
+        row["href"] = "/analysis?" + urlencode({**_base, "country": row["label"]})
     for row in sector_table:
-        row["href"] = "/?" + urlencode({**_base, "sector": row["label"]})
+        row["href"] = "/analysis?" + urlencode({**_base, "sector": row["label"]})
 
     selected_tickers = {p["ticker"] for p in positions}
     if selected_pie_ids or include_no_pie:
@@ -3111,6 +3138,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "available_pies": available_pies,
         "selected_pie_ids": selected_pie_tokens,
         "pies_param": pies,
+        "country_filter": country,
+        "sector_filter": sector,
         "available_ai_providers": available_ai_providers,
         "selected_ai_provider": selected_ai_provider,
         "shared_ai_daily_limit": shared_ai_daily_limit,

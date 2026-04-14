@@ -305,7 +305,7 @@
   <div class="row g-3 mb-4">
     {% for pie in pies_in %}
     <div class="col-6 col-md-3 col-lg-2">
-      <a href="/?account={{ pie.account or 'combined' }}&pies={{ pie.id }}"
+      <a href="/analysis?account={{ pie.account or 'combined' }}&pies={{ pie.id }}"
          style="text-decoration:none; color:inherit;">
         <div class="card metric-card p-3" style="cursor:pointer; transition: box-shadow .15s;"
              onmouseover="this.style.boxShadow='0 4px 12px rgba(0,200,150,.25)'"
