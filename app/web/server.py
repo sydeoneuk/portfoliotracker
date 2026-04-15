@@ -1893,7 +1893,8 @@ def index(request: Request, account: str = "combined", pies: str = "",
         account = "combined"
 
     available_pies = _load_pies(db, user.id, account)
-    selected_pie_tokens = _resolve_selected_pie_tokens(available_pies, pies)
+    selectable_pies = _load_pies(db, user.id, "combined")
+    selected_pie_tokens = _resolve_selected_pie_tokens(selectable_pies, pies)
     selected_pie_ids, include_no_pie = _split_selected_pies(selected_pie_tokens)
     positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids, include_no_pie)
 
@@ -1959,6 +1960,7 @@ def index(request: Request, account: str = "combined", pies: str = "",
         "account_filter": account,
         "display_currency": display_currency,
         "available_pies": available_pies,
+        "selectable_pies": selectable_pies,
         "selected_pie_ids": set(selected_pie_tokens),
         "pies_param": pies,
         "country_filter": country,
@@ -2774,18 +2776,22 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     shared_ai_usage_today = _count_shared_ai_usage_today(db, user.id)
 
     available_pies = _load_pies(db, user.id, account)
-    selected_pie_tokens = _resolve_selected_pie_tokens(available_pies, pies)
+    selectable_pies = _load_pies(db, user.id, "combined")
+    selected_pie_tokens = _resolve_selected_pie_tokens(selectable_pies, pies)
     selected_pie_ids, include_no_pie = _split_selected_pies(selected_pie_tokens)
     positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids, include_no_pie)
     positions = _normalise_positions_for_display(positions)
     # Apply hidden country / sector filters from analysis drill-down links.
-    if country:
-        if country == "Unknown":
+    requested_country = (country or "").strip()
+    requested_sector = (sector or "").strip()
+
+    if requested_country:
+        if requested_country == "Unknown":
             positions = [p for p in positions if not (p.get("country") or "").strip()]
         else:
-            positions = [p for p in positions if (p.get("country") or "").strip() == country]
+            positions = [p for p in positions if (p.get("country") or "").strip() == requested_country]
 
-    if sector:
+    if requested_sector:
         def _effective_sector(row: dict) -> str:
             value = (row.get("sector") or "").strip()
             if value:
@@ -2798,7 +2804,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
                 row.get("instrument_class"),
             )
 
-        positions = [p for p in positions if _effective_sector(p) == sector]
+        positions = [p for p in positions if _effective_sector(p) == requested_sector]
 
     display_context = _build_position_display_context(db, user.id, account, positions)
     positions = display_context["positions"]
@@ -2814,8 +2820,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         ccy = p.get("currency") or "GBP"
         value_gbp = float(p.get("value") or 0) * fx.get(ccy, 1.0)
 
-        country = (p.get("country") or "").strip() or "Unknown"
-        geo[country] = geo.get(country, 0) + value_gbp
+        position_country = (p.get("country") or "").strip() or "Unknown"
+        geo[position_country] = geo.get(position_country, 0) + value_gbp
 
         s = (p.get("sector") or "").strip()
         if not s:
@@ -2829,6 +2835,14 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         sector_agg[s] = sector_agg.get(s, 0) + value_gbp
 
     total_value = sum(geo.values())
+    all_positions = _normalise_positions_for_display(_fetch_filtered_positions(db, user.id, "combined", [], False))
+    all_currencies = {p["currency"] for p in all_positions if p.get("currency")}
+    all_fx = _get_fx_rates_to_gbp(all_currencies)
+    total_portfolio_value_gbp = sum(
+        float(p.get("value") or 0) * all_fx.get(p.get("currency") or "GBP", 1.0)
+        for p in all_positions
+    )
+    total_portfolio_pct = (total_value / total_portfolio_value_gbp * 100) if total_portfolio_value_gbp else 0.0
 
     def _build_rows(d: dict[str, float]) -> list[dict]:
         total = sum(d.values()) or 1
@@ -2862,10 +2876,10 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     _base = {"account": account}
     if pies:
         _base["pies"] = pies
-    if country:
-        _base["country"] = country
-    if sector:
-        _base["sector"] = sector
+    if requested_country:
+        _base["country"] = requested_country
+    if requested_sector:
+        _base["sector"] = requested_sector
     for row in geo_table:
         row["href"] = "/analysis?" + urlencode({**_base, "country": row["label"]})
     for row in sector_table:
@@ -3137,15 +3151,17 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "user": user,
         "account_filter": account,
         "available_pies": available_pies,
+        "selectable_pies": selectable_pies,
         "selected_pie_ids": selected_pie_tokens,
         "pies_param": pies,
-        "country_filter": country,
-        "sector_filter": sector,
+        "country_filter": requested_country,
+        "sector_filter": requested_sector,
         "available_ai_providers": available_ai_providers,
         "selected_ai_provider": selected_ai_provider,
         "shared_ai_daily_limit": shared_ai_daily_limit,
         "shared_ai_usage_today": shared_ai_usage_today,
         "total_value": total_value,
+        "total_portfolio_pct": total_portfolio_pct,
         "positions": positions,
         "display_currency": display_currency,
         "geo_table": geo_table,
@@ -3188,7 +3204,8 @@ def portfolio_ai_analysis(
         return JSONResponse({"error": "The selected AI provider is not configured."}, status_code=400)
 
     available_pies = _load_pies(db, user.id, account)
-    selected_pie_tokens = _resolve_selected_pie_tokens(available_pies, pies)
+    selectable_pies = _load_pies(db, user.id, "combined")
+    selected_pie_tokens = _resolve_selected_pie_tokens(selectable_pies, pies)
     selected_pie_ids, include_no_pie = _split_selected_pies(selected_pie_tokens)
     positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids, include_no_pie)
     if not positions:
