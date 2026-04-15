@@ -1494,6 +1494,259 @@ def _split_selected_pies(selected_pie_tokens: list[str]) -> tuple[list[int], boo
     return real_pie_ids, include_no_pie
 
 
+def _parse_as_of_date(value: str) -> datetime.date | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _build_historical_dividend_maps(
+    db: Session,
+    user_id: int,
+    as_of_date: datetime.date,
+    selected_pie_ids: list[int],
+    include_no_pie: bool,
+) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float], dict[tuple[str, str], float]]:
+    params: dict = {"user_id": user_id, "as_of_date": as_of_date}
+
+    if selected_pie_ids:
+        safe_ids = ", ".join(str(int(i)) for i in selected_pie_ids)
+        selected_rows = db.execute(text(f"""
+            SELECT dpa.ticker, dpa.account, SUM(dpa.amount_gbp) AS total
+            FROM dividend_payment_allocations dpa
+            JOIN dividend_payments dp ON dp.id = dpa.dividend_payment_id
+            WHERE dpa.user_id = :user_id
+              AND dpa.pie_id IN ({safe_ids})
+              AND dp.paid_on::date <= :as_of_date
+            GROUP BY dpa.ticker, dpa.account
+        """), params).fetchall()
+    else:
+        selected_rows = []
+
+    selected_map = {
+        (str(r.ticker), str(r.account)): float(r.total or 0)
+        for r in selected_rows
+    }
+
+    if include_no_pie:
+        residual_rows = db.execute(text("""
+            SELECT
+                dp.ticker,
+                dp.account,
+                SUM(dp.amount) - COALESCE((
+                    SELECT SUM(dpa.amount_gbp)
+                    FROM dividend_payment_allocations dpa
+                    JOIN dividend_payments dp2 ON dp2.id = dpa.dividend_payment_id
+                    WHERE dpa.user_id = :user_id
+                      AND dpa.ticker = dp.ticker
+                      AND dpa.account = dp.account
+                      AND dp2.paid_on::date <= :as_of_date
+                ), 0) AS total
+            FROM dividend_payments dp
+            WHERE dp.user_id = :user_id
+              AND dp.paid_on::date <= :as_of_date
+            GROUP BY dp.ticker, dp.account
+        """), params).fetchall()
+    else:
+        residual_rows = []
+
+    residual_map = {
+        (str(r.ticker), str(r.account)): float(r.total or 0)
+        for r in residual_rows
+    }
+
+    all_rows = db.execute(text("""
+        SELECT dp.ticker, dp.account, SUM(dp.amount) AS total
+        FROM dividend_payments dp
+        WHERE dp.user_id = :user_id
+          AND dp.paid_on::date <= :as_of_date
+        GROUP BY dp.ticker, dp.account
+    """), params).fetchall()
+    all_map = {
+        (str(r.ticker), str(r.account)): float(r.total or 0)
+        for r in all_rows
+    }
+
+    return selected_map, residual_map, all_map
+
+
+def _fetch_filtered_positions_as_of(
+    db: Session,
+    user_id: int,
+    account: str,
+    selected_pie_ids: list[int],
+    as_of_date: datetime.date,
+    include_no_pie: bool = False,
+) -> list[dict]:
+    account_filter = "AND hs.account = :account" if account in ("ISA", "Trading") else ""
+    params: dict = {"user_id": user_id, "as_of_date": as_of_date}
+    if account in ("ISA", "Trading"):
+        params["account"] = account
+
+    base_rows = db.execute(text(f"""
+        SELECT
+            hs.ticker                                              AS ticker,
+            COALESCE(NULLIF(i.name, ''), i.short_name, hs.ticker) AS name,
+            COALESCE(NULLIF(i.short_name, ''), hs.ticker)         AS short_name,
+            COALESCE(i.exchange, '—')                             AS exchange,
+            COALESCE(i.currency_code, '—')                        AS currency,
+            COALESCE(i.instrument_type, '—')                      AS instrument_type,
+            i.sector,
+            i.industry,
+            i.instrument_class,
+            i.country,
+            i.fcf_per_share_3y_avg,
+            i.eps_ttm,
+            hs.account                                             AS account,
+            hs.quantity                                            AS quantity,
+            hs.price_native                                        AS price_native,
+            hs.value_gbp                                           AS value_gbp
+        FROM holding_snapshots hs
+        JOIN instruments i ON i.ticker = hs.ticker
+        WHERE hs.user_id = :user_id
+          AND hs.snapshot_date = :as_of_date
+          {account_filter}
+        ORDER BY hs.value_gbp DESC NULLS LAST
+    """), params).fetchall()
+
+    base_by_key = {
+        (str(r.ticker), str(r.account)): dict(r._mapping)
+        for r in base_rows
+    }
+
+    pie_count_rows = db.execute(text(f"""
+        SELECT phs.ticker, phs.account, COUNT(DISTINCT phs.pie_id) AS pie_count
+        FROM pie_holding_snapshots phs
+        WHERE phs.user_id = :user_id
+          AND phs.snapshot_date = :as_of_date
+          {"AND phs.account = :account" if account in ("ISA", "Trading") else ""}
+        GROUP BY phs.ticker, phs.account
+    """), params).fetchall()
+    pie_count_map = {
+        (str(r.ticker), str(r.account)): int(r.pie_count or 0)
+        for r in pie_count_rows
+    }
+
+    all_pie_qty_rows = db.execute(text(f"""
+        SELECT phs.ticker, phs.account, SUM(phs.owned_quantity) AS quantity
+        FROM pie_holding_snapshots phs
+        WHERE phs.user_id = :user_id
+          AND phs.snapshot_date = :as_of_date
+          {"AND phs.account = :account" if account in ("ISA", "Trading") else ""}
+        GROUP BY phs.ticker, phs.account
+    """), params).fetchall()
+    all_pie_qty_map = {
+        (str(r.ticker), str(r.account)): float(r.quantity or 0)
+        for r in all_pie_qty_rows
+    }
+
+    if selected_pie_ids:
+        safe_ids = ", ".join(str(int(i)) for i in selected_pie_ids)
+        selected_pie_rows = db.execute(text(f"""
+            SELECT phs.ticker, phs.account, SUM(phs.owned_quantity) AS quantity
+            FROM pie_holding_snapshots phs
+            WHERE phs.user_id = :user_id
+              AND phs.snapshot_date = :as_of_date
+              AND phs.pie_id IN ({safe_ids})
+              {"AND phs.account = :account" if account in ("ISA", "Trading") else ""}
+            GROUP BY phs.ticker, phs.account
+        """), params).fetchall()
+    else:
+        selected_pie_rows = []
+    selected_pie_qty_map = {
+        (str(r.ticker), str(r.account)): float(r.quantity or 0)
+        for r in selected_pie_rows
+    }
+
+    selected_div_map, residual_div_map, all_div_map = _build_historical_dividend_maps(
+        db, user_id, as_of_date, selected_pie_ids, include_no_pie
+    )
+
+    def _build_row(snapshot_row: dict, quantity: float, dividends_total: float, pie_count: int) -> dict:
+        price_native = float(snapshot_row.get("price_native") or 0)
+        base_quantity = float(snapshot_row.get("quantity") or 0)
+        snapshot_value_gbp = float(snapshot_row.get("value_gbp") or 0)
+        proportional_value_gbp = (
+            snapshot_value_gbp * quantity / base_quantity
+            if base_quantity > 0 else 0.0
+        )
+        return {
+            "ticker": snapshot_row["ticker"],
+            "name": snapshot_row["name"],
+            "short_name": snapshot_row["short_name"],
+            "exchange": snapshot_row["exchange"],
+            "currency": snapshot_row["currency"],
+            "instrument_type": snapshot_row["instrument_type"],
+            "sector": snapshot_row.get("sector"),
+            "industry": snapshot_row.get("industry"),
+            "instrument_class": snapshot_row.get("instrument_class"),
+            "country": snapshot_row.get("country"),
+            "account": snapshot_row["account"],
+            "quantity": quantity,
+            "average_price": 0.0,
+            "current_price": price_native,
+            "cost": 0.0,
+            "value": round(quantity * price_native, 2),
+            "value_gbp_snapshot": round(proportional_value_gbp, 2),
+            "ppl": 0.0,
+            "result_coef": 0.0,
+            "total_dividends": round(dividends_total, 2),
+            "forward_dividends": 0.0,
+            "annual_rate_per_share": 0.0,
+            "fcf_per_share_3y_avg": snapshot_row.get("fcf_per_share_3y_avg"),
+            "eps_ttm": snapshot_row.get("eps_ttm"),
+            "pie_count": pie_count,
+        }
+
+    rows: list[dict] = []
+
+    if selected_pie_ids:
+        for key, pie_qty in selected_pie_qty_map.items():
+            snapshot_row = base_by_key.get(key)
+            if snapshot_row is None or pie_qty <= 0:
+                continue
+            rows.append(_build_row(
+                snapshot_row,
+                pie_qty,
+                selected_div_map.get(key, 0.0),
+                pie_count_map.get(key, 0),
+            ))
+
+    if include_no_pie:
+        for key, snapshot_row in base_by_key.items():
+            base_qty = float(snapshot_row.get("quantity") or 0)
+            quantity = max(base_qty - all_pie_qty_map.get(key, 0.0), 0.0)
+            if quantity <= 0.0000001:
+                continue
+            rows.append(_build_row(
+                snapshot_row,
+                quantity,
+                residual_div_map.get(key, 0.0),
+                0,
+            ))
+
+    if not selected_pie_ids and not include_no_pie:
+        rows = [
+            _build_row(
+                snapshot_row,
+                float(snapshot_row.get("quantity") or 0),
+                all_div_map.get(key, 0.0),
+                pie_count_map.get(key, 0),
+            )
+            for key, snapshot_row in base_by_key.items()
+            if float(snapshot_row.get("quantity") or 0) > 0.0000001
+        ]
+
+    rows.sort(key=lambda r: float(r.get("value") or 0), reverse=True)
+    if account not in ("ISA", "Trading"):
+        return _merge_position_rows(rows, account)
+    return rows
+
+
 def _pie_query(pie_ids: list[int], account: str) -> str:
     """Build pie-filtered SQL using position pricing for consistency with non-pie views.
 
@@ -2702,6 +2955,7 @@ def _build_portfolio_history(
     values = [round(float(r.total_value_gbp or 0), 2) for r in rows]
     return json.dumps({
         "labels": [r.snapshot_date.strftime("%d %b %Y") for r in rows],
+        "iso_dates": [r.snapshot_date.isoformat() for r in rows],
         "values": values,
         "latest": values[-1] if values else 0.0,
     })
@@ -2761,7 +3015,7 @@ def _analysis_pie_query(pie_ids: list[int], account: str) -> str:
 
 @app.get("/analysis", response_class=HTMLResponse)
 def portfolio_analysis(request: Request, account: str = "combined", pies: str = "", ai_provider: str = "",
-                       country: str = "", sector: str = "",
+                       country: str = "", sector: str = "", as_of: str = "",
                        db: Session = Depends(get_session)):
     user = _get_current_user(request, db)
     if not user:
@@ -2769,6 +3023,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
 
     if account not in ("ISA", "Trading"):
         account = "combined"
+    as_of_date = _parse_as_of_date(as_of)
     user_settings = _get_or_create_settings(db, user.id)
     available_ai_providers = _get_available_ai_providers(user_settings)
     selected_ai_provider = _resolve_ai_provider(ai_provider or None, user_settings)
@@ -2779,7 +3034,10 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     selectable_pies = _load_pies(db, user.id, "combined")
     selected_pie_tokens = _resolve_selected_pie_tokens(selectable_pies, pies)
     selected_pie_ids, include_no_pie = _split_selected_pies(selected_pie_tokens)
-    positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids, include_no_pie)
+    if as_of_date:
+        positions = _fetch_filtered_positions_as_of(db, user.id, account, selected_pie_ids, as_of_date, include_no_pie)
+    else:
+        positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids, include_no_pie)
     positions = _normalise_positions_for_display(positions)
     # Apply hidden country / sector filters from analysis drill-down links.
     requested_country = (country or "").strip()
@@ -2818,7 +3076,10 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
 
     for p in positions:
         ccy = p.get("currency") or "GBP"
-        value_gbp = float(p.get("value") or 0) * fx.get(ccy, 1.0)
+        if p.get("value_gbp_snapshot") is not None:
+            value_gbp = float(p.get("value_gbp_snapshot") or 0)
+        else:
+            value_gbp = float(p.get("value") or 0) * fx.get(ccy, 1.0)
 
         position_country = (p.get("country") or "").strip() or "Unknown"
         geo[position_country] = geo.get(position_country, 0) + value_gbp
@@ -2835,13 +3096,22 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         sector_agg[s] = sector_agg.get(s, 0) + value_gbp
 
     total_value = sum(geo.values())
-    all_positions = _normalise_positions_for_display(_fetch_filtered_positions(db, user.id, "combined", [], False))
-    all_currencies = {p["currency"] for p in all_positions if p.get("currency")}
-    all_fx = _get_fx_rates_to_gbp(all_currencies)
-    total_portfolio_value_gbp = sum(
-        float(p.get("value") or 0) * all_fx.get(p.get("currency") or "GBP", 1.0)
-        for p in all_positions
-    )
+    if as_of_date:
+        total_portfolio_value_gbp = float(db.execute(text("""
+            SELECT COALESCE(SUM(ps.total_value_gbp), 0)
+            FROM portfolio_snapshots ps
+            WHERE ps.user_id = :user_id
+              AND ps.scope_type = 'account'
+              AND ps.snapshot_date = :as_of_date
+        """), {"user_id": user.id, "as_of_date": as_of_date}).scalar() or 0)
+    else:
+        all_positions = _normalise_positions_for_display(_fetch_filtered_positions(db, user.id, "combined", [], False))
+        all_currencies = {p["currency"] for p in all_positions if p.get("currency")}
+        all_fx = _get_fx_rates_to_gbp(all_currencies)
+        total_portfolio_value_gbp = sum(
+            float(p.get("value") or 0) * all_fx.get(p.get("currency") or "GBP", 1.0)
+            for p in all_positions
+        )
     total_portfolio_pct = (total_value / total_portfolio_value_gbp * 100) if total_portfolio_value_gbp else 0.0
 
     def _build_rows(d: dict[str, float]) -> list[dict]:
@@ -2876,6 +3146,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     _base = {"account": account}
     if pies:
         _base["pies"] = pies
+    if as_of_date:
+        _base["as_of"] = as_of_date.isoformat()
     if requested_country:
         _base["country"] = requested_country
     if requested_sector:
@@ -2886,6 +3158,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         row["href"] = "/analysis?" + urlencode({**_base, "sector": row["label"]})
 
     selected_tickers = {p["ticker"] for p in positions}
+    as_of_payment_filter_dp = "AND dp.paid_on::date <= :as_of_date" if as_of_date else ""
+    as_of_payment_filter_dp2 = "AND dp2.paid_on::date <= :as_of_date" if as_of_date else ""
     if selected_pie_ids or include_no_pie:
         safe_ids = ", ".join(str(int(i)) for i in selected_pie_ids) if selected_pie_ids else ""
     if selected_pie_ids and include_no_pie:
@@ -2895,9 +3169,11 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
                     dpa.ticker AS ticker,
                     SUM(dpa.amount_gbp) AS total
                 FROM dividend_payment_allocations dpa
+                JOIN dividend_payments dp ON dp.id = dpa.dividend_payment_id
                 WHERE dpa.user_id = :user_id
                   AND dpa.pie_id IN ({safe_ids})
                 {"AND dpa.account = :account" if account in ("ISA", "Trading") else ""}
+                  {as_of_payment_filter_dp}
                 GROUP BY dpa.ticker
             ),
             residual AS (
@@ -2906,13 +3182,16 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
                     SUM(dp.amount) - COALESCE((
                         SELECT SUM(dpa.amount_gbp)
                         FROM dividend_payment_allocations dpa
+                        JOIN dividend_payments dp2 ON dp2.id = dpa.dividend_payment_id
                         WHERE dpa.user_id = :user_id
                           AND dpa.ticker = dp.ticker
                           AND dpa.account = dp.account
+                          {as_of_payment_filter_dp2}
                     ), 0) AS total
                 FROM dividend_payments dp
                 WHERE dp.user_id = :user_id
                   {"AND dp.account = :account" if account in ("ISA", "Trading") else ""}
+                  {as_of_payment_filter_dp}
                 GROUP BY dp.ticker, dp.account
             ),
             totals AS (
@@ -2934,6 +3213,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         div_holdings_params: dict = {"user_id": user.id}
         if account in ("ISA", "Trading"):
             div_holdings_params["account"] = account
+        if as_of_date:
+            div_holdings_params["as_of_date"] = as_of_date
         div_holding_rows = db.execute(text(div_holdings_q), div_holdings_params).fetchall()
     elif selected_pie_ids:
         safe_ids = ", ".join(str(int(i)) for i in selected_pie_ids)
@@ -2943,34 +3224,41 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
                 COALESCE(NULLIF(i.name, ''), i.short_name, dpa.ticker) AS name,
                 SUM(dpa.amount_gbp) AS total
             FROM dividend_payment_allocations dpa
+            JOIN dividend_payments dp ON dp.id = dpa.dividend_payment_id
             LEFT JOIN instruments i ON i.ticker = dpa.ticker
             WHERE dpa.user_id = :user_id
               AND dpa.pie_id IN ({safe_ids})
+              {as_of_payment_filter_dp}
         """
         div_holdings_params: dict = {"user_id": user.id}
         if account in ("ISA", "Trading"):
             div_holdings_q += " AND dpa.account = :account"
             div_holdings_params["account"] = account
+        if as_of_date:
+            div_holdings_params["as_of_date"] = as_of_date
 
         div_holding_rows = db.execute(text(div_holdings_q + """
             GROUP BY dpa.ticker, i.name, i.short_name
             ORDER BY SUM(dpa.amount_gbp) DESC
         """), div_holdings_params).fetchall()
     elif include_no_pie:
-        div_holdings_q = """
+        div_holdings_q = f"""
             SELECT
                 dp.ticker AS ticker,
                 COALESCE(NULLIF(i.name, ''), i.short_name, dp.ticker) AS name,
                 SUM(dp.amount) - COALESCE((
                     SELECT SUM(dpa.amount_gbp)
                     FROM dividend_payment_allocations dpa
+                    JOIN dividend_payments dp2 ON dp2.id = dpa.dividend_payment_id
                     WHERE dpa.user_id = :user_id
                       AND dpa.ticker = dp.ticker
                       AND (:account IS NULL OR dpa.account = :account)
+                      {as_of_payment_filter_dp2}
                 ), 0) AS total
             FROM dividend_payments dp
             LEFT JOIN instruments i ON i.ticker = dp.ticker
             WHERE dp.user_id = :user_id
+              {as_of_payment_filter_dp}
         """
         div_holdings_params = {"user_id": user.id}
         if account in ("ISA", "Trading"):
@@ -2978,13 +3266,15 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
             div_holdings_params["account"] = account
         else:
             div_holdings_params["account"] = None
+        if as_of_date:
+            div_holdings_params["as_of_date"] = as_of_date
 
         div_holding_rows = db.execute(text(div_holdings_q + """
             GROUP BY dp.ticker, i.name, i.short_name
             ORDER BY total DESC
         """), div_holdings_params).fetchall()
     else:
-        div_holdings_q = """
+        div_holdings_q = f"""
             SELECT
                 dp.ticker AS ticker,
                 COALESCE(NULLIF(i.name, ''), i.short_name, dp.ticker) AS name,
@@ -2992,11 +3282,14 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
             FROM dividend_payments dp
             LEFT JOIN instruments i ON i.ticker = dp.ticker
             WHERE dp.user_id = :user_id
+              {as_of_payment_filter_dp}
         """
         div_holdings_params = {"user_id": user.id}
         if account in ("ISA", "Trading"):
             div_holdings_q += " AND dp.account = :account"
             div_holdings_params["account"] = account
+        if as_of_date:
+            div_holdings_params["as_of_date"] = as_of_date
 
         div_holding_rows = db.execute(text(div_holdings_q + """
             GROUP BY dp.ticker, i.name, i.short_name
@@ -3024,6 +3317,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     # ── Dividends by month ────────────────────────────────────────────────
     # Fetch the last 24 months of dividend payments, scoped to the current
     # account filter and selected pie ids when applicable.
+    div_as_of_filter_dp = "AND dp.paid_on::date <= :as_of_date" if as_of_date else ""
+    div_as_of_filter_dp2 = "AND dp2.paid_on::date <= :as_of_date" if as_of_date else ""
     if selected_pie_ids and include_no_pie:
         div_account_filter_alloc = "AND dpa.account = :account" if account in ("ISA", "Trading") else ""
         div_account_filter_dp = "AND dp.account = :account" if account in ("ISA", "Trading") else ""
@@ -3037,6 +3332,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
                 WHERE dpa.user_id = :user_id
                   AND dpa.pie_id IN ({safe_ids})
                   {div_account_filter_alloc}
+                  {div_as_of_filter_dp}
                   AND dp.paid_on >= NOW() - INTERVAL '24 months'
                 GROUP BY DATE_TRUNC('month', dp.paid_on)
             ),
@@ -3044,13 +3340,16 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
                 SELECT
                     DATE_TRUNC('month', dp.paid_on) AS month_dt,
                     SUM(dp.amount) - COALESCE(SUM((
-                        SELECT COALESCE(SUM(dpa.amount_gbp), 0)
-                        FROM dividend_payment_allocations dpa
-                        WHERE dpa.dividend_payment_id = dp.id
-                    )), 0) AS total
+                    SELECT COALESCE(SUM(dpa.amount_gbp), 0)
+                    FROM dividend_payment_allocations dpa
+                    JOIN dividend_payments dp2 ON dp2.id = dpa.dividend_payment_id
+                    WHERE dpa.dividend_payment_id = dp.id
+                      {div_as_of_filter_dp2}
+                )), 0) AS total
                 FROM dividend_payments dp
                 WHERE dp.user_id = :user_id
                   {div_account_filter_dp}
+                  {div_as_of_filter_dp}
                   AND dp.paid_on >= NOW() - INTERVAL '24 months'
                 GROUP BY DATE_TRUNC('month', dp.paid_on)
             ),
@@ -3069,7 +3368,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
                 total
             FROM totals
             ORDER BY month_dt
-        """), {"user_id": user.id, **({} if account == "combined" else {"account": account})}).fetchall()
+        """), {"user_id": user.id, **({} if account == "combined" else {"account": account}), **({} if not as_of_date else {"as_of_date": as_of_date})}).fetchall()
     elif selected_pie_ids:
         div_account_filter = "AND dpa.account = :account" if account in ("ISA", "Trading") else ""
         div_rows = db.execute(text(f"""
@@ -3082,10 +3381,11 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
             WHERE dpa.user_id = :user_id
               AND dpa.pie_id IN ({safe_ids})
               {div_account_filter}
+              {div_as_of_filter_dp}
               AND dp.paid_on >= NOW() - INTERVAL '24 months'
             GROUP BY DATE_TRUNC('month', dp.paid_on)
             ORDER BY DATE_TRUNC('month', dp.paid_on)
-        """), {"user_id": user.id, **({} if account == "combined" else {"account": account})}).fetchall()
+        """), {"user_id": user.id, **({} if account == "combined" else {"account": account}), **({} if not as_of_date else {"as_of_date": as_of_date})}).fetchall()
     elif include_no_pie:
         div_account_filter = "AND dp.account = :account" if account in ("ISA", "Trading") else ""
         div_rows = db.execute(text(f"""
@@ -3095,15 +3395,18 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
                 SUM(dp.amount) - COALESCE(SUM((
                     SELECT COALESCE(SUM(dpa.amount_gbp), 0)
                     FROM dividend_payment_allocations dpa
+                    JOIN dividend_payments dp2 ON dp2.id = dpa.dividend_payment_id
                     WHERE dpa.dividend_payment_id = dp.id
+                      {div_as_of_filter_dp2}
                 )), 0)                                               AS total
             FROM dividend_payments dp
             WHERE dp.user_id = :user_id
               {div_account_filter}
+              {div_as_of_filter_dp}
               AND dp.paid_on >= NOW() - INTERVAL '24 months'
             GROUP BY DATE_TRUNC('month', dp.paid_on)
             ORDER BY DATE_TRUNC('month', dp.paid_on)
-        """), {"user_id": user.id, **({} if account == "combined" else {"account": account})}).fetchall()
+        """), {"user_id": user.id, **({} if account == "combined" else {"account": account}), **({} if not as_of_date else {"as_of_date": as_of_date})}).fetchall()
     else:
         div_account_filter = "AND dp.account = :account" if account in ("ISA", "Trading") else ""
         div_rows = db.execute(text(f"""
@@ -3114,10 +3417,11 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
             FROM dividend_payments dp
             WHERE dp.user_id = :user_id
               {div_account_filter}
+              {div_as_of_filter_dp}
               AND dp.paid_on >= NOW() - INTERVAL '24 months'
             GROUP BY DATE_TRUNC('month', dp.paid_on)
             ORDER BY DATE_TRUNC('month', dp.paid_on)
-        """), {"user_id": user.id, **({} if account == "combined" else {"account": account})}).fetchall()
+        """), {"user_id": user.id, **({} if account == "combined" else {"account": account}), **({} if not as_of_date else {"as_of_date": as_of_date})}).fetchall()
 
     div_by_month = json.dumps({
         "labels": [r.month_label for r in div_rows],
@@ -3126,26 +3430,30 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     })
     portfolio_history = _build_portfolio_history(db, user.id, account, selected_pie_ids, include_no_pie)
     pie_filter_key = _build_ai_pie_filter_key(pies, selected_pie_tokens)
-    cached_ai_analysis = _get_latest_ai_analysis_cache(
-        db, user.id, selected_ai_provider, account, pie_filter_key
-    )
     initial_ai_analysis = None
     ai_analysis_header_text = "No cached analysis yet"
     ai_analysis_button_label = "Analyse now"
-    if cached_ai_analysis:
-        initial_ai_analysis = {
-            "analysis": cached_ai_analysis.analysis_text,
-            "cached": True,
-            "provider": cached_ai_analysis.provider,
-            "model": cached_ai_analysis.model,
-            "prompt_text": cached_ai_analysis.prompt_text,
-            "generated_at": _format_analysis_timestamp(cached_ai_analysis.updated_at),
-            "generated_at_iso": _format_analysis_timestamp_iso(cached_ai_analysis.updated_at),
-            "age": _format_analysis_age(cached_ai_analysis.updated_at),
-            "holdings_count": cached_ai_analysis.holdings_count,
-        }
-        ai_analysis_header_text = "Last run previously saved"
-        ai_analysis_button_label = "Reanalyse"
+    if as_of_date:
+        ai_analysis_header_text = f"Historical view: {as_of_date.strftime('%d %b %Y')}"
+        ai_analysis_button_label = "Unavailable"
+    else:
+        cached_ai_analysis = _get_latest_ai_analysis_cache(
+            db, user.id, selected_ai_provider, account, pie_filter_key
+        )
+        if cached_ai_analysis:
+            initial_ai_analysis = {
+                "analysis": cached_ai_analysis.analysis_text,
+                "cached": True,
+                "provider": cached_ai_analysis.provider,
+                "model": cached_ai_analysis.model,
+                "prompt_text": cached_ai_analysis.prompt_text,
+                "generated_at": _format_analysis_timestamp(cached_ai_analysis.updated_at),
+                "generated_at_iso": _format_analysis_timestamp_iso(cached_ai_analysis.updated_at),
+                "age": _format_analysis_age(cached_ai_analysis.updated_at),
+                "holdings_count": cached_ai_analysis.holdings_count,
+            }
+            ai_analysis_header_text = "Last run previously saved"
+            ai_analysis_button_label = "Reanalyse"
 
     return templates.TemplateResponse(request, "analysis.html", {
         "user": user,
@@ -3160,6 +3468,9 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "selected_ai_provider": selected_ai_provider,
         "shared_ai_daily_limit": shared_ai_daily_limit,
         "shared_ai_usage_today": shared_ai_usage_today,
+        "as_of_date": as_of_date.isoformat() if as_of_date else "",
+        "as_of_date_label": as_of_date.strftime("%d %b %Y") if as_of_date else "",
+        "historical_view": bool(as_of_date),
         "total_value": total_value,
         "total_portfolio_pct": total_portfolio_pct,
         "positions": positions,
