@@ -3067,6 +3067,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     display_context = _build_position_display_context(db, user.id, account, positions)
     positions = display_context["positions"]
     display_currency = display_context["display_currency"]
+    grand_total_display = display_context["grand_total_display"]
 
     currencies = {p["currency"] for p in positions if p.get("currency")}
     fx = _get_fx_rates_to_gbp(currencies)
@@ -3113,6 +3114,17 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
             for p in all_positions
         )
     total_portfolio_pct = (total_value / total_portfolio_value_gbp * 100) if total_portfolio_value_gbp else 0.0
+    summary_cost = float(grand_total_display.get("cost") or 0.0)
+    summary_unrealised = float(grand_total_display.get("ppl") or 0.0)
+    summary_dividends = float(grand_total_display.get("dividends") or 0.0)
+    analysis_summary = {
+        "cost": summary_cost,
+        "value": float(grand_total_display.get("value") or 0.0),
+        "unrealised": summary_unrealised,
+        "unrealised_pct": (summary_unrealised / summary_cost * 100) if summary_cost else 0.0,
+        "dividends": summary_dividends,
+        "dividends_pct": (summary_dividends / summary_cost * 100) if summary_cost else 0.0,
+    }
 
     def _build_rows(d: dict[str, float]) -> list[dict]:
         total = sum(d.values()) or 1
@@ -3471,6 +3483,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "as_of_date": as_of_date.isoformat() if as_of_date else "",
         "as_of_date_label": as_of_date.strftime("%d %b %Y") if as_of_date else "",
         "historical_view": bool(as_of_date),
+        "analysis_summary": analysis_summary,
         "total_value": total_value,
         "total_portfolio_pct": total_portfolio_pct,
         "positions": positions,

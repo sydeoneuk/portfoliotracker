@@ -42,6 +42,27 @@
     .active-filter-clear { font-size: .76rem; font-weight: 600; color: #0f7a5c; text-decoration: none; }
     .active-filter-clear:hover, .active-filter-clear:focus { color: #095d46; text-decoration: underline; }
     .analysis-card { border: none; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .summary-card {
+      border: none;
+      border-radius: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      height: 100%;
+    }
+    .summary-card .label {
+      font-size: .7rem;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: #6c757d;
+    }
+    .summary-card .amount {
+      font-size: 1.35rem;
+      font-weight: 700;
+    }
+    .summary-card .subtext {
+      font-size: .72rem;
+      color: #6c757d;
+      margin-top: 2px;
+    }
     .analysis-card .card-header { background: var(--t212-dark); color: #fff; font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; border-radius: 10px 10px 0 0 !important; padding: .7rem 1.25rem; }
     .breakdown-table thead th { background: #3a4450; color: #c8d6e5; font-size: .72rem; text-transform: uppercase; letter-spacing: .6px; border: none; padding: .55rem 1rem; white-space: nowrap; }
     .breakdown-table tbody td { border-color: #f0f2f5; vertical-align: middle; padding: .45rem 1rem; }
@@ -144,6 +165,36 @@
     <span class="fw-bold" style="font-size:1.15rem;">&pound;{{ "{:,.0f}".format(total_value) }}</span>
     <span class="text-muted" style="font-size:.82rem;">{{ "{:.1f}".format(total_portfolio_pct) }}% of total portfolio</span>
     {% if selected_pie_ids %}<span class="text-muted" style="font-size:.78rem;">{{ selected_pie_ids|length }} pie filter(s) active</span>{% endif %}
+  </div>
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+      <div class="card summary-card p-3 d-flex flex-column" style="border-left: 3px solid var(--t212-green);">
+        <div class="label">Total Cost</div>
+        <div class="amount">{% if historical_view %}-{% else %}{{ cfmt(analysis_summary.cost, display_currency) }}{% endif %}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card summary-card p-3 d-flex flex-column" style="border-left: 3px solid var(--t212-green);">
+        <div class="label">Market Value</div>
+        <div class="amount">{{ cfmt(analysis_summary.value, display_currency) }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card summary-card p-3 d-flex flex-column" style="border-left: 3px solid var(--t212-green);">
+        <div class="label">Unrealised P&amp;L</div>
+        <div class="amount {% if not historical_view and analysis_summary.unrealised > 0 %}pnl-pos{% elif not historical_view and analysis_summary.unrealised < 0 %}pnl-neg{% endif %}">
+          {% if historical_view %}-{% else %}{% if analysis_summary.unrealised >= 0 %}+{% endif %}{{ cfmt(analysis_summary.unrealised, display_currency) }}{% endif %}
+        </div>
+        <div class="subtext">{% if historical_view %}-{% else %}{% if analysis_summary.unrealised_pct >= 0 %}+{% endif %}{{ fmt(analysis_summary.unrealised_pct, 2) }}%{% endif %}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card summary-card p-3 d-flex flex-column" style="border-left: 3px solid var(--t212-green);">
+        <div class="label">Dividends</div>
+        <div class="amount pnl-pos">{{ cfmt(analysis_summary.dividends, display_currency) }}</div>
+        <div class="subtext">{% if historical_view %}-{% else %}{{ fmt(analysis_summary.dividends_pct, 2) }}%{% endif %}</div>
+      </div>
+    </div>
   </div>
   <div class="row g-4 mb-4"><div class="col-12"><div class="card analysis-card"><div class="card-header d-flex justify-content-between align-items-center"><span>Portfolio Total Over Time</span><span id="historyLatestLabel" style="font-weight:400; color:rgba(255,255,255,.5); font-size:.72rem; text-transform:none; letter-spacing:0;"></span></div><div class="card-body p-3">{% if portfolio_history != '{"labels": [], "iso_dates": [], "values": [], "latest": 0.0}' %}<div class="chart-wrap-line"><canvas id="portfolioHistoryChart"></canvas></div>{% else %}<p class="text-muted mb-0" style="font-size:.85rem;">No portfolio history recorded yet - run a sync to start building the daily series.</p>{% endif %}</div></div></div></div>
   <div class="row g-4 mb-4"><div class="col-12"><div class="card analysis-card"><div class="card-header d-flex justify-content-between align-items-center gap-3"><button id="aiAnalysisToggle" class="btn btn-link analysis-collapse-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#aiPortfolioAnalysisCollapse" aria-expanded="false" aria-controls="aiPortfolioAnalysisCollapse"><span class="analysis-collapse-icon" aria-hidden="true">&#9654;</span><span>AI Portfolio Analysis</span></button><div class="d-flex align-items-center gap-3 flex-wrap"><select id="aiProviderSelect" class="form-select form-select-sm" style="min-width: 130px; font-size:.78rem;" {% if historical_view or not available_ai_providers %}disabled{% endif %}>{% if available_ai_providers %}{% for provider in available_ai_providers %}<option value="{{ provider.id }}" {% if provider.id == selected_ai_provider %}selected{% endif %}>{{ provider.label }}</option>{% endfor %}{% else %}<option>No AI</option>{% endif %}</select><span id="aiAnalysisHeaderText" style="font-weight:400; color:rgba(255,255,255,.5); font-size:.72rem; text-transform:none; letter-spacing:0;">{{ ai_analysis_header_text }}</span><button id="aiCopyPromptBtn" class="btn btn-outline-light btn-sm" {% if not initial_ai_analysis %}disabled{% endif %}>Copy Prompt</button><button id="aiAnalyseBtn" class="btn btn-success btn-sm" {% if historical_view or not available_ai_providers %}disabled{% endif %}>{{ ai_analysis_button_label }}</button></div></div><div id="aiPortfolioAnalysisCollapse" class="collapse"><div class="card-body p-3"><p class="text-muted mb-3" style="font-size:.85rem;">Run a deep AI review of the holdings in the current account and pie filter. Saved results stay available for this filter until you choose to reanalyse.</p><div class="text-muted mb-3" style="font-size:.8rem;">Using the app's shared AI keys may be limited to {{ shared_ai_daily_limit }} analysis{{ '' if shared_ai_daily_limit == 1 else 'es' }} per day. Add your own provider key in Settings to remove that limit. Shared-key usage today: {{ shared_ai_usage_today }}.</div><div id="aiAnalysisStatus" class="alert alert-secondary mb-3" style="font-size:.82rem;">{% if historical_view %}AI analysis is only available for the latest portfolio state. Clear the date filter to analyse the current view.{% elif initial_ai_analysis %}Loaded the most recent saved AI analysis for this filter.{% elif available_ai_providers %}Press analyse when you want a portfolio review.{% else %}Add an AI provider API key in your environment to enable portfolio analysis.{% endif %}</div><div id="aiAnalysisMeta" class="ai-analysis-meta mb-2 d-none"></div><div id="aiAnalysisOutput" class="ai-analysis-output d-none"></div></div></div></div></div></div>
