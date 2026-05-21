@@ -99,13 +99,14 @@
   </div>
   <div class="offcanvas-body p-0">
     <nav class="nav flex-column pt-1">
-      <a class="nav-link text-white px-4 py-3" href="/">&#9;📊&nbsp; Portfolio</a>
-      <a class="nav-link text-white px-4 py-3" href="/transactions">&#9;🔄&nbsp; Transactions</a>
-      <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
-      <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
-      <a class="nav-link text-white px-4 py-3" href="/instruments">&#9;🔍&nbsp; Instruments</a>
-      <a class="nav-link text-white px-4 py-3" href="/help">&#9;❓&nbsp; Help</a>
-      <a class="nav-link text-white px-4 py-3" href="/settings">&#9;⚙️&nbsp; Settings</a>
+      <a class="nav-link text-white px-4 py-3" href="/analysis">Analysis</a>
+      <a class="nav-link text-white px-4 py-3" href="/transactions">Transactions</a>
+      <a class="nav-link text-white px-4 py-3" href="/dividends">Dividends</a>
+      <a class="nav-link text-white px-4 py-3" href="/planning">Planning</a>
+      <a class="nav-link text-white px-4 py-3" href="/instruments">Instruments</a>
+      <a class="nav-link text-white px-4 py-3" href="/help">Help</a>
+      <a class="nav-link text-white px-4 py-3" href="/settings">Settings</a>
+      <a class="nav-link text-white px-4 py-3" href="/portfolio">Portfolio</a>
     </nav>
   </div>
 </div>
@@ -119,7 +120,7 @@
       </svg>
     </button>
     <div class="brand">Trading 212 <span>Portfolio</span></div>
-    <a href="/?account={{ account_filter }}" class="btn btn-sm btn-outline-light">← Portfolio</a>
+    <a href="/portfolio?account={{ account_filter }}" class="btn btn-sm btn-outline-light">← Portfolio</a>
     <div class="btn-group btn-group-sm ms-2" role="group">
       <a href="/holding/{{ ticker }}?account={% if account_filter == 'ISA' %}combined{% else %}ISA{% endif %}"
          class="btn {% if account_filter == 'ISA' %}btn-light active{% else %}btn-outline-light{% endif %}">ISA</a>

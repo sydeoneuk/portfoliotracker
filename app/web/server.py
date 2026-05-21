@@ -2135,6 +2135,11 @@ def _build_position_display_context(
 
 
 @app.get("/", response_class=HTMLResponse)
+def default_page(request: Request):
+    return _redirect("/analysis")
+
+
+@app.get("/portfolio", response_class=HTMLResponse)
 def index(request: Request, account: str = "combined", pies: str = "",
           country: str = "", sector: str = "",
           db: Session = Depends(get_session)):
@@ -2732,6 +2737,72 @@ def _build_ai_user_prompt(holdings_payload: dict) -> str:
     )
 
 
+def _build_investment_planner_system_prompt() -> str:
+    return (
+        "You are writing an educational investment planning memo for a private investor dashboard. "
+        "Be practical, specific, and balanced. Do not present certainty or personalised regulated financial advice. "
+        "Use only the supplied data, explain where data is missing, and keep the reasoning grounded in the user's stated goals. "
+        "When recommending buys or sells, explain the role each idea would play in the portfolio and the trade-offs involved."
+    )
+
+
+def _build_investment_planner_user_prompt(planning_payload: dict) -> str:
+    context_type = planning_payload.get("context_type") or "new_portfolio"
+    recommendation_sections = (
+        "Goal Summary, Portfolio Fit, Buy Recommendations, Sell/Trim Recommendations, "
+        "Suggested Allocation Approach, Risks and Trade-offs, Implementation Notes, Disclaimer"
+    )
+    if context_type == "new_portfolio":
+        recommendation_sections = (
+            "Goal Summary, Portfolio Blueprint, Buy Recommendations, Instruments or Exposures to Avoid, "
+            "Suggested Allocation Approach, Risks and Trade-offs, Implementation Notes, Disclaimer"
+        )
+
+    return (
+        "Use the supplied investment planning data to create a thoughtful action plan.\n\n"
+        "Requirements:\n"
+        "- Start by restating the user's goals in plain English.\n"
+        "- If this is an existing pie, evaluate the current constituents against the goal and identify what should be bought more, trimmed, or sold.\n"
+        "- If this is a new portfolio, propose a sensible starter portfolio based on the goal and explain what the user should prioritise.\n"
+        "- Recommendations must be concrete, not generic. Name specific holdings when the data supports it.\n"
+        "- Separate buy ideas from sell or trim ideas.\n"
+        "- Include brief rationale, portfolio role, and main risk for each recommendation.\n"
+        "- Respect the capital_to_add amount when suggesting how much new money to deploy. "
+        "If capital_to_add is zero, still suggest reallocations if appropriate, but do not assume fresh capital is available.\n"
+        "- If data is missing, say so rather than inventing details.\n"
+        "- Format the answer in Markdown using these sections: "
+        f"{recommendation_sections}.\n"
+        "- This is a Trading 212 portfolio, so avoid over-indexing on traditional broker fee discussions.\n\n"
+        "After the Markdown sections, append a fenced JSON block using ```json with exactly this shape:\n"
+        "{\n"
+        '  "summary": "short one-line summary",\n'
+        '  "buy_orders": [\n'
+        '    {\n'
+        '      "ticker": "string",\n'
+        '      "name": "string",\n'
+        '      "amount": "string",\n'
+        '      "action": "BUY",\n'
+        '      "reason": "string",\n'
+        '      "priority": "High|Medium|Low"\n'
+        '    }\n'
+        '  ],\n'
+        '  "sell_orders": [\n'
+        '    {\n'
+        '      "ticker": "string",\n'
+        '      "name": "string",\n'
+        '      "amount": "string",\n'
+        '      "action": "SELL",\n'
+        '      "reason": "string",\n'
+        '      "priority": "High|Medium|Low"\n'
+        '    }\n'
+        '  ]\n'
+        "}\n"
+        "- Always include the JSON block, even if one side is empty.\n"
+        "- The amount field can be a currency amount, a percentage trim, or a short sizing instruction.\n\n"
+        f"Investment planning data JSON:\n{json.dumps(planning_payload, indent=2)}"
+    )
+
+
 def _build_ai_holdings_payload(
     positions: list[dict],
     fx_to_gbp: dict[str, float],
@@ -2813,16 +2884,13 @@ def _build_ai_holdings_hash(account: str, pie_filter_key: str, holdings_payload:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _request_anthropic_portfolio_analysis(holdings_payload: dict, api_key: str) -> tuple[str, str, str]:
+def _request_anthropic_markdown(system_prompt: str, user_prompt: str, api_key: str, model: str) -> tuple[str, str]:
     if not api_key:
         raise RuntimeError("Anthropic API key is not configured.")
 
     import anthropic
 
-    model = settings.anthropic_analysis_model
     client = anthropic.Anthropic(api_key=api_key)
-    system_prompt = _build_ai_system_prompt()
-    user_prompt = _build_ai_user_prompt(holdings_payload)
     messages = [{"role": "user", "content": user_prompt}]
     collected_parts: list[str] = []
 
@@ -2851,23 +2919,19 @@ def _request_anthropic_portfolio_analysis(holdings_payload: dict, api_key: str) 
             {"role": "user", "content": "Continue exactly where you left off and finish the remaining sections without repeating earlier content."},
         ])
 
-    analysis_text = "\n\n".join(p for p in collected_parts if p).strip()
-    if not analysis_text:
-        raise RuntimeError("Claude returned an empty analysis.")
-    prompt_text = f"System:\n{system_prompt}\n\nUser:\n{user_prompt}"
-    return analysis_text, model, prompt_text
+    response_text = "\n\n".join(p for p in collected_parts if p).strip()
+    if not response_text:
+        raise RuntimeError("Claude returned an empty response.")
+    return response_text, model
 
 
-def _request_openai_portfolio_analysis(holdings_payload: dict, api_key: str) -> tuple[str, str, str]:
+def _request_openai_markdown(system_prompt: str, user_prompt: str, api_key: str, model: str) -> tuple[str, str]:
     if not api_key:
         raise RuntimeError("OpenAI API key is not configured.")
 
     from openai import OpenAI
 
-    model = settings.openai_analysis_model
     client = OpenAI(api_key=api_key)
-    system_prompt = _build_ai_system_prompt()
-    user_prompt = _build_ai_user_prompt(holdings_payload)
     completion = client.chat.completions.create(
         model=model,
         messages=[
@@ -2875,15 +2939,40 @@ def _request_openai_portfolio_analysis(holdings_payload: dict, api_key: str) -> 
             {"role": "user", "content": user_prompt},
         ],
     )
-    analysis_text = (
+    response_text = (
         completion.choices[0].message.content.strip()
         if getattr(completion, "choices", None)
         and completion.choices[0].message
         and completion.choices[0].message.content
         else ""
     )
-    if not analysis_text:
-        raise RuntimeError("OpenAI returned an empty analysis.")
+    if not response_text:
+        raise RuntimeError("OpenAI returned an empty response.")
+    return response_text, model
+
+
+def _request_anthropic_portfolio_analysis(holdings_payload: dict, api_key: str) -> tuple[str, str, str]:
+    system_prompt = _build_ai_system_prompt()
+    user_prompt = _build_ai_user_prompt(holdings_payload)
+    analysis_text, model = _request_anthropic_markdown(
+        system_prompt,
+        user_prompt,
+        api_key,
+        settings.anthropic_analysis_model,
+    )
+    prompt_text = f"System:\n{system_prompt}\n\nUser:\n{user_prompt}"
+    return analysis_text, model, prompt_text
+
+
+def _request_openai_portfolio_analysis(holdings_payload: dict, api_key: str) -> tuple[str, str, str]:
+    system_prompt = _build_ai_system_prompt()
+    user_prompt = _build_ai_user_prompt(holdings_payload)
+    analysis_text, model = _request_openai_markdown(
+        system_prompt,
+        user_prompt,
+        api_key,
+        settings.openai_analysis_model,
+    )
     prompt_text = f"System:\n{system_prompt}\n\nUser:\n{user_prompt}"
     return analysis_text, model, prompt_text
 
@@ -2892,6 +2981,233 @@ def _request_ai_portfolio_analysis(provider: str, holdings_payload: dict, api_ke
     if provider == "openai":
         return _request_openai_portfolio_analysis(holdings_payload, api_key)
     return _request_anthropic_portfolio_analysis(holdings_payload, api_key)
+
+
+def _request_ai_investment_plan(provider: str, planning_payload: dict, api_key: str) -> tuple[str, str, str]:
+    system_prompt = _build_investment_planner_system_prompt()
+    user_prompt = _build_investment_planner_user_prompt(planning_payload)
+    if provider == "openai":
+        plan_text, model = _request_openai_markdown(
+            system_prompt,
+            user_prompt,
+            api_key,
+            settings.openai_analysis_model,
+        )
+    else:
+        plan_text, model = _request_anthropic_markdown(
+            system_prompt,
+            user_prompt,
+            api_key,
+            settings.anthropic_analysis_model,
+        )
+    prompt_text = f"System:\n{system_prompt}\n\nUser:\n{user_prompt}"
+    return plan_text, model, prompt_text
+
+
+def _summarise_planning_allocations(items: list[dict], key: str, value_key: str = "value_gbp") -> list[dict]:
+    totals: dict[str, float] = {}
+    total_value = 0.0
+    for item in items:
+        label = (item.get(key) or "").strip() or "Unknown"
+        value = float(item.get(value_key) or 0.0)
+        total_value += value
+        totals[label] = totals.get(label, 0.0) + value
+
+    rows = [
+        {
+            "label": label,
+            "value_gbp": round(value, 2),
+            "weight_pct": round((value / total_value * 100) if total_value else 0.0, 2),
+        }
+        for label, value in totals.items()
+    ]
+    rows.sort(key=lambda row: row["value_gbp"], reverse=True)
+    return rows
+
+
+def _build_existing_portfolio_context(db: Session, user_id: int) -> dict:
+    positions = _normalise_positions_for_display(_fetch_filtered_positions(db, user_id, "combined", [], False))
+    if not positions:
+        return {"holdings_count": 0, "total_value_gbp": 0.0, "top_holdings": [], "sector_split": [], "country_split": []}
+
+    fx = _get_fx_rates_to_gbp({p.get("currency") for p in positions if p.get("currency")})
+    holdings: list[dict] = []
+    total_value_gbp = 0.0
+    for row in positions:
+        currency = row.get("currency") or "GBP"
+        value_gbp = float(row.get("value") or 0.0) * float(fx.get(currency, 1.0) or 1.0)
+        total_value_gbp += value_gbp
+        holdings.append({
+            "ticker": row.get("ticker"),
+            "name": row.get("name"),
+            "account": row.get("account"),
+            "sector": row.get("sector") or _classify(
+                row.get("instrument_type") or "",
+                row.get("sector") or "",
+                row.get("industry") or "",
+                row.get("name") or "",
+                row.get("instrument_class"),
+            ),
+            "country": row.get("country") or "Unknown",
+            "value_gbp": round(value_gbp, 2),
+        })
+
+    for holding in holdings:
+        holding["weight_pct"] = round((holding["value_gbp"] / total_value_gbp * 100) if total_value_gbp else 0.0, 2)
+
+    holdings.sort(key=lambda row: row["value_gbp"], reverse=True)
+    return {
+        "holdings_count": len(holdings),
+        "total_value_gbp": round(total_value_gbp, 2),
+        "top_holdings": holdings[:15],
+        "sector_split": _summarise_planning_allocations(holdings, "sector"),
+        "country_split": _summarise_planning_allocations(holdings, "country"),
+    }
+
+
+def _build_planning_payload(
+    db: Session,
+    user_id: int,
+    portfolio_choice: str,
+    investment_goals: str,
+    capital_to_add: float,
+) -> dict:
+    clean_goal = investment_goals.strip()
+    if portfolio_choice == "new":
+        available_pies = [
+            pie for pie in _load_pies(db, user_id, "combined")
+            if str(pie.get("id")) != _NO_PIE_FILTER
+        ]
+        return {
+            "context_type": "new_portfolio",
+            "investment_goals": clean_goal,
+            "capital_to_add": round(float(capital_to_add or 0.0), 2),
+            "existing_portfolio_context": _build_existing_portfolio_context(db, user_id),
+            "available_pies": available_pies,
+        }
+
+    if not str(portfolio_choice).isdigit():
+        raise ValueError("Please select a valid pie or choose New Portfolio.")
+
+    pie_id = int(portfolio_choice)
+    pie_row = db.execute(text("""
+        SELECT pk, id, name, account, goal, initial_investment, cash
+        FROM pies
+        WHERE pk = :pie_id
+          AND user_id = :user_id
+    """), {"pie_id": pie_id, "user_id": user_id}).first()
+    if not pie_row:
+        raise ValueError("The selected pie could not be found.")
+
+    pie_account = pie_row.account if pie_row.account in ("ISA", "Trading") else "combined"
+    positions = _normalise_positions_for_display(_fetch_filtered_positions(db, user_id, pie_account, [pie_id], False))
+    fx = _get_fx_rates_to_gbp({p.get("currency") for p in positions if p.get("currency")})
+    holdings_payload = _build_ai_holdings_payload(positions, fx, pie_account, [str(pie_id)], str(pie_id))
+    holdings_by_ticker = {str(row.get("ticker")): row for row in holdings_payload["holdings"]}
+
+    constituent_rows = db.execute(text("""
+        SELECT
+            ph.ticker,
+            COALESCE(NULLIF(i.name, ''), i.short_name, ph.ticker) AS name,
+            COALESCE(ph.expected_share, 0) AS expected_share,
+            COALESCE(ph.current_share, 0) AS current_share,
+            COALESCE(ph.owned_quantity, 0) AS owned_quantity,
+            i.sector,
+            i.country,
+            COALESCE(i.instrument_type, '') AS instrument_type,
+            i.instrument_class
+        FROM pie_holdings ph
+        LEFT JOIN instruments i ON i.ticker = ph.ticker
+        WHERE ph.user_id = :user_id
+          AND ph.pie_id = :pie_id
+        ORDER BY COALESCE(ph.current_share, ph.expected_share, 0) DESC, ph.ticker
+    """), {"user_id": user_id, "pie_id": pie_id}).fetchall()
+
+    constituents: list[dict] = []
+    for row in constituent_rows:
+        holding = holdings_by_ticker.get(str(row.ticker), {})
+        constituents.append({
+            "ticker": row.ticker,
+            "name": row.name,
+            "target_weight_pct": round(float(row.expected_share or 0.0), 2),
+            "current_weight_pct": round(float(row.current_share or 0.0), 2),
+            "owned_quantity": round(float(row.owned_quantity or 0.0), 6),
+            "value_gbp": round(float(holding.get("value_gbp") or 0.0), 2),
+            "portfolio_weight_pct": round(float(holding.get("weight_pct") or 0.0), 2),
+            "return_pct": round(float(holding.get("return_pct") or 0.0), 2),
+            "forward_dividends_native": round(float(holding.get("forward_dividends_native") or 0.0), 2),
+            "total_dividends_gbp": round(float(holding.get("total_dividends_gbp") or 0.0), 2),
+            "country": row.country or "Unknown",
+            "sector": row.sector or _classify(
+                row.instrument_type or "",
+                row.sector or "",
+                "",
+                row.name or "",
+                row.instrument_class,
+            ),
+        })
+
+    return {
+        "context_type": "existing_pie",
+        "investment_goals": clean_goal,
+        "capital_to_add": round(float(capital_to_add or 0.0), 2),
+        "pie": {
+            "pk": int(pie_row.pk),
+            "id": int(pie_row.id),
+            "name": pie_row.name,
+            "account": pie_row.account or "Unknown",
+            "goal_amount": float(pie_row.goal or 0.0),
+            "initial_investment": float(pie_row.initial_investment or 0.0),
+            "cash": float(pie_row.cash or 0.0),
+        },
+        "pie_portfolio_context": holdings_payload["portfolio"],
+        "current_constituents": constituents,
+        "sector_split": _summarise_planning_allocations(constituents, "sector"),
+        "country_split": _summarise_planning_allocations(constituents, "country"),
+    }
+
+
+def _extract_planning_orders(analysis_text: str) -> tuple[str, dict]:
+    start_marker = "```json"
+    end_marker = "```"
+    start_index = analysis_text.rfind(start_marker)
+    if start_index == -1:
+        return analysis_text.strip(), {"summary": "", "buy_orders": [], "sell_orders": []}
+
+    json_start = start_index + len(start_marker)
+    end_index = analysis_text.find(end_marker, json_start)
+    if end_index == -1:
+        return analysis_text.strip(), {"summary": "", "buy_orders": [], "sell_orders": []}
+
+    json_block = analysis_text[json_start:end_index].strip()
+    markdown_text = (analysis_text[:start_index] + analysis_text[end_index + len(end_marker):]).strip()
+    try:
+        parsed = json.loads(json_block)
+    except Exception:
+        return analysis_text.strip(), {"summary": "", "buy_orders": [], "sell_orders": []}
+
+    recommendations = {
+        "summary": str(parsed.get("summary") or "").strip(),
+        "buy_orders": [],
+        "sell_orders": [],
+    }
+    for key in ("buy_orders", "sell_orders"):
+        raw_orders = parsed.get(key) or []
+        if not isinstance(raw_orders, list):
+            continue
+        for item in raw_orders:
+            if not isinstance(item, dict):
+                continue
+            recommendations[key].append({
+                "ticker": str(item.get("ticker") or "").strip(),
+                "name": str(item.get("name") or "").strip(),
+                "amount": str(item.get("amount") or "").strip(),
+                "action": str(item.get("action") or ("BUY" if key == "buy_orders" else "SELL")).strip().upper(),
+                "reason": str(item.get("reason") or "").strip(),
+                "priority": str(item.get("priority") or "").strip() or "Medium",
+            })
+
+    return markdown_text, recommendations
 
 
 def _build_portfolio_history(
@@ -3117,6 +3433,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
     summary_cost = float(grand_total_display.get("cost") or 0.0)
     summary_unrealised = float(grand_total_display.get("ppl") or 0.0)
     summary_dividends = float(grand_total_display.get("dividends") or 0.0)
+    summary_forward_dividends = float(grand_total_display.get("fwd_dividends") or 0.0)
     analysis_summary = {
         "cost": summary_cost,
         "value": float(grand_total_display.get("value") or 0.0),
@@ -3124,7 +3441,32 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "unrealised_pct": (summary_unrealised / summary_cost * 100) if summary_cost else 0.0,
         "dividends": summary_dividends,
         "dividends_pct": (summary_dividends / summary_cost * 100) if summary_cost else 0.0,
+        "fwd_dividends": summary_forward_dividends,
     }
+
+    free_cash_trading = float(user_settings.free_cash_trading or 0) if user_settings else 0.0
+    free_cash_isa = float(user_settings.free_cash_isa or 0) if user_settings else 0.0
+    pie_cash_trading = float(user_settings.pie_cash_trading or 0) if user_settings else 0.0
+    pie_cash_isa = float(user_settings.pie_cash_isa or 0) if user_settings else 0.0
+    trading_currency = user_settings.trading_currency_code if user_settings else None
+    isa_currency = user_settings.isa_currency_code if user_settings else None
+
+    cash_fx = _get_fx_rates_to_gbp({trading_currency, isa_currency, display_currency})
+    if account == "ISA":
+        free_cash = _convert_amount_between_currencies(free_cash_isa, isa_currency, display_currency, cash_fx)
+        total_pie_cash = _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, cash_fx)
+    elif account == "Trading":
+        free_cash = _convert_amount_between_currencies(free_cash_trading, trading_currency, display_currency, cash_fx)
+        total_pie_cash = _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, cash_fx)
+    else:
+        free_cash = (
+            _convert_amount_between_currencies(free_cash_trading, trading_currency, display_currency, cash_fx)
+            + _convert_amount_between_currencies(free_cash_isa, isa_currency, display_currency, cash_fx)
+        )
+        total_pie_cash = (
+            _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, cash_fx)
+            + _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, cash_fx)
+        )
 
     def _build_rows(d: dict[str, float]) -> list[dict]:
         total = sum(d.values()) or 1
@@ -3484,6 +3826,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "as_of_date_label": as_of_date.strftime("%d %b %Y") if as_of_date else "",
         "historical_view": bool(as_of_date),
         "analysis_summary": analysis_summary,
+        "free_cash": free_cash,
+        "total_pie_cash": total_pie_cash,
         "total_value": total_value,
         "total_portfolio_pct": total_portfolio_pct,
         "positions": positions,
@@ -3641,6 +3985,127 @@ def portfolio_ai_analysis(
         "generated_at_iso": _format_analysis_timestamp_iso(cache_row.updated_at),
         "age": "just now",
         "holdings_count": cache_row.holdings_count,
+    })
+
+
+@app.get("/planning", response_class=HTMLResponse)
+def investment_planning_page(
+    request: Request,
+    portfolio: str = "new",
+    ai_provider: str = "",
+    db: Session = Depends(get_session),
+):
+    user = _get_current_user(request, db)
+    if not user:
+        return _redirect("/login")
+
+    user_settings = _get_or_create_settings(db, user.id)
+    available_ai_providers = _get_available_ai_providers(user_settings)
+    selected_ai_provider = _resolve_ai_provider(ai_provider or None, user_settings)
+    available_pies = [
+        pie for pie in _load_pies(db, user.id, "combined")
+        if str(pie.get("id")) != _NO_PIE_FILTER
+    ]
+
+    valid_choices = {"new"} | {str(pie["id"]) for pie in available_pies}
+    selected_portfolio = portfolio if portfolio in valid_choices else "new"
+
+    return templates.TemplateResponse(request, "planning.html", {
+        "user": user,
+        "available_pies": available_pies,
+        "selected_portfolio": selected_portfolio,
+        "available_ai_providers": available_ai_providers,
+        "selected_ai_provider": selected_ai_provider,
+    })
+
+
+@app.post("/planning/ai")
+def investment_planning_analysis(
+    request: Request,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_session),
+):
+    user = _get_current_user(request, db)
+    if not user:
+        return JSONResponse({"error": "Authentication required."}, status_code=401)
+
+    user_settings = _get_or_create_settings(db, user.id)
+    provider = _resolve_ai_provider(payload.get("provider"), user_settings)
+    provider_api_key, using_shared_key = _resolve_ai_provider_access(user_settings, provider)
+    if not provider_api_key:
+        return JSONResponse({"error": "The selected AI provider is not configured."}, status_code=400)
+
+    portfolio_choice = str(payload.get("portfolio") or "new")
+    investment_goals = str(payload.get("investment_goals") or "").strip()
+    try:
+        capital_to_add = float(payload.get("capital_to_add") or 0.0)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "Capital to add must be a valid number."}, status_code=400)
+    capital_to_add = max(capital_to_add, 0.0)
+    if len(investment_goals) < 10:
+        return JSONResponse(
+            {"error": "Please describe your investment goals in a little more detail before running the planner."},
+            status_code=400,
+        )
+
+    if using_shared_key:
+        shared_ai_daily_limit = _get_shared_ai_daily_limit(db)
+        shared_ai_usage_today = _count_shared_ai_usage_today(db, user.id)
+        if shared_ai_usage_today >= shared_ai_daily_limit:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"You have reached the shared AI analysis limit for today "
+                        f"({shared_ai_daily_limit} per day). Add your own {provider.title()} API key "
+                        f"in Settings to continue."
+                    )
+                },
+                status_code=429,
+            )
+
+    try:
+        planning_payload = _build_planning_payload(
+            db,
+            user.id,
+            portfolio_choice,
+            investment_goals,
+            capital_to_add,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    try:
+        raw_analysis_text, model, prompt_text = _request_ai_investment_plan(
+            provider,
+            planning_payload,
+            provider_api_key,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"Investment planning analysis failed: {exc}"},
+            status_code=503,
+        )
+    analysis_text, recommendations = _extract_planning_orders(raw_analysis_text)
+
+    now_utc = datetime.datetime.utcnow()
+    db.add(AIAnalysisUsage(
+        user_id=user.id,
+        provider=provider,
+        used_shared_key=using_shared_key,
+        created_at=now_utc,
+    ))
+    db.commit()
+
+    return JSONResponse({
+        "analysis": analysis_text,
+        "provider": provider,
+        "model": model,
+        "prompt_text": prompt_text,
+        "generated_at": _format_analysis_timestamp(now_utc),
+        "generated_at_iso": _format_analysis_timestamp_iso(now_utc),
+        "age": "just now",
+        "planning_payload": planning_payload,
+        "recommendations": recommendations,
     })
 
 

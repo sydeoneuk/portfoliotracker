@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-QN3KWW2EFD"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-QN3KWW2EFD');
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trading 212 - Investment Planning</title>
+
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+
+  <style>
+    :root { --t212-green: #00c896; --t212-dark: #0f1923; }
+    body { background: #f4f6f9; font-size: 0.875rem; }
+    .side-nav .nav-link { border-bottom: 1px solid rgba(255,255,255,0.07); transition: background .15s; font-size: .88rem; letter-spacing: .3px; }
+    .side-nav .nav-link:hover { background: rgba(0,200,150,0.1); color: var(--t212-green) !important; }
+    .side-nav .nav-link.active { background: rgba(0,200,150,0.15); color: var(--t212-green) !important; font-weight: 600; }
+    .top-bar { background: var(--t212-dark); color: #fff; padding: 1rem 1.5rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; }
+    .top-bar .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: .5px; }
+    .top-bar .brand span { color: var(--t212-green); }
+    .top-bar .user-info { display: flex; align-items: center; gap: .75rem; font-size: .82rem; }
+    .top-bar .avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+    .page-card { border: none; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); overflow: hidden; }
+    .page-card .card-header { background: var(--t212-dark); color: #fff; font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; border-radius: 12px 12px 0 0 !important; padding: .8rem 1.1rem; }
+    .planner-output { font-size: .9rem; line-height: 1.7; color: #1f2933; }
+    .planner-output h1, .planner-output h2, .planner-output h3, .planner-output h4 { color: #0f1923; margin-top: 1rem; margin-bottom: .5rem; }
+    .planner-output p, .planner-output ul, .planner-output ol { margin-bottom: .8rem; }
+    .planner-output ul, .planner-output ol { padding-left: 1.2rem; }
+    .planner-output li { margin-bottom: .35rem; }
+    .planner-output code { background: #eef2f6; color: #123; padding: .08rem .3rem; border-radius: 4px; }
+    .planner-output pre { background: #0f1923; color: #e5eef6; padding: .9rem 1rem; border-radius: 8px; overflow-x: auto; }
+    .planner-output blockquote { border-left: 4px solid #00c896; padding-left: .85rem; color: #52606d; margin: 0 0 1rem; }
+    .planner-output table { width: 100%; margin-bottom: 1rem; border-collapse: collapse; }
+    .planner-output th, .planner-output td { border: 1px solid #d9e2ec; padding: .5rem .65rem; vertical-align: top; }
+    .planner-output th { background: #f0f4f8; }
+    .summary-box { background: linear-gradient(135deg, rgba(0,200,150,0.1), rgba(15,25,35,0.03)); border: 1px solid #d8efe8; border-radius: 12px; padding: 1rem 1.1rem; }
+    .summary-box .title { font-size: .78rem; text-transform: uppercase; letter-spacing: .7px; color: #5f6c7b; margin-bottom: .35rem; }
+    .summary-box .value { font-size: 1.25rem; font-weight: 700; color: #0f1923; }
+    .context-table thead th { background: #3a4450; color: #c8d6e5; font-size: .72rem; text-transform: uppercase; letter-spacing: .6px; border: none; white-space: nowrap; }
+    .context-table td { vertical-align: middle; border-color: #eef2f6; }
+    .context-table tbody tr:hover { background: #f0fbf7; }
+    .orders-table thead th { background: #3a4450; color: #c8d6e5; font-size: .72rem; text-transform: uppercase; letter-spacing: .6px; border: none; white-space: nowrap; }
+    .orders-table td { vertical-align: top; border-color: #eef2f6; }
+    .order-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: .2rem .55rem; font-size: .72rem; font-weight: 700; }
+    .order-pill.buy { background: rgba(15,169,104,.12); color: #0a7e4d; }
+    .order-pill.sell { background: rgba(224,51,76,.12); color: #b42339; }
+    .priority-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: .18rem .5rem; font-size: .7rem; font-weight: 700; background: #eef2f6; color: #4b5563; }
+    .planner-meta { font-size: .76rem; color: #6b7280; }
+    .empty-state { color: #6c757d; font-size: .85rem; }
+  </style>
+</head>
+<body>
+<div class="offcanvas offcanvas-start side-nav" tabindex="-1" id="sideNav" style="width:210px; background:#0f1923; border-right:1px solid rgba(255,255,255,0.08);">
+  <div class="offcanvas-header pb-2">
+    <span class="text-white fw-bold" style="font-size:.95rem;">Trading 212 <span style="color:#00c896;">Portfolio</span></span>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas"></button>
+  </div>
+  <div class="offcanvas-body p-0">
+    <nav class="nav flex-column pt-1">
+      <a class="nav-link text-white px-4 py-3" href="/analysis">Analysis</a>
+      <a class="nav-link text-white px-4 py-3" href="/transactions">Transactions</a>
+      <a class="nav-link text-white px-4 py-3" href="/dividends">Dividends</a>
+      <a class="nav-link text-white px-4 py-3 active" href="/planning">Planning</a>
+      <a class="nav-link text-white px-4 py-3" href="/instruments">Instruments</a>
+      <a class="nav-link text-white px-4 py-3" href="/help">Help</a>
+      <a class="nav-link text-white px-4 py-3" href="/settings">Settings</a>
+      <a class="nav-link text-white px-4 py-3" href="/portfolio">Portfolio</a>
+    </nav>
+  </div>
+</div>
+
+<div class="top-bar">
+  <div class="d-flex align-items-center gap-3">
+    <button class="btn btn-link text-white p-0" data-bs-toggle="offcanvas" data-bs-target="#sideNav" aria-label="Menu"><svg width="22" height="22" fill="currentColor" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/></svg></button>
+    <div class="brand">Trading 212 <span>Planning</span></div>
+  </div>
+  <div class="user-info">
+    {% if user.avatar_url %}<img src="{{ user.avatar_url }}" class="avatar" alt="">{% endif %}
+    <span>{{ user.name or user.email }}</span>
+    <form method="post" action="/logout" class="d-inline"><button class="btn btn-sm btn-outline-secondary">Sign out</button></form>
+  </div>
+</div>
+
+<div class="container-fluid px-4 py-4">
+  <div class="row g-4">
+    <div class="col-12 col-xl-4">
+      <div class="card page-card">
+        <div class="card-header">Planner Setup</div>
+        <div class="card-body p-4">
+          <div class="mb-3">
+            <label for="portfolioSelect" class="form-label fw-semibold">Portfolio Context</label>
+            <select id="portfolioSelect" class="form-select">
+              <option value="new" {% if selected_portfolio == 'new' %}selected{% endif %}>New Portfolio</option>
+              {% for pie in available_pies %}
+              <option value="{{ pie.id }}" {% if selected_portfolio == pie.id|string %}selected{% endif %}>{{ pie.name }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">Pick an existing pie to optimise or choose <strong>New Portfolio</strong> to start from the goal brief alone.</div>
+          </div>
+          <div class="mb-3">
+            <label for="aiProviderSelect" class="form-label fw-semibold">AI Model</label>
+            <select id="aiProviderSelect" class="form-select" {% if not available_ai_providers %}disabled{% endif %}>
+              {% if available_ai_providers %}
+                {% for provider in available_ai_providers %}
+                <option value="{{ provider.id }}" {% if provider.id == selected_ai_provider %}selected{% endif %}>{{ provider.label }}</option>
+                {% endfor %}
+              {% else %}
+                <option>No AI configured</option>
+              {% endif %}
+            </select>
+            <div class="form-text">The planner uses the same configured Claude/OpenAI access as the Analysis page.</div>
+          </div>
+          <div class="mb-3">
+            <label for="goalInput" class="form-label fw-semibold">Investment Goals</label>
+            <textarea id="goalInput" class="form-control" rows="10" placeholder="Example: I want a long-term portfolio for 15+ years with a bias toward dividend growth and resilience, moderate volatility, low overlap, and a small satellite allocation for higher-growth ideas."></textarea>
+          </div>
+          <div class="mb-3">
+            <label for="capitalInput" class="form-label fw-semibold">Capital to Add</label>
+            <input id="capitalInput" class="form-control" type="number" min="0" step="0.01" value="0">
+            <div class="form-text">Optional fresh capital you’re considering adding to this pie or proposed portfolio.</div>
+          </div>
+          <div class="d-grid gap-2">
+            <button id="analyseBtn" class="btn btn-success" {% if not available_ai_providers %}disabled{% endif %}>Analyse</button>
+            <button id="copyPromptBtn" class="btn btn-outline-secondary" disabled>Copy Prompt</button>
+          </div>
+          {% if not available_ai_providers %}
+          <div class="alert alert-warning mt-3 mb-0" style="font-size:.82rem;">Add an OpenAI or Claude key in <a href="/settings" class="alert-link">Settings</a> to use the planner.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-xl-8">
+      <div class="row g-4 mb-4">
+        <div class="col-md-6">
+          <div class="summary-box">
+            <div class="title">Planner Mode</div>
+            <div id="plannerModeValue" class="value">{% if selected_portfolio == 'new' %}New Portfolio{% else %}Existing Pie{% endif %}</div>
+            <div class="text-muted" style="font-size:.8rem;">The recommendation engine adapts its prompt based on whether you're redesigning an existing pie or sketching a fresh portfolio.</div>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="summary-box">
+            <div class="title">Recommendation Style</div>
+            <div class="value">Buy / Sell Action Plan</div>
+            <div class="text-muted" style="font-size:.8rem;">Results are educational suggestions with rationale, role in portfolio, and trade-offs for each idea.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card page-card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <span>Investment Plan</span>
+          <span id="plannerMeta" class="planner-meta d-none"></span>
+        </div>
+        <div class="card-body p-4">
+          <div id="plannerStatus" class="alert alert-secondary mb-3">Describe the goal, choose a portfolio context, and run the planner.</div>
+          <div id="plannerOutput" class="planner-output d-none"></div>
+        </div>
+      </div>
+
+      <div id="plannerOrdersCard" class="card page-card mb-4 d-none">
+        <div class="card-header">Recommended Orders</div>
+        <div class="card-body p-4">
+          <div id="plannerOrderSummary" class="alert alert-secondary mb-4 d-none"></div>
+          <div class="row g-4">
+            <div class="col-12 col-xl-6">
+              <h6 class="fw-semibold mb-3">Buy Orders</h6>
+              <div id="buyOrdersWrap" class="table-responsive d-none">
+                <table class="table orders-table mb-0">
+                  <thead>
+                    <tr>
+                      <th>Action</th>
+                      <th>Holding</th>
+                      <th>Amount</th>
+                      <th>Priority</th>
+                      <th>Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody id="buyOrdersBody"></tbody>
+                </table>
+              </div>
+              <div id="buyOrdersEmpty" class="empty-state">No buy orders recommended.</div>
+            </div>
+            <div class="col-12 col-xl-6">
+              <h6 class="fw-semibold mb-3">Sell Orders</h6>
+              <div id="sellOrdersWrap" class="table-responsive d-none">
+                <table class="table orders-table mb-0">
+                  <thead>
+                    <tr>
+                      <th>Action</th>
+                      <th>Holding</th>
+                      <th>Amount</th>
+                      <th>Priority</th>
+                      <th>Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sellOrdersBody"></tbody>
+                </table>
+              </div>
+              <div id="sellOrdersEmpty" class="empty-state">No sell orders recommended.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="plannerContextCard" class="card page-card d-none">
+        <div class="card-header">Planning Context Used</div>
+        <div class="card-body p-4">
+          <div id="plannerContextSummary" class="mb-4"></div>
+          <div id="plannerContextTableWrap" class="table-responsive d-none">
+            <table class="table context-table mb-0">
+              <thead id="plannerContextHead"></thead>
+              <tbody id="plannerContextBody"></tbody>
+            </table>
+          </div>
+          <div id="plannerContextEmpty" class="empty-state d-none">No constituent data was available for this context.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  const portfolioSelect = document.getElementById('portfolioSelect');
+  const aiProviderSelect = document.getElementById('aiProviderSelect');
+  const goalInput = document.getElementById('goalInput');
+  const capitalInput = document.getElementById('capitalInput');
+  const analyseBtn = document.getElementById('analyseBtn');
+  const copyPromptBtn = document.getElementById('copyPromptBtn');
+  const plannerStatus = document.getElementById('plannerStatus');
+  const plannerMeta = document.getElementById('plannerMeta');
+  const plannerOutput = document.getElementById('plannerOutput');
+  const plannerOrdersCard = document.getElementById('plannerOrdersCard');
+  const plannerOrderSummary = document.getElementById('plannerOrderSummary');
+  const buyOrdersWrap = document.getElementById('buyOrdersWrap');
+  const buyOrdersBody = document.getElementById('buyOrdersBody');
+  const buyOrdersEmpty = document.getElementById('buyOrdersEmpty');
+  const sellOrdersWrap = document.getElementById('sellOrdersWrap');
+  const sellOrdersBody = document.getElementById('sellOrdersBody');
+  const sellOrdersEmpty = document.getElementById('sellOrdersEmpty');
+  const plannerModeValue = document.getElementById('plannerModeValue');
+  const plannerContextCard = document.getElementById('plannerContextCard');
+  const plannerContextSummary = document.getElementById('plannerContextSummary');
+  const plannerContextHead = document.getElementById('plannerContextHead');
+  const plannerContextBody = document.getElementById('plannerContextBody');
+  const plannerContextTableWrap = document.getElementById('plannerContextTableWrap');
+  const plannerContextEmpty = document.getElementById('plannerContextEmpty');
+  let currentPromptText = '';
+
+  function renderMarkdown(markdown) {
+    if (window.marked && window.DOMPurify) {
+      return DOMPurify.sanitize(marked.parse(markdown || ''));
+    }
+    return (markdown || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+  }
+
+  function formatTimestamp(isoTimestamp) {
+    if (!isoTimestamp) return '';
+    const date = new Date(isoTimestamp);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZoneName: 'short'
+    });
+  }
+
+  function updatePlannerModeLabel() {
+    plannerModeValue.textContent = portfolioSelect.value === 'new'
+      ? 'New Portfolio'
+      : 'Existing Pie';
+  }
+
+  function renderContextTable(headers, rows) {
+    plannerContextHead.innerHTML = `<tr>${headers.map(header => `<th>${header}</th>`).join('')}</tr>`;
+    plannerContextBody.innerHTML = rows.map(row => `<tr>${row.map(cell => `<td>${cell}</td>`).join('')}</tr>`).join('');
+    plannerContextTableWrap.classList.remove('d-none');
+    plannerContextEmpty.classList.add('d-none');
+  }
+
+  function renderOrdersTable(bodyElement, wrapElement, emptyElement, orders, kind) {
+    if (!orders.length) {
+      wrapElement.classList.add('d-none');
+      emptyElement.classList.remove('d-none');
+      bodyElement.innerHTML = '';
+      return;
+    }
+    bodyElement.innerHTML = orders.map(order => `
+      <tr>
+        <td><span class="order-pill ${kind}">${order.action || kind.toUpperCase()}</span></td>
+        <td><div class="fw-semibold">${order.name || order.ticker || '-'}</div><div class="text-muted" style="font-size:.78rem;">${order.ticker || ''}</div></td>
+        <td>${order.amount || '-'}</td>
+        <td><span class="priority-pill">${order.priority || 'Medium'}</span></td>
+        <td>${order.reason || '-'}</td>
+      </tr>
+    `).join('');
+    wrapElement.classList.remove('d-none');
+    emptyElement.classList.add('d-none');
+  }
+
+  function renderRecommendations(recommendations) {
+    plannerOrdersCard.classList.remove('d-none');
+    const summary = (recommendations && recommendations.summary) ? recommendations.summary.trim() : '';
+    if (summary) {
+      plannerOrderSummary.textContent = summary;
+      plannerOrderSummary.classList.remove('d-none');
+    } else {
+      plannerOrderSummary.classList.add('d-none');
+      plannerOrderSummary.textContent = '';
+    }
+    renderOrdersTable(
+      buyOrdersBody,
+      buyOrdersWrap,
+      buyOrdersEmpty,
+      (recommendations && recommendations.buy_orders) ? recommendations.buy_orders : [],
+      'buy'
+    );
+    renderOrdersTable(
+      sellOrdersBody,
+      sellOrdersWrap,
+      sellOrdersEmpty,
+      (recommendations && recommendations.sell_orders) ? recommendations.sell_orders : [],
+      'sell'
+    );
+  }
+
+  function renderPlanningContext(payload) {
+    plannerContextCard.classList.remove('d-none');
+    if (payload.context_type === 'existing_pie') {
+      const pie = payload.pie || {};
+      const context = payload.pie_portfolio_context || {};
+      plannerContextSummary.innerHTML = `
+        <div class="row g-3">
+          <div class="col-md-6"><div class="summary-box"><div class="title">Selected Pie</div><div class="value">${pie.name || 'Pie'}</div><div class="text-muted" style="font-size:.8rem;">Account: ${pie.account || 'Unknown'} • Holdings: ${context.holdings_count || 0}</div></div></div>
+          <div class="col-md-6"><div class="summary-box"><div class="title">Capital Assumed</div><div class="value">£${Number(payload.capital_to_add || 0).toLocaleString('en-GB', { maximumFractionDigits: 2 })}</div><div class="text-muted" style="font-size:.8rem;">Current pie value: £${Number(context.total_value_gbp || 0).toLocaleString('en-GB', { maximumFractionDigits: 2 })}</div></div></div>
+        </div>
+      `;
+      const rows = (payload.current_constituents || []).slice(0, 15).map(item => ([
+        item.name || item.ticker || '-',
+        item.target_weight_pct ? `${Number(item.target_weight_pct).toFixed(1)}%` : '-',
+        item.current_weight_pct ? `${Number(item.current_weight_pct).toFixed(1)}%` : '-',
+        item.portfolio_weight_pct ? `${Number(item.portfolio_weight_pct).toFixed(1)}%` : '-',
+        item.sector || 'Unknown'
+      ]));
+      if (rows.length) {
+        renderContextTable(['Holding', 'Target Wt', 'Current Pie Wt', 'Value Wt', 'Sector'], rows);
+      } else {
+        plannerContextTableWrap.classList.add('d-none');
+        plannerContextEmpty.classList.remove('d-none');
+      }
+      return;
+    }
+
+    const existing = payload.existing_portfolio_context || {};
+    plannerContextSummary.innerHTML = `
+      <div class="row g-3">
+        <div class="col-md-6"><div class="summary-box"><div class="title">Mode</div><div class="value">New Portfolio</div><div class="text-muted" style="font-size:.8rem;">Recommendations are built from the goal brief and your existing portfolio context.</div></div></div>
+        <div class="col-md-6"><div class="summary-box"><div class="title">Capital Assumed</div><div class="value">£${Number(payload.capital_to_add || 0).toLocaleString('en-GB', { maximumFractionDigits: 2 })}</div><div class="text-muted" style="font-size:.8rem;">Current portfolio context: £${Number(existing.total_value_gbp || 0).toLocaleString('en-GB', { maximumFractionDigits: 2 })}</div></div></div>
+      </div>
+    `;
+    const rows = (existing.top_holdings || []).slice(0, 15).map(item => ([
+      item.name || item.ticker || '-',
+      `${Number(item.weight_pct || 0).toFixed(1)}%`,
+      item.sector || 'Unknown',
+      item.country || 'Unknown'
+    ]));
+    if (rows.length) {
+      renderContextTable(['Current Holding', 'Portfolio Wt', 'Sector', 'Country'], rows);
+    } else {
+      plannerContextTableWrap.classList.add('d-none');
+      plannerContextEmpty.classList.remove('d-none');
+    }
+  }
+
+  async function runPlanner() {
+    const investmentGoals = goalInput.value.trim();
+    if (investmentGoals.length < 10) {
+      plannerStatus.className = 'alert alert-warning mb-3';
+      plannerStatus.textContent = 'Add a more detailed goal description before running the planner.';
+      return;
+    }
+
+    analyseBtn.disabled = true;
+    plannerStatus.className = 'alert alert-info mb-3';
+    plannerStatus.textContent = 'Preparing the planning brief and sending it to the selected AI provider...';
+    plannerOutput.classList.add('d-none');
+    plannerMeta.classList.add('d-none');
+    plannerOrdersCard.classList.add('d-none');
+
+    try {
+      const response = await fetch('/planning/ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          portfolio: portfolioSelect.value,
+          provider: aiProviderSelect.value,
+          investment_goals: investmentGoals,
+          capital_to_add: capitalInput.value
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to build an investment plan right now.');
+
+      currentPromptText = data.prompt_text || '';
+      copyPromptBtn.disabled = !currentPromptText;
+      plannerStatus.className = 'alert alert-success mb-3';
+      plannerStatus.textContent = 'Investment plan generated successfully.';
+      plannerOutput.innerHTML = renderMarkdown(data.analysis);
+      plannerOutput.classList.remove('d-none');
+      plannerMeta.textContent = `${formatTimestamp(data.generated_at_iso) || data.generated_at} • ${data.model}`;
+      plannerMeta.classList.remove('d-none');
+      renderRecommendations(data.recommendations || {});
+      renderPlanningContext(data.planning_payload || {});
+    } catch (error) {
+      plannerStatus.className = 'alert alert-danger mb-3';
+      plannerStatus.textContent = error.message;
+      plannerOutput.classList.add('d-none');
+      plannerMeta.classList.add('d-none');
+      plannerOrdersCard.classList.add('d-none');
+    } finally {
+      analyseBtn.disabled = false;
+    }
+  }
+
+  analyseBtn?.addEventListener('click', runPlanner);
+  portfolioSelect?.addEventListener('change', updatePlannerModeLabel);
+  copyPromptBtn?.addEventListener('click', async function() {
+    if (!currentPromptText) return;
+    try {
+      await navigator.clipboard.writeText(currentPromptText);
+      copyPromptBtn.textContent = 'Copied';
+      setTimeout(() => { copyPromptBtn.textContent = 'Copy Prompt'; }, 1500);
+    } catch (error) {
+      plannerStatus.className = 'alert alert-warning mb-3';
+      plannerStatus.textContent = 'Could not copy the prompt from this browser.';
+    }
+  });
+
+  updatePlannerModeLabel();
+</script>
+</body>
+</html>

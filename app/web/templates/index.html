@@ -250,13 +250,14 @@
   </div>
   <div class="offcanvas-body p-0">
     <nav class="nav flex-column pt-1">
-      <a class="nav-link text-white px-4 py-3" active href="/">&#9;📊&nbsp; Portfolio</a>
-      <a class="nav-link text-white px-4 py-3" href="/transactions">&#9;🔄&nbsp; Transactions</a>
-      <a class="nav-link text-white px-4 py-3" href="/dividends">&#9;💰&nbsp; Dividends</a>
-      <a class="nav-link text-white px-4 py-3" href="/analysis">&#9;📈&nbsp; Analysis</a>
-      <a class="nav-link text-white px-4 py-3" href="/instruments">&#9;🔍&nbsp; Instruments</a>
-      <a class="nav-link text-white px-4 py-3" href="/help">&#9;❓&nbsp; Help</a>
-      <a class="nav-link text-white px-4 py-3" href="/settings">&#9;⚙️&nbsp; Settings</a>
+      <a class="nav-link text-white px-4 py-3" href="/analysis">Analysis</a>
+      <a class="nav-link text-white px-4 py-3" href="/transactions">Transactions</a>
+      <a class="nav-link text-white px-4 py-3" href="/dividends">Dividends</a>
+      <a class="nav-link text-white px-4 py-3" href="/planning">Planning</a>
+      <a class="nav-link text-white px-4 py-3" href="/instruments">Instruments</a>
+      <a class="nav-link text-white px-4 py-3" href="/help">Help</a>
+      <a class="nav-link text-white px-4 py-3" href="/settings">Settings</a>
+      <a class="nav-link text-white px-4 py-3 active" href="/portfolio">Portfolio</a>
     </nav>
   </div>
 </div>
@@ -272,9 +273,9 @@
     <div class="brand">Trading 212 <span>Portfolio</span></div>
   </div>
   <div class="btn-group btn-group-sm ms-4" role="group">
-    <a href="/?account=combined{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}" class="btn {% if account_filter == 'combined' %}btn-light active{% else %}btn-outline-light{% endif %}">Combined</a>
-    <a href="/?account=ISA{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}"      class="btn {% if account_filter == 'ISA' %}btn-light active{% else %}btn-outline-light{% endif %}">ISA</a>
-    <a href="/?account=Trading{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}"  class="btn {% if account_filter == 'Trading' %}btn-light active{% else %}btn-outline-light{% endif %}">Trading</a>
+    <a href="/portfolio?account=combined{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}" class="btn {% if account_filter == 'combined' %}btn-light active{% else %}btn-outline-light{% endif %}">Combined</a>
+    <a href="/portfolio?account=ISA{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}"      class="btn {% if account_filter == 'ISA' %}btn-light active{% else %}btn-outline-light{% endif %}">ISA</a>
+    <a href="/portfolio?account=Trading{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}"  class="btn {% if account_filter == 'Trading' %}btn-light active{% else %}btn-outline-light{% endif %}">Trading</a>
   </div>
   <div class="synced">
     {% if last_synced %}
@@ -298,9 +299,9 @@
 {% if available_pies %}
 <div class="pie-filter-bar">
   <span class="pf-label">Pies:</span>
-  <a href="/?account={{ account_filter }}&pies=all"
+  <a href="/portfolio?account={{ account_filter }}&pies=all"
      class="btn {% if pies_param == 'all' or (selected_pie_ids and selected_pie_ids|length == available_pies|length) %}btn-light{% else %}btn-outline-light{% endif %}">All</a>
-  <a href="/?account={{ account_filter }}"
+  <a href="/portfolio?account={{ account_filter }}"
      class="btn {% if not pies_param %}btn-light{% else %}btn-outline-light{% endif %}">Clear</a>
   {% for pie in available_pies %}
   <button class="btn {% if pie.id|string in selected_pie_ids %}btn-light{% else %}btn-outline-light{% endif %} pie-btn"
@@ -316,13 +317,13 @@
   {% if country_filter %}
   <span class="filter-chip">
     ð {{ country_filter }}
-    <a class="filter-chip-close" href="/?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}" title="Clear country filter">Ã</a>
+    <a class="filter-chip-close" href="/portfolio?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}" title="Clear country filter">Ã</a>
   </span>
   {% endif %}
   {% if sector_filter %}
   <span class="filter-chip">
     ð­ {{ sector_filter }}
-    <a class="filter-chip-close" href="/?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}" title="Clear sector filter">Ã</a>
+    <a class="filter-chip-close" href="/portfolio?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}" title="Clear sector filter">Ã</a>
   </span>
   {% endif %}
   <a href="/analysis?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}" style="margin-left:.25rem; font-size:.72rem; color:#795548;">â back to Analysis</a>
@@ -672,7 +673,7 @@
       var idx = current.indexOf(pieId);
       if (idx > -1) { current.splice(idx, 1); } else { current.push(pieId); }
       params.set('pies', current.join(','));
-      window.location.href = '/?' + params.toString();
+      window.location.href = '/portfolio?' + params.toString();
     });
   });
 </script>
