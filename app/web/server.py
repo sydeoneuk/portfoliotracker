@@ -1374,6 +1374,180 @@ async def save_auto_sync(
     return _redirect("/settings")
 
 
+@app.get("/api/settings/platforms")
+def api_settings_platforms(request: Request, db: Session = Depends(get_session)):
+    """Return the current user's platforms with key-status info for the settings UI."""
+    from fastapi.responses import JSONResponse
+    from app.models import Platform
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse([], status_code=401)
+
+    user_settings = _get_or_create_settings(db, user.id)
+    platforms = (
+        db.query(Platform)
+        .filter_by(user_id=user.id)
+        .order_by(Platform.created_at)
+        .all()
+    )
+
+    def _key_status(p: Platform) -> str | None:
+        """Which UserSettings key slot drives this platform."""
+        if p.platform_type != "t212_api":
+            return None
+        if p.account_type == "ISA":
+            return "isa"
+        return "trading"
+
+    has_trading_key = bool(user_settings.t212_api_key_enc)
+    has_isa_key     = bool(user_settings.t212_isa_api_key_enc)
+
+    result = []
+    for p in platforms:
+        slot = _key_status(p)
+        key_configured: bool | None = None
+        if slot == "trading":
+            key_configured = has_trading_key
+        elif slot == "isa":
+            key_configured = has_isa_key
+
+        last_position_at = db.execute(
+            text("SELECT MAX(updated_at) FROM positions WHERE platform_id = :pid"),
+            {"pid": p.id},
+        ).scalar()
+
+        result.append({
+            "id":            p.id,
+            "name":          p.name,
+            "platform_type": p.platform_type,
+            "account_type":  p.account_type,
+            "currency":      p.currency,
+            "is_active":     p.is_active,
+            "key_slot":      slot,
+            "key_configured": key_configured,
+            "last_position_at": last_position_at.isoformat() if last_position_at else None,
+            "position_count": db.execute(
+                text("SELECT COUNT(DISTINCT ticker) FROM positions WHERE platform_id = :pid"),
+                {"pid": p.id},
+            ).scalar() or 0,
+        })
+    return JSONResponse(result)
+
+
+@app.post("/settings/platforms/create")
+async def create_platform(
+    request: Request,
+    db: Session = Depends(get_session),
+):
+    from fastapi.responses import JSONResponse
+    from app.models import Platform
+    from app.models.platform import (
+        PLATFORM_TYPE_T212_API, PLATFORM_TYPE_T212_CSV,
+        PLATFORM_TYPE_INTERACTIVE_INVESTOR, PLATFORM_TYPE_CHARLES_STANLEY,
+        PLATFORM_TYPE_BEST_INVEST,
+    )
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+    form = await request.form()
+    name         = (form.get("new_platform_name", "") or "").strip()
+    account_type = (form.get("new_account_type",  "") or "GIA").strip().upper()
+    platform_type = (form.get("new_platform_type", "") or "t212_api").strip()
+
+    valid_types = {PLATFORM_TYPE_T212_API, PLATFORM_TYPE_T212_CSV,
+                   PLATFORM_TYPE_INTERACTIVE_INVESTOR, PLATFORM_TYPE_CHARLES_STANLEY,
+                   PLATFORM_TYPE_BEST_INVEST}
+    valid_accounts = {"GIA", "ISA", "SIPP", "LISA"}
+
+    if not name:
+        return JSONResponse({"error": "Name is required."}, status_code=400)
+    if platform_type not in valid_types:
+        return JSONResponse({"error": "Unknown provider type."}, status_code=400)
+    if account_type not in valid_accounts:
+        return JSONResponse({"error": "Unknown account type."}, status_code=400)
+
+    existing = db.query(Platform).filter_by(
+        user_id=user.id, name=name, account_type=account_type,
+    ).first()
+    if existing:
+        return JSONResponse({"error": "An account with that name and type already exists."}, status_code=409)
+
+    platform = Platform(
+        user_id=user.id,
+        name=name,
+        platform_type=platform_type,
+        account_type=account_type,
+        currency="GBP",
+        is_active=True,
+    )
+    db.add(platform)
+    db.commit()
+    return JSONResponse({"ok": True, "id": platform.id})
+
+
+@app.post("/settings/platforms/{platform_id}/rename")
+async def rename_platform(
+    platform_id: int,
+    request: Request,
+    db: Session = Depends(get_session),
+    name: str = Form(...),
+):
+    from fastapi.responses import JSONResponse
+    from app.models import Platform
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+    name = name.strip()
+    if not name:
+        return JSONResponse({"error": "Name cannot be empty."}, status_code=400)
+
+    platform = db.query(Platform).filter_by(id=platform_id, user_id=user.id).first()
+    if not platform:
+        return JSONResponse({"error": "Platform not found."}, status_code=404)
+
+    platform.name = name
+    db.commit()
+    return JSONResponse({"ok": True, "name": platform.name})
+
+
+@app.post("/settings/platforms/{platform_id}/delete")
+async def delete_platform(
+    platform_id: int,
+    request: Request,
+    db: Session = Depends(get_session),
+):
+    from fastapi.responses import JSONResponse
+    from app.models import Platform
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+    platform = db.query(Platform).filter_by(id=platform_id, user_id=user.id).first()
+    if not platform:
+        return JSONResponse({"error": "Platform not found."}, status_code=404)
+
+    position_count = db.execute(
+        text("SELECT COUNT(*) FROM positions WHERE platform_id = :pid"),
+        {"pid": platform_id},
+    ).scalar() or 0
+
+    if position_count > 0:
+        return JSONResponse(
+            {"error": f"Cannot delete — {position_count} position row(s) exist. Clear data first."},
+            status_code=409,
+        )
+
+    db.delete(platform)
+    db.commit()
+    return JSONResponse({"ok": True})
+
+
 @app.post("/sync")
 async def trigger_sync(
     request: Request,

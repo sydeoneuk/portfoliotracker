@@ -103,54 +103,34 @@
   <div class="container py-4" style="max-width: 720px">
     <h4 class="fw-bold mb-4">Settings</h4>
 
-    <!-- API Keys -->
+    <!-- Accounts -->
     <div class="card mb-4">
       <div class="card-body">
-        <h6 class="card-title mb-3">Trading 212 API Keys</h6>
-        <p class="text-muted mb-3" style="font-size:.85rem">
-          Generate API keys in the Trading 212 app under
-          <strong>Settings → API (Beta)</strong>. You need a separate key for each account type.
+        <div class="d-flex align-items-center justify-content-between mb-3">
+          <h6 class="card-title mb-0">Accounts</h6>
+          <button class="btn btn-sm btn-outline-secondary" onclick="showAddAccountModal()">+ Add Account</button>
+        </div>
+        <p class="text-muted mb-3" style="font-size:.85rem;">
+          Manage your broker accounts and their API credentials. Accounts are grouped by provider.
         </p>
 
-        <!-- Current status -->
-        <div class="mb-3">
-          <div class="d-flex align-items-center gap-2 mb-2">
-            <span class="text-muted">Trading Account:</span>
-            {% if has_trading_key %}
-            <span class="key-status key-set">✓ Configured</span>
-            <form method="post" action="/settings/clear-key" class="d-inline">
-              <input type="hidden" name="key_type" value="trading">
-              <button class="btn btn-sm btn-outline-danger py-0">Remove</button>
-            </form>
-            {% else %}
-            <span class="key-status key-unset">Not configured</span>
-            {% endif %}
-          </div>
-          <div class="d-flex align-items-center gap-2">
-            <span class="text-muted">ISA Account:</span>
-            {% if has_isa_key %}
-            <span class="key-status key-set">✓ Configured</span>
-            <form method="post" action="/settings/clear-key" class="d-inline">
-              <input type="hidden" name="key_type" value="isa">
-              <button class="btn btn-sm btn-outline-danger py-0">Remove</button>
-            </form>
-            {% else %}
-            <span class="key-status key-unset">Not configured</span>
-            {% endif %}
-          </div>
+        <div id="accounts-loading" class="text-muted" style="font-size:.85rem;">Loading accounts…</div>
+        <div id="accounts-list" style="display:none;"></div>
+        <div id="accounts-empty" class="text-muted" style="font-size:.85rem; display:none;">
+          No accounts yet. Add one above to get started.
         </div>
 
         <hr class="my-3">
 
         <!-- Server IP callout -->
         {% if server_ip %}
-        <div class="d-flex align-items-start gap-3 mb-3 p-3 rounded-3" style="background:rgba(0,200,150,0.07); border-left:3px solid #00c896;">
+        <div class="d-flex align-items-start gap-3 p-3 rounded-3" style="background:rgba(0,200,150,0.07); border-left:3px solid #00c896;">
           <div style="font-size:1.4rem; line-height:1;">🔒</div>
           <div style="font-size:.84rem;">
-            <div class="fw-semibold mb-1">Restrict your API key for extra security</div>
+            <div class="fw-semibold mb-1">Restrict your T212 API key for extra security</div>
             <p class="mb-2 text-muted">
-              When creating your API key in Trading 212, you can limit it so it can <strong>only be used from this app</strong> — no one else could use it even if they somehow got hold of it.
-              To do this, paste the address below into the <em>IP restriction</em> field in Trading 212:
+              Limit your API key so it can only be used from this app — paste the address below
+              into the <em>IP restriction</em> field when creating the key in Trading 212:
             </p>
             <div class="d-flex align-items-center gap-2 flex-wrap">
               <code class="px-3 py-2 rounded" style="background:#0f1923; color:#00c896; font-size:.95rem; letter-spacing:.04em;">{{ server_ip }}</code>
@@ -160,37 +140,6 @@
           </div>
         </div>
         {% endif %}
-
-        <!-- Update keys form -->
-        <form method="post" action="/settings">
-          <p class="fw-semibold mb-2">Trading Account</p>
-          <div class="row g-2 mb-3">
-            <div class="col">
-              <label class="form-label text-muted">API Key</label>
-              <input type="password" name="t212_api_key" class="form-control"
-                     placeholder="{% if has_trading_key %}Leave blank to keep existing{% else %}Paste API key{% endif %}">
-            </div>
-            <div class="col">
-              <label class="form-label text-muted">API Secret</label>
-              <input type="password" name="t212_api_secret" class="form-control"
-                     placeholder="{% if has_trading_secret %}Leave blank to keep existing{% else %}Paste API secret{% endif %}">
-            </div>
-          </div>
-          <p class="fw-semibold mb-2">ISA Account <span class="text-muted fw-normal">(optional)</span></p>
-          <div class="row g-2 mb-3">
-            <div class="col">
-              <label class="form-label text-muted">API Key</label>
-              <input type="password" name="t212_isa_api_key" class="form-control"
-                     placeholder="{% if has_isa_key %}Leave blank to keep existing{% else %}Paste API key{% endif %}">
-            </div>
-            <div class="col">
-              <label class="form-label text-muted">API Secret</label>
-              <input type="password" name="t212_isa_api_secret" class="form-control"
-                     placeholder="{% if has_isa_secret %}Leave blank to keep existing{% else %}Paste API secret{% endif %}">
-            </div>
-          </div>
-          <button type="submit" class="btn btn-t212">Save API Keys</button>
-        </form>
       </div>
     </div>
 
@@ -365,18 +314,208 @@
     </div>
 
     <script>
-    (function () {
-      fetch('/import/platforms')
+    // ── Accounts section ─────────────────────────────────────────────────────
+    const PROVIDER_LABELS = {
+      t212_api:              'Trading 212',
+      t212_csv:              'Trading 212',
+      interactive_investor:  'Interactive Investor',
+      charles_stanley:       'Charles Stanley',
+      best_invest:           'Best Invest',
+    };
+    const SYNC_METHOD_LABELS = { t212_api: 'API', t212_csv: 'CSV', interactive_investor: 'CSV', charles_stanley: 'CSV', best_invest: 'CSV' };
+    const KEY_SLOT_LABEL = { trading: 'Trading key', isa: 'ISA key' };
+
+    function loadAccounts() {
+      fetch('/api/settings/platforms')
         .then(r => r.json())
         .then(platforms => {
+          const loading = document.getElementById('accounts-loading');
+          const list    = document.getElementById('accounts-list');
+          const empty   = document.getElementById('accounts-empty');
+          loading.style.display = 'none';
+
+          // also repopulate the CSV import dropdown
           const sel = document.getElementById('platform-select');
-          platforms.forEach(p => {
+          // clear existing dynamic options
+          while (sel.options.length > 1) sel.remove(1);
+          platforms.filter(p => p.is_active).forEach(p => {
             const opt = document.createElement('option');
             opt.value = p.id;
             opt.textContent = p.name + ' (' + p.account_type + ')';
             sel.appendChild(opt);
           });
+
+          if (!platforms.length) {
+            empty.style.display = '';
+            list.style.display  = 'none';
+            return;
+          }
+
+          // Group by provider
+          const groups = {};
+          platforms.forEach(p => {
+            const g = PROVIDER_LABELS[p.platform_type] || p.platform_type;
+            if (!groups[g]) groups[g] = [];
+            groups[g].push(p);
+          });
+
+          let html = '';
+          Object.entries(groups).forEach(([provider, accts]) => {
+            html += `<div class="mb-3">
+              <div class="text-muted fw-semibold mb-2" style="font-size:.78rem; letter-spacing:.05em; text-transform:uppercase;">${provider}</div>`;
+            accts.forEach(p => {
+              const method     = SYNC_METHOD_LABELS[p.platform_type] || p.platform_type;
+              const inactive   = !p.is_active ? ' <span class="badge bg-secondary ms-1" style="font-size:.7rem;">Inactive</span>' : '';
+              const holdingsTxt = p.position_count > 0
+                ? `<span class="text-muted" style="font-size:.78rem;">${p.position_count} holding${p.position_count !== 1 ? 's' : ''}</span>`
+                : `<span class="text-muted" style="font-size:.78rem;">No holdings</span>`;
+
+              let keyBadge = '';
+              if (p.key_slot) {
+                keyBadge = p.key_configured
+                  ? `<span class="key-status key-set ms-2" style="font-size:.75rem;">✓ ${KEY_SLOT_LABEL[p.key_slot]}</span>`
+                  : `<span class="key-status key-unset ms-2" style="font-size:.75rem;">No key</span>`;
+              }
+
+              html += `<div class="d-flex align-items-center justify-content-between py-2 border-bottom" style="gap:.5rem;" data-platform-id="${p.id}">
+                <div class="d-flex align-items-center flex-wrap gap-2" style="min-width:0;">
+                  <span class="fw-semibold account-name-label" style="font-size:.88rem;">${p.name}</span>
+                  <span class="badge bg-light text-dark border" style="font-size:.72rem;">${p.account_type}</span>
+                  <span class="badge" style="font-size:.72rem; background:#e7f5f0; color:#0a5c41;">${method}</span>
+                  ${inactive}
+                  ${keyBadge}
+                  ${holdingsTxt}
+                </div>
+                <div class="d-flex gap-1 flex-shrink-0">
+                  ${p.key_slot ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showSetKeyModal(${p.id}, '${p.key_slot}', '${p.name}')">Set key</button>` : ''}
+                  <button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showRenameModal(${p.id}, '${p.name}')">Rename</button>
+                  <button class="btn btn-sm btn-outline-danger py-0" style="font-size:.78rem;" onclick="deletePlatform(${p.id}, '${p.name}', ${p.position_count})">Delete</button>
+                </div>
+              </div>`;
+            });
+            html += '</div>';
+          });
+
+          list.innerHTML = html;
+          list.style.display = '';
+          empty.style.display = 'none';
+        })
+        .catch(() => {
+          document.getElementById('accounts-loading').textContent = 'Failed to load accounts.';
         });
+    }
+
+    loadAccounts();
+
+    function showRenameModal(id, currentName) {
+      document.getElementById('rename-platform-id').value = id;
+      document.getElementById('rename-platform-name').value = currentName;
+      document.getElementById('rename-error').textContent = '';
+      new bootstrap.Modal(document.getElementById('renamePlatformModal')).show();
+    }
+
+    function showSetKeyModal(id, slot, platformName) {
+      document.getElementById('setkey-platform-id').value = id;
+      document.getElementById('setkey-slot').value = slot;
+      document.getElementById('setkey-platform-label').textContent = platformName;
+      document.getElementById('setkey-error').textContent = '';
+      new bootstrap.Modal(document.getElementById('setKeyModal')).show();
+    }
+
+    function showAddAccountModal() {
+      document.getElementById('add-account-error').textContent = '';
+      document.getElementById('add-account-form').reset();
+      toggleAddAccountType();
+      new bootstrap.Modal(document.getElementById('addAccountModal')).show();
+    }
+
+    function toggleAddAccountType() {
+      const type = document.getElementById('add-platform-type').value;
+      const apiFields = document.getElementById('add-api-key-fields');
+      apiFields.style.display = type === 't212_api' ? '' : 'none';
+    }
+
+    async function deletePlatform(id, name, posCount) {
+      if (posCount > 0) {
+        alert(`Cannot delete "${name}" — it has ${posCount} holding(s). Clear data first.`);
+        return;
+      }
+      if (!confirm(`Delete account "${name}"? This cannot be undone.`)) return;
+      const resp = await fetch(`/settings/platforms/${id}/delete`, { method: 'POST' });
+      const data = await resp.json();
+      if (data.error) { alert(data.error); return; }
+      loadAccounts();
+    }
+
+    document.getElementById('rename-platform-form').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const id   = document.getElementById('rename-platform-id').value;
+      const name = document.getElementById('rename-platform-name').value.trim();
+      const errEl = document.getElementById('rename-error');
+      const fd = new FormData(); fd.append('name', name);
+      const resp = await fetch(`/settings/platforms/${id}/rename`, { method: 'POST', body: fd });
+      const data = await resp.json();
+      if (data.error) { errEl.textContent = data.error; return; }
+      bootstrap.Modal.getInstance(document.getElementById('renamePlatformModal')).hide();
+      loadAccounts();
+    });
+
+    document.getElementById('setkey-form').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const slot  = document.getElementById('setkey-slot').value;
+      const key   = document.getElementById('setkey-api-key').value.trim();
+      const secret = document.getElementById('setkey-api-secret').value.trim();
+      const errEl = document.getElementById('setkey-error');
+      if (!key) { errEl.textContent = 'API key is required.'; return; }
+      const fd = new FormData();
+      if (slot === 'isa') { fd.append('t212_isa_api_key', key); if (secret) fd.append('t212_isa_api_secret', secret); }
+      else                { fd.append('t212_api_key', key);     if (secret) fd.append('t212_api_secret', secret); }
+      const resp = await fetch('/settings', { method: 'POST', body: fd });
+      if (resp.ok || resp.redirected) {
+        bootstrap.Modal.getInstance(document.getElementById('setKeyModal')).hide();
+        loadAccounts();
+      } else {
+        errEl.textContent = 'Failed to save key.';
+      }
+    });
+
+    document.getElementById('add-account-form').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const errEl = document.getElementById('add-account-error');
+      const name  = document.getElementById('add-platform-name').value.trim();
+      const type  = document.getElementById('add-platform-type').value;
+      const acct  = document.getElementById('add-account-type').value;
+      const key   = document.getElementById('add-api-key').value.trim();
+      const secret = document.getElementById('add-api-secret').value.trim();
+
+      if (!name) { errEl.textContent = 'Name is required.'; return; }
+
+      // Create the platform via CSV import endpoint (creates platform without data)
+      const fd = new FormData();
+      fd.append('new_platform_name', name);
+      fd.append('new_account_type', acct);
+      fd.append('new_platform_type', type);
+
+      // Use dedicated platform-create endpoint
+      const cr = await fetch('/settings/platforms/create', { method: 'POST', body: fd });
+      const cd = await cr.json();
+      if (cd.error) { errEl.textContent = cd.error; return; }
+
+      // If API key provided, save it
+      if (type === 't212_api' && key) {
+        const kfd = new FormData();
+        if (acct === 'ISA') { kfd.append('t212_isa_api_key', key); if (secret) kfd.append('t212_isa_api_secret', secret); }
+        else                { kfd.append('t212_api_key', key);     if (secret) kfd.append('t212_api_secret', secret); }
+        await fetch('/settings', { method: 'POST', body: kfd });
+      }
+
+      bootstrap.Modal.getInstance(document.getElementById('addAccountModal')).hide();
+      loadAccounts();
+    });
+
+    // ── CSV import ───────────────────────────────────────────────────────────
+    (function () {
+      // platforms populated by loadAccounts() above
     })();
 
     function toggleNewPlatform() {
@@ -384,6 +523,7 @@
       const fields = document.getElementById('new-platform-fields');
       fields.style.display = sel.value ? 'none' : '';
     }
+
 
     document.getElementById('csv-import-form').addEventListener('submit', async function (e) {
       e.preventDefault();
@@ -465,6 +605,120 @@
     </div>
 
   </div>
+
+<!-- ── Rename platform modal ──────────────────────────────────────────── -->
+<div class="modal fade" id="renamePlatformModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold">Rename Account</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="rename-platform-form">
+        <div class="modal-body">
+          <input type="hidden" id="rename-platform-id">
+          <label class="form-label text-muted">Name</label>
+          <input type="text" id="rename-platform-name" class="form-control" required maxlength="100">
+          <div id="rename-error" class="text-danger mt-2" style="font-size:.83rem;"></div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-t212">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ── Set API key modal ───────────────────────────────────────────────── -->
+<div class="modal fade" id="setKeyModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold">Set API Key — <span id="setkey-platform-label"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="setkey-form">
+        <div class="modal-body">
+          <input type="hidden" id="setkey-platform-id">
+          <input type="hidden" id="setkey-slot">
+          <p class="text-muted mb-3" style="font-size:.84rem;">
+            Generate an API key in the Trading 212 app under <strong>Settings → API (Beta)</strong>.
+          </p>
+          <div class="mb-2">
+            <label class="form-label text-muted">API Key</label>
+            <input type="password" id="setkey-api-key" class="form-control" placeholder="Paste API key" autocomplete="off">
+          </div>
+          <div class="mb-2">
+            <label class="form-label text-muted">API Secret <span class="text-muted fw-normal">(if required)</span></label>
+            <input type="password" id="setkey-api-secret" class="form-control" placeholder="Paste API secret (optional)" autocomplete="off">
+          </div>
+          <div id="setkey-error" class="text-danger mt-2" style="font-size:.83rem;"></div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-t212">Save Key</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ── Add account modal ───────────────────────────────────────────────── -->
+<div class="modal fade" id="addAccountModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold">Add Account</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="add-account-form">
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label text-muted">Provider</label>
+            <select id="add-platform-type" class="form-select" onchange="toggleAddAccountType()">
+              <option value="t212_api">Trading 212 (API sync)</option>
+              <option value="t212_csv">Trading 212 (CSV import)</option>
+              <option value="interactive_investor">Interactive Investor (CSV)</option>
+              <option value="charles_stanley">Charles Stanley (CSV)</option>
+              <option value="best_invest">Best Invest (CSV)</option>
+            </select>
+          </div>
+          <div class="row g-2 mb-3">
+            <div class="col">
+              <label class="form-label text-muted">Account Type</label>
+              <select id="add-account-type" class="form-select">
+                <option value="GIA">GIA (General Investment)</option>
+                <option value="ISA">ISA</option>
+                <option value="SIPP">SIPP</option>
+                <option value="LISA">LISA</option>
+              </select>
+            </div>
+            <div class="col">
+              <label class="form-label text-muted">Display Name</label>
+              <input type="text" id="add-platform-name" class="form-control" placeholder="e.g. T212 ISA" maxlength="100">
+            </div>
+          </div>
+          <div id="add-api-key-fields">
+            <div class="mb-2">
+              <label class="form-label text-muted">API Key <span class="text-muted fw-normal">(optional — can add later)</span></label>
+              <input type="password" id="add-api-key" class="form-control" placeholder="Paste API key" autocomplete="off">
+            </div>
+            <div class="mb-2">
+              <label class="form-label text-muted">API Secret</label>
+              <input type="password" id="add-api-secret" class="form-control" placeholder="Paste API secret (optional)" autocomplete="off">
+            </div>
+          </div>
+          <div id="add-account-error" class="text-danger mt-2" style="font-size:.83rem;"></div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-t212">Add Account</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 
 <!-- ── Clear data confirmation modal ──────────────────────────────────── -->
 <div class="modal fade" id="clearDataModal" tabindex="-1" aria-labelledby="clearDataModalLabel" aria-hidden="true">
