@@ -2499,6 +2499,7 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
             SUM(pa.quantity * pos.average_price)
                 / NULLIF(SUM(pa.quantity), 0)                      AS average_price,
             ROUND(SUM(pa.quantity * pos.average_price)::numeric, 2) AS cost,
+            {_PRICE_SUBQ.format(t="pa.ticker")}                    AS current_price,
             ROUND(SUM(pa.quantity * {_eff_price("pos.ticker", "pos.average_price")})::numeric, 2) AS value,
             ROUND((SUM(pa.quantity * {_eff_price("pos.ticker", "pos.average_price")})
                    - SUM(pa.quantity * pos.average_price))::numeric, 2) AS ppl,
