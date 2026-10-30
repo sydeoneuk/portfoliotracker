@@ -462,7 +462,8 @@
       </div>
       <div class="modal-body">
         <input type="hidden" id="csv-import-platform-id">
-        <p class="text-muted mb-3" style="font-size:.85rem;">
+        <input type="hidden" id="csv-import-platform-type">
+        <p id="csv-import-hint" class="text-muted mb-3" style="font-size:.85rem;">
           Export from <strong>T212 → History → Export CSV</strong>. Re-importing will not create duplicates.
         </p>
         <div class="mb-3">
@@ -660,7 +661,7 @@ function loadAccounts() {
             </div>
             <div class="d-flex gap-1 flex-shrink-0">
               ${p.key_slot ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showSetKeyModal(${p.id}, '${p.key_slot}', '${p.name}')">Set key</button>` : ''}
-              ${method !== 'API' ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showImportCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Import CSV</button>` : ''}
+              ${method !== 'API' ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showImportCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}', '${p.platform_type}')">Import CSV</button>` : ''}
               ${p.platform_type && p.platform_type.startsWith('t212') ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showPieCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Import Pie CSV</button>` : ''}
               <button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showRenameModal(${p.id}, '${p.name}')">Rename</button>
               <button class="btn btn-sm btn-outline-danger py-0" style="font-size:.78rem;" onclick="deletePlatform(${p.id}, '${p.name}', ${p.position_count})">Delete</button>
@@ -802,17 +803,29 @@ document.getElementById('add-account-form').addEventListener('submit', async fun
 });
 
 // ── CSV import helpers ───────────────────────────────────────────────────
-async function doImportCsv(platformId, fileInput, resultEl, btn) {
+const CSV_IMPORT_ENDPOINTS = {
+  't212_api': '/import/t212-csv',
+  't212_csv': '/import/t212-csv',
+  'interactive_investor': '/import/ii-csv',
+};
+const CSV_IMPORT_HINTS = {
+  't212_api':            'Export from <strong>T212 → History → Export CSV</strong>. Re-importing will not create duplicates.',
+  't212_csv':            'Export from <strong>T212 → History → Export CSV</strong>. Re-importing will not create duplicates.',
+  'interactive_investor': 'Export from <strong>ii → My ii → Portfolio → Download</strong>. Each import replaces current positions.',
+};
+
+async function doImportCsv(platformId, fileInput, resultEl, btn, platformType) {
   const file = fileInput.files[0];
   if (!file) { alert('Please select a CSV file.'); return; }
   btn.disabled = true;
   btn.textContent = 'Importing…';
   resultEl.style.display = 'none';
+  const endpoint = CSV_IMPORT_ENDPOINTS[platformType] || '/import/t212-csv';
   try {
     const fd = new FormData();
     fd.append('platform_id', platformId);
     fd.append('csv_file', file);
-    const resp = await fetch('/import/t212-csv', { method: 'POST', body: fd });
+    const resp = await fetch(endpoint, { method: 'POST', body: fd });
     const data = await resp.json();
     if (data.error) {
       resultEl.className = 'alert alert-danger mb-0';
@@ -836,10 +849,13 @@ async function doImportCsv(platformId, fileInput, resultEl, btn) {
   }
 }
 
-function showImportCsvModal(id, name) {
+function showImportCsvModal(id, name, platformType) {
   document.getElementById('csv-import-platform-id').value = id;
+  document.getElementById('csv-import-platform-type').value = platformType || '';
   document.getElementById('csv-import-platform-name').textContent = name;
   document.getElementById('csv-import-file').value = '';
+  const hint = document.getElementById('csv-import-hint');
+  if (hint) hint.innerHTML = CSV_IMPORT_HINTS[platformType] || CSV_IMPORT_HINTS['t212_api'];
   const resultEl = document.getElementById('csv-import-modal-result');
   resultEl.style.display = 'none';
   resultEl.textContent = '';
@@ -850,9 +866,10 @@ function showImportCsvModal(id, name) {
 }
 
 document.getElementById('csv-import-modal-btn').addEventListener('click', function () {
-  const pid = document.getElementById('csv-import-platform-id').value;
+  const pid  = document.getElementById('csv-import-platform-id').value;
+  const ptype = document.getElementById('csv-import-platform-type').value;
   doImportCsv(pid, document.getElementById('csv-import-file'),
-              document.getElementById('csv-import-modal-result'), this);
+              document.getElementById('csv-import-modal-result'), this, ptype);
 });
 
 document.getElementById('add-csv-skip-btn').addEventListener('click', function () {

@@ -1705,6 +1705,68 @@ async def import_t212_csv(
     return JSONResponse(response)
 
 
+@app.post("/import/ii-csv")
+async def import_ii_csv(
+    request: Request,
+    db: Session = Depends(get_session),
+):
+    """Accept an Interactive Investor holdings CSV and import it for the specified platform."""
+    from fastapi import UploadFile
+    from fastapi.responses import JSONResponse
+    from app.models import Platform
+    from app.importers.ii_csv import IiCsvImporter
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+    form = await request.form()
+    csv_file: UploadFile | None = form.get("csv_file")
+    platform_id = form.get("platform_id", "").strip()
+    new_platform_name = form.get("new_platform_name", "").strip()
+    new_account_type = form.get("new_account_type", "ISA").strip()
+
+    if csv_file is None or not csv_file.filename:
+        return JSONResponse({"error": "No file uploaded."}, status_code=400)
+
+    if platform_id:
+        platform = db.query(Platform).filter_by(id=int(platform_id), user_id=user.id).first()
+        if not platform:
+            return JSONResponse({"error": "Platform not found."}, status_code=404)
+    elif new_platform_name:
+        platform = db.query(Platform).filter_by(
+            user_id=user.id,
+            name=new_platform_name,
+            account_type=new_account_type,
+        ).first()
+        if not platform:
+            platform = Platform(
+                user_id=user.id,
+                name=new_platform_name,
+                platform_type="interactive_investor",
+                account_type=new_account_type,
+                currency="GBP",
+                is_active=True,
+            )
+            db.add(platform)
+            db.flush()
+    else:
+        return JSONResponse({"error": "Specify a platform."}, status_code=400)
+
+    content = await csv_file.read()
+    importer = IiCsvImporter(session=db, platform=platform, user_id=user.id)
+    result = importer.import_file(__import__("io").BytesIO(content))
+
+    return JSONResponse({
+        "summary": result.summary(),
+        "positions_upserted": result.positions_upserted,
+        "positions_deleted": result.positions_deleted,
+        "instruments_created": result.instruments_created,
+        "skipped": result.skipped,
+        "errors": result.errors[:20],
+    })
+
+
 @app.post("/import/pie-csv")
 async def import_pie_csv(
     request: Request,
