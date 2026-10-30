@@ -1796,15 +1796,20 @@ async def import_pie_accept(
     if not holdings:
         return JSONResponse({"error": "No holdings found for this pie."}, status_code=404)
 
-    # Aggregate all pie holdings per ticker across all pies on this platform,
-    # then upsert into positions using those totals.
+    # Scope to tickers in THIS pie only, but sum across all pies for each
+    # ticker (a ticker can appear in multiple pies on the same platform).
+    # This avoids clobbering positions for other pies that may have had
+    # their quantities updated more recently via a separate transaction import.
     rows = db.execute(text("""
-        SELECT ph.ticker, SUM(ph.owned_quantity) AS total_qty
+        SELECT ph.ticker, SUM(ph2.owned_quantity) AS total_qty
         FROM pie_holdings ph
         JOIN pies p ON p.pk = ph.pie_id
-        WHERE p.user_id = :user_id AND p.platform_id = :platform_id
+        JOIN pie_holdings ph2 ON ph2.ticker = ph.ticker
+        JOIN pies p2 ON p2.pk = ph2.pie_id
+            AND p2.user_id = :user_id AND p2.platform_id = :platform_id
+        WHERE p.user_id = :user_id AND p.pk = :pie_pk
         GROUP BY ph.ticker
-    """), {"user_id": user.id, "platform_id": int(platform_id)}).fetchall()
+    """), {"user_id": user.id, "platform_id": int(platform_id), "pie_pk": pie.pk}).fetchall()
 
     now = datetime.datetime.utcnow()
     updated = 0
