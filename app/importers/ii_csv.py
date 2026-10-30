@@ -135,7 +135,13 @@ class IiCsvImporter:
                 new_positions.append(parsed)
 
         if not new_positions:
-            self._result.errors.append("No valid position rows found.")
+            skipped = self._result.skipped
+            first_headers = list(norm_map.values())[:5]
+            self._result.errors.append(
+                f"No valid position rows found ({skipped} rows skipped). "
+                f"Headers detected: {first_headers}. "
+                "Check the file is an ii holdings export (Symbol, Qty, Price columns required)."
+            )
             return self._result
 
         # Replace strategy: remove positions no longer in the export
