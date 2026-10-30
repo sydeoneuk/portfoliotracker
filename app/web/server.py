@@ -1413,7 +1413,7 @@ def api_settings_platforms(request: Request, db: Session = Depends(get_session))
             key_configured = has_isa_key
 
         last_position_at = db.execute(
-            text("SELECT MAX(updated_at) FROM positions WHERE platform_id = :pid"),
+            text("SELECT MAX(last_synced_at) FROM positions WHERE platform_id = :pid"),
             {"pid": p.id},
         ).scalar()
 
