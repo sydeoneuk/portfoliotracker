@@ -634,6 +634,36 @@ class SyncRunner:
 
         self.session.commit()
         print(f"  Synced {len(data)} positions.")
+        self._sync_prices_from_positions(data)
+
+    def _sync_prices_from_positions(self, position_data: list[dict]) -> None:
+        """Write current prices from the just-synced positions into instrument_prices."""
+        from app.prices.base import PriceResult
+        from app.prices.updater import upsert_prices
+        from app.models.instrument import Instrument
+
+        results = []
+        for item in position_data:
+            ticker = item.get("ticker")
+            price = item.get("currentPrice")
+            if not ticker or price is None:
+                continue
+            inst = self.session.get(Instrument, ticker)
+            currency = (inst.currency_code if inst else None) or "GBP"
+            # T212 prices are in the instrument's native currency.
+            # price_gbp is only set directly for GBP instruments; non-GBP
+            # instruments will have price_gbp populated by yfinance on next refresh.
+            price_gbp = float(price) if currency == "GBP" else None
+            results.append(PriceResult(
+                ticker=ticker,
+                price=float(price),
+                price_gbp=price_gbp,
+                currency=currency,
+            ))
+
+        if results:
+            written = upsert_prices(self.session, results, source="t212_api")
+            print(f"  Updated {written} instrument prices from T212.")
 
     def sync_pies(self):
         # Pies change rarely (only when user manually rebalances) — skip if synced within 4 hours.

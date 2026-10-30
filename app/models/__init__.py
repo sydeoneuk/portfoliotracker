@@ -14,10 +14,11 @@ from app.models.pie_holding_snapshot import PieHoldingSnapshot
 from app.models.ai_portfolio_analysis_cache import AIPortfolioAnalysisCache
 from app.models.ai_analysis_usage import AIAnalysisUsage
 from app.models.app_setting import AppSetting
+from app.models.instrument_price import InstrumentPrice
 
 __all__ = [
     "Base", "Platform",
-    "Instrument", "Pie", "PieHolding",
+    "Instrument", "InstrumentPrice", "Pie", "PieHolding",
     "Position", "Order", "Transaction",
     "DividendHistory", "DividendForecast", "DividendPayment", "DividendPaymentAllocation",
     "PortfolioSnapshot", "HoldingSnapshot", "PieHoldingSnapshot",

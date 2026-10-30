@@ -1191,6 +1191,17 @@ def full_catalogue_load_status(request: Request, db: Session = Depends(get_sessi
     return JSONResponse(_catalogue_state)
 
 
+@app.post("/admin/prices/refresh")
+def trigger_price_refresh(request: Request, db: Session = Depends(get_session)):
+    """Trigger a yfinance price refresh for all held instruments."""
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    from app.prices.updater import refresh_yfinance_prices
+    result = refresh_yfinance_prices(db)
+    return JSONResponse(result)
+
+
 # ── Help route ────────────────────────────────────────────────────────────
 
 @app.get("/help", response_class=HTMLResponse)
@@ -1493,9 +1504,27 @@ def import_platforms(request: Request, db: Session = Depends(get_session)):
     ])
 
 
+# ── Price SQL helper ───────────────────────────────────────────────────────
+
+_PRICE_SUBQ = (
+    "(SELECT COALESCE(ip.price_gbp, ip.price) FROM instrument_prices ip "
+    " WHERE ip.ticker = {t} "
+    " ORDER BY CASE ip.source WHEN 't212_api' THEN 1 WHEN 'yfinance' THEN 2 ELSE 3 END "
+    " LIMIT 1)"
+)
+
+
+def _eff_price(ticker_col: str = "p.ticker", avg_col: str = "p.average_price") -> str:
+    """SQL expression for the best available GBP price, falling back to average cost."""
+    return f"COALESCE({_PRICE_SUBQ.format(t=ticker_col)}, {avg_col})"
+
+
 # ── Main dashboard ─────────────────────────────────────────────────────────
 
-_COMBINED_SQL = text("""
+_ep = _eff_price()           # shorthand used in the SQL constants below
+_ep_sum = f"SUM(p.quantity * {_ep})"
+
+_COMBINED_SQL = text(f"""
     SELECT
         p.ticker                                               AS ticker,
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
@@ -1512,12 +1541,10 @@ _COMBINED_SQL = text("""
         SUM(p.quantity)                                        AS quantity,
         SUM(p.quantity * p.average_price)
             / NULLIF(SUM(p.quantity), 0)                       AS average_price,
-        MAX(p.current_price)                                   AS current_price,
         ROUND(SUM(p.quantity * p.average_price)::numeric, 2)  AS cost,
-        ROUND(SUM(p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price))::numeric, 2)  AS value,
-        ROUND(SUM(p.ppl)::numeric, 2)                         AS ppl,
-        ROUND(((SUM(p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price))
-               - SUM(p.quantity * p.average_price))
+        ROUND({_ep_sum}::numeric, 2)                           AS value,
+        ROUND(({_ep_sum} - SUM(p.quantity * p.average_price))::numeric, 2) AS ppl,
+        ROUND((({_ep_sum} - SUM(p.quantity * p.average_price))
                / NULLIF(SUM(p.quantity * p.average_price), 0))::numeric, 4) AS result_coef,
         ROUND(COALESCE((
             SELECT SUM(dp.amount) FROM dividend_payments dp
@@ -1535,17 +1562,19 @@ _COMBINED_SQL = text("""
         i.eps_ttm,
         (SELECT COUNT(*)
          FROM pie_holdings ph WHERE ph.ticker = p.ticker
-           AND ph.user_id = :user_id)                               AS pie_count
+           AND ph.user_id = :user_id)                          AS pie_count
     FROM positions p
     JOIN instruments i ON p.ticker = i.ticker
     WHERE p.user_id = :user_id
     GROUP BY p.ticker, i.name, i.short_name, i.exchange, i.currency_code,
              i.instrument_type, i.sector, i.industry, i.instrument_class, i.country,
              i.fcf_per_share_3y_avg, i.eps_ttm
-    ORDER BY SUM(p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price)) DESC NULLS LAST
+    ORDER BY {_ep_sum} DESC NULLS LAST
 """)
 
-_PLATFORM_SQL = text("""
+_ep_p = _eff_price()         # p.ticker / p.average_price (same as _ep, explicit)
+
+_PLATFORM_SQL = text(f"""
     SELECT
         p.ticker                                               AS ticker,
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
@@ -1560,15 +1589,10 @@ _PLATFORM_SQL = text("""
         pl.account_type                                        AS account,
         p.quantity,
         p.average_price,
-        COALESCE(p.current_price, i.fallback_price)            AS current_price,
         ROUND((p.quantity * p.average_price)::numeric, 2)     AS cost,
-        ROUND((p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price))::numeric, 2) AS value,
-        ROUND(COALESCE(p.ppl,
-            (COALESCE(p.current_price, i.fallback_price, p.average_price) - p.average_price) * p.quantity
-        )::numeric, 2)                                         AS ppl,
-        ROUND(COALESCE(p.result_coef,
-            (COALESCE(p.current_price, i.fallback_price, p.average_price) / NULLIF(p.average_price, 0)) - 1
-        )::numeric, 4)                                         AS result_coef,
+        ROUND((p.quantity * {_ep_p})::numeric, 2)             AS value,
+        ROUND(((p.quantity * {_ep_p}) - (p.quantity * p.average_price))::numeric, 2) AS ppl,
+        ROUND(({_ep_p} / NULLIF(p.average_price, 0) - 1)::numeric, 4)               AS result_coef,
         ROUND(COALESCE((
             SELECT SUM(dp.amount) FROM dividend_payments dp
             WHERE dp.ticker = p.ticker AND dp.platform_id = p.platform_id
@@ -1594,10 +1618,13 @@ _PLATFORM_SQL = text("""
     JOIN instruments i ON p.ticker = i.ticker
     JOIN platforms pl ON pl.id = p.platform_id
     WHERE p.user_id = :user_id AND p.platform_id = :platform_id
-    ORDER BY (p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price)) DESC NULLS LAST
+    ORDER BY (p.quantity * {_ep_p}) DESC NULLS LAST
 """)
 
-_ACCOUNT_TYPE_SQL = text("""
+_ep_at = _eff_price()        # p.ticker / p.average_price for account_type query
+_ep_at_sum = f"SUM(p.quantity * {_ep_at})"
+
+_ACCOUNT_TYPE_SQL = text(f"""
     SELECT
         p.ticker                                               AS ticker,
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
@@ -1613,12 +1640,10 @@ _ACCOUNT_TYPE_SQL = text("""
         SUM(p.quantity)                                        AS quantity,
         SUM(p.quantity * p.average_price)
             / NULLIF(SUM(p.quantity), 0)                       AS average_price,
-        COALESCE(MAX(p.current_price), MAX(i.fallback_price))  AS current_price,
         ROUND(SUM(p.quantity * p.average_price)::numeric, 2)  AS cost,
-        ROUND(SUM(p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price))::numeric, 2)  AS value,
-        ROUND(SUM(p.ppl)::numeric, 2)                         AS ppl,
-        ROUND(((SUM(p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price))
-               - SUM(p.quantity * p.average_price))
+        ROUND({_ep_at_sum}::numeric, 2)                        AS value,
+        ROUND(({_ep_at_sum} - SUM(p.quantity * p.average_price))::numeric, 2) AS ppl,
+        ROUND((({_ep_at_sum} - SUM(p.quantity * p.average_price))
                / NULLIF(SUM(p.quantity * p.average_price), 0))::numeric, 4) AS result_coef,
         ROUND(COALESCE((
             SELECT SUM(dp.amount) FROM dividend_payments dp
@@ -1639,7 +1664,7 @@ _ACCOUNT_TYPE_SQL = text("""
         i.eps_ttm,
         (SELECT COUNT(*)
          FROM pie_holdings ph WHERE ph.ticker = p.ticker
-           AND ph.user_id = :user_id)                               AS pie_count
+           AND ph.user_id = :user_id)                          AS pie_count
     FROM positions p
     JOIN instruments i ON p.ticker = i.ticker
     JOIN platforms pl ON pl.id = p.platform_id
@@ -1647,7 +1672,7 @@ _ACCOUNT_TYPE_SQL = text("""
     GROUP BY p.ticker, pl.account_type, i.name, i.short_name, i.exchange, i.currency_code,
              i.instrument_type, i.sector, i.industry, i.instrument_class, i.country,
              i.fcf_per_share_3y_avg, i.eps_ttm
-    ORDER BY SUM(p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price)) DESC NULLS LAST
+    ORDER BY {_ep_at_sum} DESC NULLS LAST
 """)
 
 
@@ -2056,12 +2081,11 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
             SUM(pa.quantity)                                       AS quantity,
             SUM(pa.quantity * pos.average_price)
                 / NULLIF(SUM(pa.quantity), 0)                      AS average_price,
-            COALESCE(MAX(pos.current_price), MAX(i.fallback_price)) AS current_price,
             ROUND(SUM(pa.quantity * pos.average_price)::numeric, 2) AS cost,
-            ROUND(SUM(pa.quantity * COALESCE(pos.current_price, i.fallback_price, pos.average_price))::numeric, 2) AS value,
-            ROUND(SUM(COALESCE(pos.ppl, (COALESCE(pos.current_price, i.fallback_price, pos.average_price) - pos.average_price) * pos.quantity)
-                      * pa.quantity / NULLIF(pos.quantity, 0))::numeric, 2) AS ppl,
-            ROUND(((SUM(pa.quantity * COALESCE(pos.current_price, i.fallback_price, pos.average_price))
+            ROUND(SUM(pa.quantity * {_eff_price("pos.ticker", "pos.average_price")})::numeric, 2) AS value,
+            ROUND((SUM(pa.quantity * {_eff_price("pos.ticker", "pos.average_price")})
+                   - SUM(pa.quantity * pos.average_price))::numeric, 2) AS ppl,
+            ROUND(((SUM(pa.quantity * {_eff_price("pos.ticker", "pos.average_price")})
                     - SUM(pa.quantity * pos.average_price))
                    / NULLIF(SUM(pa.quantity * pos.average_price), 0))::numeric, 4)
                                                                    AS result_coef,
@@ -2089,7 +2113,7 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
         GROUP BY pa.ticker,
                  i.name, i.short_name, i.exchange, i.currency_code, i.instrument_type,
                  i.sector, i.industry, i.instrument_class, i.country, i.fcf_per_share_3y_avg, i.eps_ttm
-        ORDER BY SUM(pa.quantity * COALESCE(pos.current_price, i.fallback_price, pos.average_price)) DESC NULLS LAST
+        ORDER BY SUM(pa.quantity * {_eff_price("pos.ticker", "pos.average_price")}) DESC NULLS LAST
     """
 
 
@@ -2129,7 +2153,7 @@ def _no_pie_query(account: str) -> str:
                 0
             )                                                      AS quantity,
             p.average_price,
-            p.current_price,
+            {_eff_price()}                                         AS current_price,
             ROUND((
                 GREATEST(
                     COALESCE(p.quantity, 0) - COALESCE((
@@ -2154,10 +2178,10 @@ def _no_pie_query(account: str) -> str:
                           AND pie.platform_id = p.platform_id
                     ), 0),
                     0
-                ) * COALESCE(p.current_price, i.fallback_price, p.average_price, 0)
+                ) * {_eff_price()}
             )::numeric, 2)                                         AS value,
             ROUND((
-                COALESCE(p.ppl, 0) * GREATEST(
+                GREATEST(
                     COALESCE(p.quantity, 0) - COALESCE((
                         SELECT SUM(ph.owned_quantity)
                         FROM pie_holdings ph
@@ -2167,7 +2191,7 @@ def _no_pie_query(account: str) -> str:
                           AND pie.platform_id = p.platform_id
                     ), 0),
                     0
-                ) / NULLIF(p.quantity, 0)
+                ) * ({_eff_price()} - COALESCE(p.average_price, 0))
             )::numeric, 2)                                         AS ppl,
             ROUND(COALESCE((
                 SELECT SUM(dp.amount)
@@ -2571,14 +2595,9 @@ def api_instruments(
     for ticker, acct in held_rows:
         held_map.setdefault(ticker, []).append(acct)
 
-    price_sq = (
-        db.query(
-            Position.ticker.label("ticker"),
-            func.max(Position.current_price).label("current_price"),
-        )
-        .filter(Position.user_id == user.id)
-        .group_by(Position.ticker)
-        .subquery()
+    from sqlalchemy import literal_column
+    _ip_price_sq = literal_column(
+        _PRICE_SUBQ.format(t="instruments.ticker")
     )
 
     annual_rate_sq = (
@@ -2586,7 +2605,7 @@ def api_instruments(
         .where(DividendForecast.ticker == Instrument.ticker)
         .scalar_subquery()
     )
-    current_price_expr = func.coalesce(price_sq.c.current_price, Instrument.fallback_price)
+    current_price_expr = _ip_price_sq
     current_price_major_expr = case(
         (Instrument.currency_code == "GBX", current_price_expr / 100.0),
         else_=current_price_expr,
@@ -2634,7 +2653,6 @@ def api_instruments(
             div_cover_expr.label("div_cover"),
             fcf_div_cover_expr.label("fcf_div_cover"),
         )
-        .outerjoin(price_sq, price_sq.c.ticker == Instrument.ticker)
     )
 
     # Text search across name, short_name, ISIN and ticker
@@ -2938,14 +2956,14 @@ _PALETTE = [
     '#14b8a6', '#a855f7', '#eab308', '#f43f5e', '#0ea5e9',
 ]
 
-_ANALYSIS_COMBINED_SQL = text("""
+_ANALYSIS_COMBINED_SQL = text(f"""
     SELECT
         p.ticker,
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
         COALESCE(i.currency_code, 'GBP')                       AS currency,
         COALESCE(i.instrument_type, '')                        AS instrument_type,
         i.sector, i.industry, i.instrument_class, i.country,
-        SUM(p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price)) AS value
+        SUM(p.quantity * {_eff_price()}) AS value
     FROM positions p
     JOIN instruments i ON p.ticker = i.ticker
     WHERE p.user_id = :user_id
@@ -2953,27 +2971,27 @@ _ANALYSIS_COMBINED_SQL = text("""
              i.instrument_type, i.sector, i.industry, i.instrument_class, i.country
 """)
 
-_ANALYSIS_PLATFORM_SQL = text("""
+_ANALYSIS_PLATFORM_SQL = text(f"""
     SELECT
         p.ticker,
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
         COALESCE(i.currency_code, 'GBP')                       AS currency,
         COALESCE(i.instrument_type, '')                        AS instrument_type,
         i.sector, i.industry, i.instrument_class, i.country,
-        p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price) AS value
+        p.quantity * {_eff_price()} AS value
     FROM positions p
     JOIN instruments i ON p.ticker = i.ticker
     WHERE p.user_id = :user_id AND p.platform_id = :platform_id
 """)
 
-_ANALYSIS_ACCOUNT_TYPE_SQL = text("""
+_ANALYSIS_ACCOUNT_TYPE_SQL = text(f"""
     SELECT
         p.ticker,
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
         COALESCE(i.currency_code, 'GBP')                       AS currency,
         COALESCE(i.instrument_type, '')                        AS instrument_type,
         i.sector, i.industry, i.instrument_class, i.country,
-        SUM(p.quantity * COALESCE(p.current_price, i.fallback_price, p.average_price)) AS value
+        SUM(p.quantity * {_eff_price()}) AS value
     FROM positions p
     JOIN instruments i ON p.ticker = i.ticker
     JOIN platforms pl ON pl.id = p.platform_id
@@ -3673,7 +3691,7 @@ def _analysis_pie_query(pie_ids: list[int], account: str) -> str:
             COALESCE(i.currency_code, 'GBP')  AS currency,
             COALESCE(i.instrument_type, '')    AS instrument_type,
             i.sector, i.industry, i.instrument_class, i.country,
-            SUM(pa.quantity * COALESCE(pos.current_price, i.fallback_price, pos.average_price)) AS value
+            SUM(pa.quantity * {_eff_price("pa.ticker", "pos.average_price")}) AS value
         FROM pie_agg pa
         JOIN instruments i ON pa.ticker = i.ticker
         JOIN positions pos ON pos.ticker = pa.ticker AND pos.user_id = :user_id
