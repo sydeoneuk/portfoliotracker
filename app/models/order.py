@@ -12,7 +12,8 @@ class Order(Base):
     id = Column(String, nullable=False)   # T212 order ID
     ticker = Column(String, ForeignKey("instruments.ticker"))
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
-    account = Column(String(20))
+    platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=True, index=True)
+    account = Column(String(20))  # deprecated: kept for backward compat, use platform_id
     quantity = Column(Float)
     filled_quantity = Column(Float)
     order_type = Column(String(20))
@@ -28,3 +29,5 @@ class Order(Base):
     synced_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     instrument = relationship("Instrument", back_populates="orders")
+    platform = relationship("Platform", back_populates="orders",
+                            foreign_keys=[platform_id])

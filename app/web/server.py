@@ -418,7 +418,7 @@ def _run_sync(user_id: int, full_catalogue: bool = False) -> None:
     try:
         from app.sync.runner import SyncRunner
         from app.sync.dividend_sync import DividendSync
-        from app.models import Position, PieHolding
+        from app.models import Position, PieHolding, Platform
 
         user_settings = db.query(UserSettings).filter_by(user_id=user_id).first()
         if not user_settings:
@@ -433,20 +433,36 @@ def _run_sync(user_id: int, full_catalogue: bool = False) -> None:
         isa_key = decrypt(user_settings.t212_isa_api_key_enc)
         isa_secret = decrypt(user_settings.t212_isa_api_secret_enc)
 
-        accounts = []
+        api_configs = []
         if api_key:
-            accounts.append(("Trading", api_key, api_secret))
+            api_configs.append(("Trading 212 Invest", "t212_api", "GIA", api_key, api_secret))
         if isa_key:
-            accounts.append(("ISA", isa_key, isa_secret))
+            api_configs.append(("Trading 212 ISA", "t212_api", "ISA", isa_key, isa_secret))
 
-        if not accounts:
+        if not api_configs:
             user_settings.sync_status = "error"
             user_settings.sync_message = "No API keys configured."
             db.commit()
             return
 
-        for account_label, key, secret in accounts:
-            runner = SyncRunner(db, account=account_label, api_key=key,
+        for name, platform_type, account_type, key, secret in api_configs:
+            platform = db.query(Platform).filter_by(
+                user_id=user_id,
+                platform_type=platform_type,
+                account_type=account_type,
+            ).first()
+            if platform is None:
+                platform = Platform(
+                    user_id=user_id,
+                    name=name,
+                    platform_type=platform_type,
+                    account_type=account_type,
+                    currency="GBP",
+                    is_active=True,
+                )
+                db.add(platform)
+                db.flush()
+            runner = SyncRunner(db, platform=platform, api_key=key,
                                 api_secret=secret, user_id=user_id)
             runner.sync_all(full_catalogue=full_catalogue)
 
@@ -467,7 +483,7 @@ def _run_sync(user_id: int, full_catalogue: bool = False) -> None:
         user_settings.last_sync_at = datetime.datetime.utcnow()
         user_settings.sync_status = "done"
         user_settings.sync_message = (
-            f"Synced {len(accounts)} account(s) at "
+            f"Synced {len(api_configs)} account(s) at "
             f"{user_settings.last_sync_at.strftime('%d %b %Y %H:%M')} UTC"
         )
         db.commit()

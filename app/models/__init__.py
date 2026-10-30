@@ -1,4 +1,5 @@
 from app.models.base import Base
+from app.models.platform import Platform
 from app.models.instrument import Instrument
 from app.models.pie import Pie, PieHolding
 from app.models.position import Position
@@ -15,7 +16,8 @@ from app.models.ai_analysis_usage import AIAnalysisUsage
 from app.models.app_setting import AppSetting
 
 __all__ = [
-    "Base", "Instrument", "Pie", "PieHolding",
+    "Base", "Platform",
+    "Instrument", "Pie", "PieHolding",
     "Position", "Order", "Transaction",
     "DividendHistory", "DividendForecast", "DividendPayment", "DividendPaymentAllocation",
     "PortfolioSnapshot", "HoldingSnapshot", "PieHoldingSnapshot",

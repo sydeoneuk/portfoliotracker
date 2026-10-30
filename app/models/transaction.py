@@ -10,6 +10,7 @@ class Transaction(Base):
     pk = Column(Integer, primary_key=True, autoincrement=True)
     id = Column(String, nullable=False)   # T212 reference / transaction ID
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=True, index=True)
     type = Column(String(50))
     amount = Column(Float)
     date_time = Column(DateTime)

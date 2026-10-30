@@ -8,8 +8,9 @@ class Position(Base):
     __tablename__ = "positions"
 
     ticker = Column(String, ForeignKey("instruments.ticker"), primary_key=True)
-    account = Column(String, primary_key=True)  # "ISA" or "Trading"
+    platform_id = Column(Integer, ForeignKey("platforms.id"), primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    account = Column(String, nullable=True)  # deprecated: kept for backward compat, use platform_id
     quantity = Column(Float)
     average_price = Column(Float)
     current_price = Column(Float)
@@ -20,3 +21,5 @@ class Position(Base):
     last_synced_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     instrument = relationship("Instrument", back_populates="positions")
+    platform = relationship("Platform", back_populates="positions",
+                            foreign_keys=[platform_id])

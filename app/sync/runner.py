@@ -10,16 +10,20 @@ from app.client.trading212 import Trading212Client
 from app.models import (
     Instrument, Pie, PieHolding, Position, Order, Transaction,
     DividendPayment, DividendPaymentAllocation, PortfolioSnapshot,
-    HoldingSnapshot, PieHoldingSnapshot,
+    HoldingSnapshot, PieHoldingSnapshot, Platform,
 )
 
 
 class SyncRunner:
-    def __init__(self, session: Session, account: str = "Trading",
+    def __init__(self, session: Session, platform: "Platform",
                  api_key: str | None = None, api_secret: str | None = None,
                  user_id: int | None = None):
         self.session = session
-        self.account = account
+        self.platform = platform
+        self.platform_id = platform.id
+        # account kept for logging and backward-compat with web-server queries that
+        # still filter on the account string column during the migration period.
+        self.account = platform.name
         self.user_id = user_id
         self.client = Trading212Client(api_key=api_key, api_secret=api_secret)
 
@@ -49,16 +53,16 @@ class SyncRunner:
         return response is not None and response.status_code in (401, 403)
 
     def _held_tickers(self) -> set[str]:
-        """Return tickers held directly or inside pies for the current user/account."""
-        position_q = self.session.query(Position.ticker)
+        """Return tickers held directly or inside pies for the current user/platform."""
+        position_q = self.session.query(Position.ticker).filter(
+            Position.platform_id == self.platform_id
+        )
+        # PieHolding has no account/platform column; filter by user_id only
         pie_q = self.session.query(PieHolding.ticker)
 
         if self.user_id is not None:
             position_q = position_q.filter(Position.user_id == self.user_id)
             pie_q = pie_q.filter(PieHolding.user_id == self.user_id)
-        if self.account:
-            position_q = position_q.filter(Position.account == self.account)
-            pie_q = pie_q.filter(PieHolding.account == self.account)
 
         return {r[0] for r in position_q.all()} | {r[0] for r in pie_q.all()}
 
@@ -173,8 +177,8 @@ class SyncRunner:
             FROM positions p
             JOIN instruments i ON i.ticker = p.ticker
             WHERE p.user_id = :user_id
-              AND p.account = :account
-        """), {"user_id": self.user_id, "account": self.account}).fetchall()
+              AND p.platform_id = :platform_id
+        """), {"user_id": self.user_id, "platform_id": self.platform_id}).fetchall()
 
         fx = self._get_fx_rates_to_gbp({row.currency for row in position_rows if row.currency})
         account_total = 0.0
@@ -191,19 +195,20 @@ class SyncRunner:
         self.session.query(PortfolioSnapshot).filter(
             PortfolioSnapshot.user_id == self.user_id,
             PortfolioSnapshot.snapshot_date == snapshot_date,
-            PortfolioSnapshot.account == self.account,
+            PortfolioSnapshot.platform_id == self.platform_id,
         ).delete()
         self.session.query(HoldingSnapshot).filter(
             HoldingSnapshot.user_id == self.user_id,
             HoldingSnapshot.snapshot_date == snapshot_date,
-            HoldingSnapshot.account == self.account,
+            HoldingSnapshot.platform_id == self.platform_id,
         ).delete()
 
         self.session.add(PortfolioSnapshot(
             user_id=self.user_id,
             snapshot_date=snapshot_date,
             captured_at=now,
-            account=self.account,
+            platform_id=self.platform_id,
+            account=self.platform.account_type,
             scope_type="account",
             pie_id=None,
             total_value_gbp=account_total,
@@ -217,7 +222,8 @@ class SyncRunner:
                 user_id=self.user_id,
                 snapshot_date=snapshot_date,
                 captured_at=now,
-                account=self.account,
+                platform_id=self.platform_id,
+                account=self.platform.account_type,
                 ticker=row.ticker,
                 quantity=quantity,
                 price_native=price_native,
@@ -229,8 +235,8 @@ class SyncRunner:
             FROM pies pie
             JOIN pie_holdings ph ON ph.pie_id = pie.pk
             WHERE pie.user_id = :user_id
-              AND (pie.account = :account OR pie.account IS NULL)
-        """), {"user_id": self.user_id, "account": self.account}).fetchall()
+              AND (pie.platform_id = :platform_id OR pie.platform_id IS NULL)
+        """), {"user_id": self.user_id, "platform_id": self.platform_id}).fetchall()
 
         pie_totals: dict[int, float] = {}
         for row in pie_rows:
@@ -247,7 +253,8 @@ class SyncRunner:
                 user_id=self.user_id,
                 snapshot_date=snapshot_date,
                 captured_at=now,
-                account=self.account,
+                platform_id=self.platform_id,
+                account=self.platform.account_type,
                 scope_type="pie",
                 pie_id=pie_id,
                 total_value_gbp=total_value_gbp,
@@ -559,7 +566,7 @@ class SyncRunner:
         now = datetime.datetime.utcnow()
 
         live_tickers = {item["ticker"] for item in data}
-        q = self.session.query(Position.ticker).filter(Position.account == self.account)
+        q = self.session.query(Position.ticker).filter(Position.platform_id == self.platform_id)
         if self.user_id is not None:
             q = q.filter(Position.user_id == self.user_id)
         stored_tickers = {r[0] for r in q.all()}
@@ -567,7 +574,7 @@ class SyncRunner:
         closed = stored_tickers - live_tickers
         if closed:
             dq = self.session.query(Position).filter(
-                Position.ticker.in_(closed), Position.account == self.account
+                Position.ticker.in_(closed), Position.platform_id == self.platform_id
             )
             if self.user_id is not None:
                 dq = dq.filter(Position.user_id == self.user_id)
@@ -598,8 +605,9 @@ class SyncRunner:
                 insert(Position)
                 .values(
                     ticker=item["ticker"],
-                    account=self.account,
+                    platform_id=self.platform_id,
                     user_id=self.user_id,
+                    account=self.platform.account_type,
                     quantity=item.get("quantity"),
                     average_price=item.get("averagePrice"),
                     current_price=item.get("currentPrice"),
@@ -609,8 +617,9 @@ class SyncRunner:
                     last_synced_at=now,
                 )
                 .on_conflict_do_update(
-                    index_elements=["ticker", "account", "user_id"],
+                    index_elements=["ticker", "platform_id", "user_id"],
                     set_={
+                        "account": self.platform.account_type,
                         "quantity": item.get("quantity"),
                         "average_price": item.get("averagePrice"),
                         "current_price": item.get("currentPrice"),
@@ -632,9 +641,9 @@ class SyncRunner:
         latest_pie = self.session.execute(
             _text(
                 "SELECT MAX(last_synced_at) FROM pies "
-                "WHERE user_id = :uid AND (account = :acc OR account IS NULL)"
+                "WHERE user_id = :uid AND (platform_id = :pid OR platform_id IS NULL)"
             ),
-            {"uid": self.user_id, "acc": self.account},
+            {"uid": self.user_id, "pid": self.platform_id},
         ).scalar()
         if latest_pie and (datetime.datetime.utcnow() - latest_pie).total_seconds() < 14400:
             print("  Pies up to date (synced < 4h ago), skipping.")
@@ -671,7 +680,8 @@ class SyncRunner:
                     id=pie_id,
                     user_id=self.user_id,
                     name=s.get("name"),
-                    account=self.account,
+                    platform_id=self.platform_id,
+                    account=self.platform.account_type,
                     icon=s.get("icon"),
                     goal=s.get("goal"),
                     creation_date=creation_date,
@@ -687,7 +697,8 @@ class SyncRunner:
                     index_elements=["user_id", "id"],
                     set_={
                         "name": s.get("name"),
-                        "account": self.account,
+                        "platform_id": self.platform_id,
+                        "account": self.platform.account_type,
                         "goal": s.get("goal"),
                         "end_date": end_date,
                         "cash": pie_cash,
@@ -746,7 +757,8 @@ class SyncRunner:
                         user_id=self.user_id,
                         pie_id=surrogate_pie_pk,
                         ticker=item["ticker"],
-                        account=self.account,
+                        platform_id=self.platform_id,
+                        account=self.platform.account_type,
                         snapshot_date=snapshot_date,
                         captured_at=now,
                         owned_quantity=item.get("ownedQuantity") or 0.0,
@@ -756,7 +768,8 @@ class SyncRunner:
                     .on_conflict_do_update(
                         index_elements=["user_id", "pie_id", "ticker", "snapshot_date"],
                         set_={
-                            "account": self.account,
+                            "platform_id": self.platform_id,
+                            "account": self.platform.account_type,
                             "captured_at": now,
                             "owned_quantity": item.get("ownedQuantity") or 0.0,
                             "current_share": item.get("currentShare"),
@@ -797,7 +810,7 @@ class SyncRunner:
         if settings_row is None:
             return
 
-        if self.account == "ISA":
+        if self.platform.account_type == "ISA":
             settings_row.free_cash_isa = free
             settings_row.pie_cash_isa = pie_cash
         else:
@@ -805,7 +818,7 @@ class SyncRunner:
             settings_row.pie_cash_trading = pie_cash
 
         self.session.commit()
-        print(f"  Stored cash for {self.account}: free={free}, in_pies={pie_cash}")
+        print(f"  Stored cash for {self.platform.name}: free={free}, in_pies={pie_cash}")
 
     def sync_account_info(self):
         """Fetch account metadata and persist the account currency when available."""
@@ -841,13 +854,13 @@ class SyncRunner:
         if settings_row is None:
             return
 
-        if self.account == "ISA":
+        if self.platform.account_type == "ISA":
             settings_row.isa_currency_code = currency or settings_row.isa_currency_code
         else:
             settings_row.trading_currency_code = currency or settings_row.trading_currency_code
 
         self.session.commit()
-        print(f"  Stored currency for {self.account}: {currency or 'unknown'}")
+        print(f"  Stored currency for {self.platform.name}: {currency or 'unknown'}")
 
     def sync_open_orders(self):
         print("Syncing open orders...")
@@ -865,7 +878,8 @@ class SyncRunner:
                 .values(
                     id=str(item["id"]),
                     user_id=self.user_id,
-                    account=self.account,
+                    platform_id=self.platform_id,
+                    account=self.platform.account_type,
                     ticker=item.get("ticker"),
                     quantity=item.get("quantity"),
                     filled_quantity=item.get("filledQuantity"),
@@ -882,7 +896,8 @@ class SyncRunner:
                 .on_conflict_do_update(
                     index_elements=["user_id", "id"],
                     set_={
-                        "account": self.account,
+                        "platform_id": self.platform_id,
+                        "account": self.platform.account_type,
                         "status": item.get("status", "LOCAL_OPEN"),
                         "filled_quantity": item.get("filledQuantity"),
                         "fill_price": item.get("fillPrice"),
@@ -910,8 +925,8 @@ class SyncRunner:
         # On first sync, cap lookback to 12 months to avoid paginating years of history.
         from sqlalchemy import text as _text
         latest = self.session.execute(
-            _text("SELECT MAX(filled_at) FROM orders WHERE user_id = :uid AND account = :acc"),
-            {"uid": self.user_id, "acc": self.account},
+            _text("SELECT MAX(filled_at) FROM orders WHERE user_id = :uid AND platform_id = :pid"),
+            {"uid": self.user_id, "pid": self.platform_id},
         ).scalar()
         if latest:
             newer_than = latest.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
@@ -973,7 +988,8 @@ class SyncRunner:
                         id=str(order_id),
                         ticker=ticker,
                         user_id=self.user_id,
-                        account=self.account,
+                        platform_id=self.platform_id,
+                        account=self.platform.account_type,
                         quantity=order.get("quantity"),
                         filled_quantity=order.get("filledQuantity") or fill.get("quantity"),
                         order_type=order.get("type"),
@@ -995,7 +1011,8 @@ class SyncRunner:
                             "fill_price": fill_price,
                             "filled_at": _parse_dt(fill.get("filledAt")),
                             "side": order.get("side"),
-                            "account": self.account,
+                            "platform_id": self.platform_id,
+                            "account": self.platform.account_type,
                             "synced_at": now,
                         },
                     )
@@ -1145,7 +1162,8 @@ class SyncRunner:
                     .values(
                         reference=item["reference"],
                         ticker=ticker,
-                        account=self.account,
+                        platform_id=self.platform_id,
+                        account=self.platform.account_type,
                         user_id=self.user_id,
                         quantity=item.get("quantity"),
                         amount=item.get("amount"),
@@ -1191,7 +1209,7 @@ class SyncRunner:
             )
             .filter(
                 DividendPayment.user_id == self.user_id,
-                DividendPayment.account == self.account,
+                DividendPayment.platform_id == self.platform_id,
                 DividendPaymentAllocation.id.is_(None),
             )
             .all()
@@ -1225,7 +1243,7 @@ class SyncRunner:
                 FROM pie_holding_snapshots
                 WHERE user_id = :user_id
                   AND ticker = :ticker
-                  AND account = :account
+                  AND platform_id = :platform_id
                   AND snapshot_date <= :paid_date
             )
             SELECT phs.pie_id, phs.owned_quantity, phs.snapshot_date
@@ -1233,11 +1251,11 @@ class SyncRunner:
             JOIN basis b ON b.snapshot_date = phs.snapshot_date
             WHERE phs.user_id = :user_id
               AND phs.ticker = :ticker
-              AND phs.account = :account
+              AND phs.platform_id = :platform_id
         """), {
             "user_id": self.user_id,
             "ticker": payment.ticker,
-            "account": payment.account,
+            "platform_id": payment.platform_id,
             "paid_date": paid_date,
         }).fetchall()
 
@@ -1248,18 +1266,18 @@ class SyncRunner:
                     FROM pie_holding_snapshots
                     WHERE user_id = :user_id
                       AND ticker = :ticker
-                      AND account = :account
+                      AND platform_id = :platform_id
                 )
                 SELECT phs.pie_id, phs.owned_quantity, phs.snapshot_date
                 FROM pie_holding_snapshots phs
                 JOIN basis b ON b.snapshot_date = phs.snapshot_date
                 WHERE phs.user_id = :user_id
                   AND phs.ticker = :ticker
-                  AND phs.account = :account
+                  AND phs.platform_id = :platform_id
             """), {
                 "user_id": self.user_id,
                 "ticker": payment.ticker,
-                "account": payment.account,
+                "platform_id": payment.platform_id,
             }).fetchall()
 
         if not snapshot_rows:
@@ -1282,6 +1300,7 @@ class SyncRunner:
                 user_id=self.user_id,
                 pie_id=int(row.pie_id),
                 ticker=payment.ticker,
+                platform_id=payment.platform_id,
                 account=payment.account,
                 amount_gbp=float(payment.amount or 0) * allocation_ratio,
                 quantity=float(payment.quantity or 0) * allocation_ratio,

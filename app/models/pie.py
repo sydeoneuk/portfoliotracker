@@ -12,7 +12,8 @@ class Pie(Base):
     id = Column(Integer, nullable=False)   # T212 pie ID
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     name = Column(String, nullable=False)
-    account = Column(String(20))   # "ISA" or "Trading" — set at sync time
+    platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=True, index=True)
+    account = Column(String(20))   # deprecated: kept for backward compat, use platform_id
     icon = Column(String)
     goal = Column(Float)
     creation_date = Column(DateTime)
@@ -25,6 +26,8 @@ class Pie(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     holdings = relationship("PieHolding", back_populates="pie", cascade="all, delete-orphan")
+    platform = relationship("Platform", back_populates="pies",
+                            foreign_keys="Pie.platform_id")
 
 
 class PieHolding(Base):

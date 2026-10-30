@@ -23,7 +23,8 @@ class DividendPaymentAllocation(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     pie_id = Column(Integer, ForeignKey("pies.pk", ondelete="CASCADE"), nullable=False, index=True)
     ticker = Column(String, ForeignKey("instruments.ticker"), nullable=False, index=True)
-    account = Column(String(20), nullable=False, index=True)
+    platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=True, index=True)
+    account = Column(String(20), nullable=True, index=True)  # deprecated: use platform_id
     amount_gbp = Column(Float, nullable=False, default=0.0)
     quantity = Column(Float, nullable=False, default=0.0)
     allocation_ratio = Column(Float, nullable=False, default=0.0)

@@ -9,7 +9,7 @@ class HoldingSnapshot(Base):
         UniqueConstraint(
             "user_id",
             "snapshot_date",
-            "account",
+            "platform_id",
             "ticker",
             name="uq_holding_snapshots_daily_ticker",
         ),
@@ -19,7 +19,8 @@ class HoldingSnapshot(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     snapshot_date = Column(Date, nullable=False, index=True)
     captured_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
-    account = Column(String(20), nullable=False, index=True)
+    platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=True, index=True)
+    account = Column(String(20), nullable=True, index=True)  # deprecated: use platform_id
     ticker = Column(String, ForeignKey("instruments.ticker"), nullable=False, index=True)
     quantity = Column(Float, nullable=False, default=0.0)
     price_native = Column(Float, nullable=False, default=0.0)

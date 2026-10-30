@@ -1,5 +1,6 @@
 import datetime
 from sqlalchemy import Column, String, Float, DateTime, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy.orm import relationship
 from app.models.base import Base
 
 
@@ -10,7 +11,8 @@ class DividendPayment(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     reference = Column(String, nullable=False)   # T212 dividend reference
     ticker = Column(String, ForeignKey("instruments.ticker"), nullable=False)
-    account = Column(String, nullable=False)  # "ISA" or "Trading"
+    platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=True, index=True)
+    account = Column(String, nullable=True)  # deprecated: kept for backward compat, use platform_id
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     quantity = Column(Float)
     amount = Column(Float)              # actual GBP received
@@ -18,3 +20,6 @@ class DividendPayment(Base):
     paid_on = Column(DateTime)
     type = Column(String)               # DIVIDEND, DIVIDEND_MANUFACTURED_PAYMENT, etc.
     synced_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    platform = relationship("Platform", back_populates="dividend_payments",
+                            foreign_keys=[platform_id])

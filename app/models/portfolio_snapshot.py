@@ -9,7 +9,7 @@ class PortfolioSnapshot(Base):
         UniqueConstraint(
             "user_id",
             "snapshot_date",
-            "account",
+            "platform_id",
             "scope_type",
             "pie_id",
             name="uq_portfolio_snapshots_daily_scope",
@@ -20,7 +20,8 @@ class PortfolioSnapshot(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     snapshot_date = Column(Date, nullable=False, index=True)
     captured_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
-    account = Column(String(20), nullable=False, index=True)
+    platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=True, index=True)
+    account = Column(String(20), nullable=True, index=True)  # deprecated: use platform_id
     scope_type = Column(String(20), nullable=False)  # account | pie
     pie_id = Column(Integer, ForeignKey("pies.pk", ondelete="CASCADE"), nullable=True, index=True)
     total_value_gbp = Column(Float, nullable=False, default=0.0)
