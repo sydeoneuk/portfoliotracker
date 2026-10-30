@@ -656,6 +656,92 @@ def _scheduled_sync_all_users() -> None:
         db.close()
 
 
+def _snapshot_csv_platforms(db) -> dict:
+    """Write today's HoldingSnapshot rows for all non-API platforms.
+
+    API platforms are snapshotted during their own SyncRunner run; this
+    covers CSV-imported platforms (ii, T212 SIPP, etc.) so they also
+    accumulate the daily history that drives the Value History chart.
+    Requires instrument_prices to have been refreshed first.
+    """
+    from sqlalchemy import text as _t
+    from app.models import Platform
+    from app.models.holding_snapshot import HoldingSnapshot
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    today = datetime.date.today()
+    now = datetime.datetime.utcnow()
+
+    # Find all CSV-type platforms that have at least one position
+    platforms = db.execute(_t("""
+        SELECT DISTINCT pl.id, pl.user_id, pl.account_type
+        FROM platforms pl
+        JOIN positions pos ON pos.platform_id = pl.id
+        WHERE pl.platform_type != 't212_api'
+          AND pl.is_active = true
+    """)).fetchall()
+
+    written = 0
+    for pl in platforms:
+        # Fetch positions with best available price
+        rows = db.execute(_t(f"""
+            SELECT
+                pos.ticker,
+                pos.quantity,
+                COALESCE(i.currency_code, 'GBP') AS currency,
+                COALESCE(
+                    (SELECT ip.price FROM instrument_prices ip
+                     WHERE ip.ticker = pos.ticker
+                     ORDER BY CASE ip.source WHEN 't212_api' THEN 1
+                                             WHEN 'yfinance'  THEN 2
+                                             ELSE 3 END
+                     LIMIT 1),
+                    pos.average_price, 0
+                ) AS price_native
+            FROM positions pos
+            JOIN instruments i ON i.ticker = pos.ticker
+            WHERE pos.platform_id = :platform_id
+              AND pos.user_id = :user_id
+              AND pos.quantity > 0
+        """), {"platform_id": pl.id, "user_id": pl.user_id}).fetchall()
+
+        for row in rows:
+            quantity = float(row.quantity or 0)
+            price = float(row.price_native or 0)
+            # Convert GBX pence to GBP for value calculation
+            price_gbp = price / 100.0 if (row.currency or "").upper() == "GBX" else price
+            value_gbp = quantity * price_gbp
+
+            stmt = (
+                pg_insert(HoldingSnapshot)
+                .values(
+                    user_id=pl.user_id,
+                    snapshot_date=today,
+                    captured_at=now,
+                    platform_id=pl.id,
+                    account=pl.account_type,
+                    ticker=row.ticker,
+                    quantity=quantity,
+                    price_native=price,
+                    value_gbp=value_gbp,
+                )
+                .on_conflict_do_update(
+                    constraint="uq_holding_snapshots_daily_ticker",
+                    set_={
+                        "quantity": quantity,
+                        "price_native": price,
+                        "value_gbp": value_gbp,
+                        "captured_at": now,
+                    },
+                )
+            )
+            db.execute(stmt)
+            written += 1
+
+    db.commit()
+    return {"platforms": len(platforms), "snapshots_written": written}
+
+
 def _scheduled_enrich_catalogue() -> None:
     """Run at 04:00 UTC daily — progressively enrich stale instruments in batches."""
     print(f"[scheduler] Catalogue enrichment triggered at "
@@ -675,6 +761,10 @@ def _scheduled_enrich_catalogue() -> None:
         from app.prices.updater import refresh_yfinance_prices
         price_result = refresh_yfinance_prices(db)
         print(f"[scheduler] yfinance price refresh complete — {price_result}.")
+        # Write daily holding snapshots for CSV-only platforms so the Value
+        # History chart populates the same way it does for API accounts.
+        snap_result = _snapshot_csv_platforms(db)
+        print(f"[scheduler] CSV platform snapshots complete — {snap_result}.")
     except Exception:
         traceback.print_exc()
     finally:
