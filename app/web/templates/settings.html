@@ -430,6 +430,7 @@
       <!-- Step 2: CSV import (CSV providers only) -->
       <div id="add-account-step2" style="display:none;">
         <input type="hidden" id="add-account-step2-platform-id">
+        <input type="hidden" id="add-account-step2-platform-type">
         <div class="modal-body">
           <div class="alert alert-success py-2 mb-3" style="font-size:.85rem;">
             ✓ <strong><span id="add-account-step2-name"></span></strong> created.
@@ -793,6 +794,7 @@ document.getElementById('add-account-form').addEventListener('submit', async fun
     loadAccounts();
   } else {
     document.getElementById('add-account-step2-platform-id').value = newId;
+    document.getElementById('add-account-step2-platform-type').value = type;
     document.getElementById('add-account-step2-name').textContent = name;
     document.getElementById('add-account-step1').style.display = 'none';
     document.getElementById('add-account-step2').style.display = '';
@@ -876,9 +878,10 @@ document.getElementById('add-csv-skip-btn').addEventListener('click', function (
 });
 
 document.getElementById('add-csv-import-btn').addEventListener('click', function () {
-  const pid = document.getElementById('add-account-step2-platform-id').value;
+  const pid   = document.getElementById('add-account-step2-platform-id').value;
+  const ptype = document.getElementById('add-account-step2-platform-type').value;
   doImportCsv(pid, document.getElementById('add-csv-file'),
-              document.getElementById('add-csv-result'), this);
+              document.getElementById('add-csv-result'), this, ptype);
 });
 
 // ── Pie CSV import ────────────────────────────────────────────────────────
