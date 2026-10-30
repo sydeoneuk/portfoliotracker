@@ -1541,6 +1541,7 @@ _COMBINED_SQL = text(f"""
         SUM(p.quantity)                                        AS quantity,
         SUM(p.quantity * p.average_price)
             / NULLIF(SUM(p.quantity), 0)                       AS average_price,
+        {_ep}                                                  AS current_price,
         ROUND(SUM(p.quantity * p.average_price)::numeric, 2)  AS cost,
         ROUND({_ep_sum}::numeric, 2)                           AS value,
         ROUND(({_ep_sum} - SUM(p.quantity * p.average_price))::numeric, 2) AS ppl,
@@ -1589,6 +1590,7 @@ _PLATFORM_SQL = text(f"""
         pl.account_type                                        AS account,
         p.quantity,
         p.average_price,
+        {_ep_p}                                               AS current_price,
         ROUND((p.quantity * p.average_price)::numeric, 2)     AS cost,
         ROUND((p.quantity * {_ep_p})::numeric, 2)             AS value,
         ROUND(((p.quantity * {_ep_p}) - (p.quantity * p.average_price))::numeric, 2) AS ppl,
@@ -1640,6 +1642,7 @@ _ACCOUNT_TYPE_SQL = text(f"""
         SUM(p.quantity)                                        AS quantity,
         SUM(p.quantity * p.average_price)
             / NULLIF(SUM(p.quantity), 0)                       AS average_price,
+        {_ep_at}                                               AS current_price,
         ROUND(SUM(p.quantity * p.average_price)::numeric, 2)  AS cost,
         ROUND({_ep_at_sum}::numeric, 2)                        AS value,
         ROUND(({_ep_at_sum} - SUM(p.quantity * p.average_price))::numeric, 2) AS ppl,
@@ -2359,7 +2362,7 @@ def _normalise_positions_for_display(positions: list[dict]) -> list[dict]:
     for p in positions:
         if p["currency"] == "GBX":
             for col in ("average_price", "current_price", "cost", "value", "forward_dividends", "annual_rate_per_share"):
-                if p[col] is not None:
+                if col in p and p[col] is not None:
                     p[col] = round(float(p[col]) / 100, 2)
             p["currency"] = "GBP"
 
