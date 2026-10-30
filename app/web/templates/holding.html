@@ -122,10 +122,12 @@
     <div class="brand">Trading 212 <span>Portfolio</span></div>
     <a href="/portfolio?account={{ account_filter }}" class="btn btn-sm btn-outline-light">← Portfolio</a>
     <div class="btn-group btn-group-sm ms-2" role="group">
-      <a href="/holding/{{ ticker }}?account={% if account_filter == 'ISA' %}combined{% else %}ISA{% endif %}"
-         class="btn {% if account_filter == 'ISA' %}btn-light active{% else %}btn-outline-light{% endif %}">ISA</a>
-      <a href="/holding/{{ ticker }}?account={% if account_filter == 'Trading' %}combined{% else %}Trading{% endif %}"
-         class="btn {% if account_filter == 'Trading' %}btn-light active{% else %}btn-outline-light{% endif %}">Trading</a>
+      <a href="/holding/{{ ticker }}?account=portfolio"
+         class="btn {% if account_filter in ('', 'combined', 'portfolio') or not account_filter %}btn-light active{% else %}btn-outline-light{% endif %}">All</a>
+      {% for at in account_types %}<a href="/holding/{{ ticker }}?account={{ at }}"
+         class="btn {% if account_filter == at %}btn-light active{% else %}btn-outline-light{% endif %}">{{ at }}</a>{% endfor %}
+      {% for p in user_platforms %}<a href="/holding/{{ ticker }}?account={{ p.value }}"
+         class="btn {% if account_filter == p.value %}btn-light active{% else %}btn-outline-light{% endif %}">{{ p.name }}</a>{% endfor %}
     </div>
   </div>
   <div class="user-info">

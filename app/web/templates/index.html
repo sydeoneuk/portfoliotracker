@@ -272,10 +272,11 @@
     </button>
     <div class="brand">Trading 212 <span>Portfolio</span></div>
   </div>
+  {% set _pf_extra %}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}{% endset %}
   <div class="btn-group btn-group-sm ms-4" role="group">
-    <a href="/portfolio?account=combined{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}" class="btn {% if account_filter == 'combined' %}btn-light active{% else %}btn-outline-light{% endif %}">Combined</a>
-    <a href="/portfolio?account=ISA{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}"      class="btn {% if account_filter == 'ISA' %}btn-light active{% else %}btn-outline-light{% endif %}">ISA</a>
-    <a href="/portfolio?account=Trading{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}"  class="btn {% if account_filter == 'Trading' %}btn-light active{% else %}btn-outline-light{% endif %}">Trading</a>
+    <a href="/portfolio?account=portfolio{{ _pf_extra }}" class="btn {% if account_filter in ('', 'combined', 'portfolio') or not account_filter %}btn-light active{% else %}btn-outline-light{% endif %}">Portfolio</a>
+    {% for at in account_types %}<a href="/portfolio?account={{ at }}{{ _pf_extra }}" class="btn {% if account_filter == at %}btn-light active{% else %}btn-outline-light{% endif %}">{{ at }}</a>{% endfor %}
+    {% for p in user_platforms %}<a href="/portfolio?account={{ p.value }}{{ _pf_extra }}" class="btn {% if account_filter == p.value %}btn-light active{% else %}btn-outline-light{% endif %}">{{ p.name }}</a>{% endfor %}
   </div>
   <div class="synced">
     {% if last_synced %}
@@ -337,8 +338,7 @@
     <div class="col-12 d-flex align-items-center gap-2">
       <small class="section-header-row">
         <span class="section-title">
-          {% if account_filter == 'ISA' %}ISA Portfolio ({{ display_currency }})
-          {% elif account_filter == 'Trading' %}Trading Portfolio ({{ display_currency }})
+          {% if account_filter and account_filter not in ('', 'combined', 'portfolio') %}{{ account_filter }} Portfolio ({{ display_currency }})
           {% else %}Total Portfolio ({{ display_currency }}){% endif %}
         </span>
         {% if fx_rates_used %}

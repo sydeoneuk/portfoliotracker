@@ -16,6 +16,11 @@ Strategy:
 """
 from alembic import op
 
+revision = '033'
+down_revision = '032'
+branch_labels = None
+depends_on = None
+
 
 def upgrade():
     # ------------------------------------------------------------------

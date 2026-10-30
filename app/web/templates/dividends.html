@@ -118,13 +118,14 @@
   <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
 
     <!-- Account buttons -->
+    {% set _mf %}{% if month_filter %}month={{ month_filter }}&{% endif %}{% endset %}
     <div class="btn-group btn-group-sm" role="group">
-      <a href="/dividends?{% if month_filter %}month={{ month_filter }}{% endif %}"
-         class="btn {% if not account_filter %}btn-dark{% else %}btn-outline-secondary{% endif %}">All</a>
-      <a href="/dividends?{% if month_filter %}month={{ month_filter }}&{% endif %}account=ISA"
-         class="btn {% if account_filter == 'ISA' %}btn-dark{% else %}btn-outline-secondary{% endif %}">ISA</a>
-      <a href="/dividends?{% if month_filter %}month={{ month_filter }}&{% endif %}account=Trading"
-         class="btn {% if account_filter == 'Trading' %}btn-dark{% else %}btn-outline-secondary{% endif %}">Trading</a>
+      <a href="/dividends?{{ _mf }}account=portfolio"
+         class="btn {% if account_filter in ('', 'portfolio') or not account_filter %}btn-dark{% else %}btn-outline-secondary{% endif %}">All</a>
+      {% for at in account_types %}<a href="/dividends?{{ _mf }}account={{ at }}"
+         class="btn {% if account_filter == at %}btn-dark{% else %}btn-outline-secondary{% endif %}">{{ at }}</a>{% endfor %}
+      {% for p in user_platforms %}<a href="/dividends?{{ _mf }}account={{ p.value }}"
+         class="btn {% if account_filter == p.value %}btn-dark{% else %}btn-outline-secondary{% endif %}">{{ p.name }}</a>{% endfor %}
     </div>
 
     <!-- Month dropdown -->
