@@ -479,6 +479,39 @@
   </div>
 </div>
 
+<!-- ── Pie CSV import modal ────────────────────────────────────────────── -->
+<div class="modal fade" id="pieCsvImportModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold">Import Pie CSV — <span id="pie-csv-platform-name"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="pie-csv-platform-id">
+        <p class="text-muted mb-3" style="font-size:.85rem;">
+          Export a single pie from <strong>T212 → Pies → select pie → Performance</strong> (Download CSV).
+          Each import replaces all holdings for that pie name. A reconciliation report is shown after import.
+        </p>
+        <div class="mb-3">
+          <label class="form-label text-muted">Pie Name <span class="text-danger">*</span></label>
+          <input type="text" id="pie-csv-name" class="form-control" placeholder="e.g. Global Growth">
+          <div class="form-text">Must match the pie's actual name — used to identify re-imports.</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label text-muted">CSV File <span class="text-danger">*</span></label>
+          <input type="file" id="pie-csv-file" class="form-control" accept=".csv">
+        </div>
+        <div id="pie-csv-result" style="display:none;"></div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-t212" id="pie-csv-import-btn">Import Pie</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ── Clear data confirmation modal ──────────────────────────────────── -->
 <div class="modal fade" id="clearDataModal" tabindex="-1" aria-labelledby="clearDataModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
@@ -628,6 +661,7 @@ function loadAccounts() {
             <div class="d-flex gap-1 flex-shrink-0">
               ${p.key_slot ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showSetKeyModal(${p.id}, '${p.key_slot}', '${p.name}')">Set key</button>` : ''}
               ${method !== 'API' ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showImportCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Import CSV</button>` : ''}
+              ${p.platform_type && p.platform_type.startsWith('t212') ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showPieCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Import Pie CSV</button>` : ''}
               <button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showRenameModal(${p.id}, '${p.name}')">Rename</button>
               <button class="btn btn-sm btn-outline-danger py-0" style="font-size:.78rem;" onclick="deletePlatform(${p.id}, '${p.name}', ${p.position_count})">Delete</button>
             </div>
@@ -829,6 +863,76 @@ document.getElementById('add-csv-import-btn').addEventListener('click', function
   const pid = document.getElementById('add-account-step2-platform-id').value;
   doImportCsv(pid, document.getElementById('add-csv-file'),
               document.getElementById('add-csv-result'), this);
+});
+
+// ── Pie CSV import ────────────────────────────────────────────────────────
+function showPieCsvModal(id, name) {
+  document.getElementById('pie-csv-platform-id').value = id;
+  document.getElementById('pie-csv-platform-name').textContent = name;
+  document.getElementById('pie-csv-name').value = '';
+  document.getElementById('pie-csv-file').value = '';
+  const resultEl = document.getElementById('pie-csv-result');
+  resultEl.style.display = 'none';
+  resultEl.textContent = '';
+  const btn = document.getElementById('pie-csv-import-btn');
+  btn.disabled = false;
+  btn.textContent = 'Import Pie';
+  new bootstrap.Modal(document.getElementById('pieCsvImportModal')).show();
+}
+
+document.getElementById('pie-csv-import-btn').addEventListener('click', async function () {
+  const pid   = document.getElementById('pie-csv-platform-id').value;
+  const pname = document.getElementById('pie-csv-name').value.trim();
+  const file  = document.getElementById('pie-csv-file').files[0];
+  const resultEl = document.getElementById('pie-csv-result');
+
+  if (!pname) { alert('Please enter the pie name.'); return; }
+  if (!file)  { alert('Please select a CSV file.'); return; }
+
+  this.disabled = true;
+  this.textContent = 'Importing…';
+  resultEl.style.display = 'none';
+
+  try {
+    const fd = new FormData();
+    fd.append('platform_id', pid);
+    fd.append('pie_name', pname);
+    fd.append('csv_file', file);
+    const resp = await fetch('/import/pie-csv', { method: 'POST', body: fd });
+    const data = await resp.json();
+
+    if (!resp.ok || data.error) {
+      resultEl.className = 'alert alert-danger mb-0';
+      resultEl.textContent = data.error || 'Import failed.';
+    } else {
+      let html = '<strong>' + data.summary + '</strong>';
+      if (data.errors && data.errors.length) {
+        html += '<ul class="mb-0 mt-2">' + data.errors.map(e => '<li class="text-danger">' + e + '</li>').join('') + '</ul>';
+      }
+      if (data.reconciliation && data.reconciliation.length) {
+        html += '<div class="mt-3"><strong class="text-warning">Reconciliation differences:</strong>';
+        html += '<table class="table table-sm mt-2 mb-0" style="font-size:.8rem;">';
+        html += '<thead><tr><th>Ticker</th><th>Pie qty</th><th>Position qty</th><th>Diff</th><th>Note</th></tr></thead><tbody>';
+        data.reconciliation.forEach(r => {
+          const cls = r.diff > 0 ? 'text-warning' : 'text-info';
+          html += `<tr><td>${r.ticker}</td><td>${r.pie_qty}</td><td>${r.position_qty}</td><td class="${cls}">${r.diff > 0 ? '+' : ''}${r.diff}</td><td class="text-muted">${r.note}</td></tr>`;
+        });
+        html += '</tbody></table></div>';
+      } else if (data.holdings_imported > 0) {
+        html += '<div class="mt-2 text-success" style="font-size:.85rem;">All holdings reconcile with positions.</div>';
+      }
+      resultEl.className = 'alert alert-success mb-0';
+      resultEl.innerHTML = html;
+      loadAccounts();
+    }
+  } catch (err) {
+    resultEl.className = 'alert alert-danger mb-0';
+    resultEl.textContent = 'Upload failed: ' + err.message;
+  } finally {
+    this.disabled = false;
+    this.textContent = 'Import Pie';
+    resultEl.style.display = '';
+  }
 });
 </script>
 </body>
