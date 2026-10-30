@@ -2027,8 +2027,9 @@ _PRICE_SUBQ = (
 
 
 def _eff_price(ticker_col: str = "p.ticker", avg_col: str = "p.average_price") -> str:
-    """SQL expression for the best available GBP price, falling back to average cost."""
-    return f"COALESCE({_PRICE_SUBQ.format(t=ticker_col)}, {avg_col})"
+    """SQL expression for the best available GBP price, falling back to average cost then current price."""
+    cur_col = avg_col.replace("average_price", "current_price")
+    return f"COALESCE({_PRICE_SUBQ.format(t=ticker_col)}, {avg_col}, {cur_col})"
 
 
 # ── Main dashboard ─────────────────────────────────────────────────────────
