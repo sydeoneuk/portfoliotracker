@@ -315,6 +315,110 @@
       </div>
     </div>
 
+    <!-- CSV Import -->
+    <div class="card mb-4">
+      <div class="card-body">
+        <h6 class="card-title mb-1">CSV Import</h6>
+        <p class="text-muted mb-3" style="font-size:.85rem;">
+          Import a Trading 212 account statement CSV (e.g. SIPP). Export it from
+          <strong>T212 → History → Export CSV</strong>. Each import is idempotent —
+          re-importing the same file will not create duplicates.
+        </p>
+
+        <div id="csv-import-result" class="mb-3" style="display:none;"></div>
+
+        <form id="csv-import-form" enctype="multipart/form-data">
+          <div class="row g-2 mb-3">
+            <div class="col-md-6">
+              <label class="form-label text-muted">Platform</label>
+              <select name="platform_id" id="platform-select" class="form-select" onchange="toggleNewPlatform()">
+                <option value="">— Create new platform —</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="new-platform-fields" class="row g-2 mb-3">
+            <div class="col-md-6">
+              <label class="form-label text-muted">New Platform Name</label>
+              <input type="text" name="new_platform_name" class="form-control"
+                     placeholder="e.g. Trading 212 SIPP" value="Trading 212 SIPP">
+            </div>
+            <div class="col-md-3">
+              <label class="form-label text-muted">Account Type</label>
+              <select name="new_account_type" class="form-select">
+                <option value="SIPP">SIPP</option>
+                <option value="ISA">ISA</option>
+                <option value="GIA">GIA</option>
+                <option value="LISA">LISA</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label text-muted">CSV File</label>
+            <input type="file" name="csv_file" class="form-control" accept=".csv" required>
+          </div>
+
+          <button type="submit" class="btn btn-t212" id="csv-import-btn">Import CSV</button>
+        </form>
+      </div>
+    </div>
+
+    <script>
+    (function () {
+      fetch('/import/platforms')
+        .then(r => r.json())
+        .then(platforms => {
+          const sel = document.getElementById('platform-select');
+          platforms.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            opt.textContent = p.name + ' (' + p.account_type + ')';
+            sel.appendChild(opt);
+          });
+        });
+    })();
+
+    function toggleNewPlatform() {
+      const sel = document.getElementById('platform-select');
+      const fields = document.getElementById('new-platform-fields');
+      fields.style.display = sel.value ? 'none' : '';
+    }
+
+    document.getElementById('csv-import-form').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const btn = document.getElementById('csv-import-btn');
+      const resultDiv = document.getElementById('csv-import-result');
+      btn.disabled = true;
+      btn.textContent = 'Importing…';
+      resultDiv.style.display = 'none';
+
+      try {
+        const fd = new FormData(this);
+        const resp = await fetch('/import/t212-csv', { method: 'POST', body: fd });
+        const data = await resp.json();
+        if (data.error) {
+          resultDiv.className = 'alert alert-danger';
+          resultDiv.textContent = data.error;
+        } else {
+          let html = '<div class="alert alert-success mb-0"><strong>' + data.summary + '</strong>';
+          if (data.errors && data.errors.length) {
+            html += '<ul class="mb-0 mt-2">' + data.errors.map(e => '<li class="text-danger">' + e + '</li>').join('') + '</ul>';
+          }
+          html += '</div>';
+          resultDiv.innerHTML = html;
+        }
+      } catch (err) {
+        resultDiv.className = 'alert alert-danger';
+        resultDiv.textContent = 'Upload failed: ' + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Import CSV';
+        resultDiv.style.display = '';
+      }
+    });
+    </script>
+
     <!-- Clear data -->
     <div class="card mb-4 border border-danger-subtle">
       <div class="card-body">

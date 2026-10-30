@@ -1337,6 +1337,90 @@ def sync_status(request: Request, db: Session = Depends(get_session)):
     })
 
 
+# ── CSV import ─────────────────────────────────────────────────────────────
+
+@app.post("/import/t212-csv")
+async def import_t212_csv(
+    request: Request,
+    db: Session = Depends(get_session),
+):
+    """Accept a T212 CSV upload and import it for the specified platform."""
+    from fastapi import UploadFile
+    from fastapi.responses import JSONResponse
+    from app.models import Platform
+    from app.importers.t212_csv import T212CsvImporter
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+    form = await request.form()
+    csv_file: UploadFile | None = form.get("csv_file")
+    platform_id = form.get("platform_id", "").strip()
+    new_platform_name = form.get("new_platform_name", "").strip()
+    new_account_type = form.get("new_account_type", "SIPP").strip()
+
+    if csv_file is None or not csv_file.filename:
+        return JSONResponse({"error": "No file uploaded."}, status_code=400)
+
+    if platform_id:
+        platform = db.query(Platform).filter_by(id=int(platform_id), user_id=user.id).first()
+        if not platform:
+            return JSONResponse({"error": "Platform not found."}, status_code=404)
+    elif new_platform_name:
+        platform = db.query(Platform).filter_by(
+            user_id=user.id,
+            name=new_platform_name,
+            account_type=new_account_type,
+        ).first()
+        if not platform:
+            platform = Platform(
+                user_id=user.id,
+                name=new_platform_name,
+                platform_type="t212_csv",
+                account_type=new_account_type,
+                currency="GBP",
+                is_active=True,
+            )
+            db.add(platform)
+            db.flush()
+    else:
+        return JSONResponse({"error": "Specify a platform."}, status_code=400)
+
+    content = await csv_file.read()
+    importer = T212CsvImporter(session=db, platform=platform, user_id=user.id)
+    result = importer.import_file(__import__("io").BytesIO(content))
+
+    response = {
+        "summary": result.summary(),
+        "orders": result.orders,
+        "dividends": result.dividends,
+        "cash_transactions": result.cash_transactions,
+        "instruments_created": result.instruments_created,
+        "positions_upserted": result.positions_upserted,
+        "skipped": result.skipped,
+        "errors": result.errors[:20],
+    }
+    return JSONResponse(response)
+
+
+@app.get("/import/platforms")
+def import_platforms(request: Request, db: Session = Depends(get_session)):
+    """Return the user's platforms as JSON for the import UI."""
+    from fastapi.responses import JSONResponse
+    from app.models import Platform
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse([], status_code=401)
+
+    platforms = db.query(Platform).filter_by(user_id=user.id, is_active=True).all()
+    return JSONResponse([
+        {"id": p.id, "name": p.name, "account_type": p.account_type}
+        for p in platforms
+    ])
+
+
 # ── Main dashboard ─────────────────────────────────────────────────────────
 
 _COMBINED_SQL = text("""
