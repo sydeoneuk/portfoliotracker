@@ -1753,6 +1753,81 @@ async def import_pie_csv(
     })
 
 
+@app.post("/import/pie-accept")
+async def import_pie_accept(
+    request: Request,
+    db: Session = Depends(get_session),
+):
+    """Accept pie holdings as authoritative: upsert positions from pie data.
+
+    For each holding in the named pie, create or update the position quantity
+    to match the pie-exported quantity. Useful when pie CSV is the only source
+    of truth (e.g. T212 SIPP with no transaction history).
+    """
+    from fastapi.responses import JSONResponse
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy import text
+    from app.models import Platform, Position
+    from app.models.pie import Pie, PieHolding
+    import datetime
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+    form = await request.form()
+    platform_id = form.get("platform_id", "").strip()
+    pie_name = form.get("pie_name", "").strip()
+
+    if not platform_id or not pie_name:
+        return JSONResponse({"error": "platform_id and pie_name are required."}, status_code=400)
+
+    platform = db.query(Platform).filter_by(id=int(platform_id), user_id=user.id).first()
+    if not platform:
+        return JSONResponse({"error": "Platform not found."}, status_code=404)
+
+    pie = db.query(Pie).filter_by(
+        user_id=user.id, platform_id=int(platform_id), name=pie_name
+    ).first()
+    if not pie:
+        return JSONResponse({"error": f"Pie '{pie_name}' not found — import it first."}, status_code=404)
+
+    holdings = db.query(PieHolding).filter_by(user_id=user.id, pie_id=pie.pk).all()
+    if not holdings:
+        return JSONResponse({"error": "No holdings found for this pie."}, status_code=404)
+
+    # Aggregate all pie holdings per ticker across all pies on this platform,
+    # then upsert into positions using those totals.
+    rows = db.execute(text("""
+        SELECT ph.ticker, SUM(ph.owned_quantity) AS total_qty
+        FROM pie_holdings ph
+        JOIN pies p ON p.pk = ph.pie_id
+        WHERE p.user_id = :user_id AND p.platform_id = :platform_id
+        GROUP BY ph.ticker
+    """), {"user_id": user.id, "platform_id": int(platform_id)}).fetchall()
+
+    now = datetime.datetime.utcnow()
+    updated = 0
+    for row in rows:
+        ticker, qty = row.ticker, float(row.total_qty)
+        stmt = pg_insert(Position).values(
+            user_id=user.id,
+            platform_id=int(platform_id),
+            ticker=ticker,
+            quantity=qty,
+            average_price=None,
+            last_synced_at=now,
+        ).on_conflict_do_update(
+            index_elements=["ticker", "platform_id", "user_id"],
+            set_={"quantity": qty, "last_synced_at": now},
+        )
+        db.execute(stmt)
+        updated += 1
+
+    db.commit()
+    return JSONResponse({"updated": updated, "summary": f"{updated} position(s) updated from pie holdings."})
+
+
 @app.get("/import/platforms")
 def import_platforms(request: Request, db: Session = Depends(get_session)):
     """Return the user's platforms as JSON for the import UI."""

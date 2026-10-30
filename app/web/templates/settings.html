@@ -910,14 +910,22 @@ document.getElementById('pie-csv-import-btn').addEventListener('click', async fu
         html += '<ul class="mb-0 mt-2">' + data.errors.map(e => '<li class="text-danger">' + e + '</li>').join('') + '</ul>';
       }
       if (data.reconciliation && data.reconciliation.length) {
-        html += '<div class="mt-3"><strong class="text-warning">Reconciliation differences:</strong>';
+        html += '<div class="mt-3"><strong class="text-warning">Reconciliation differences (' + data.reconciliation.length + '):</strong>';
         html += '<table class="table table-sm mt-2 mb-0" style="font-size:.8rem;">';
         html += '<thead><tr><th>Ticker</th><th>Pie qty</th><th>Position qty</th><th>Diff</th><th>Note</th></tr></thead><tbody>';
         data.reconciliation.forEach(r => {
           const cls = r.diff > 0 ? 'text-warning' : 'text-info';
           html += `<tr><td>${r.ticker}</td><td>${r.pie_qty}</td><td>${r.position_qty}</td><td class="${cls}">${r.diff > 0 ? '+' : ''}${r.diff}</td><td class="text-muted">${r.note}</td></tr>`;
         });
-        html += '</tbody></table></div>';
+        html += '</tbody></table>';
+        html += `<div class="mt-2 d-flex gap-2 align-items-center flex-wrap">
+          <span class="text-muted" style="font-size:.8rem;">Resolve:</span>
+          <button class="btn btn-sm btn-warning py-0" style="font-size:.78rem;"
+            onclick="pieCsvAcceptQty(this, '${pid}', '${pname.replace(/'/g,"\\'")}')">
+            Use pie quantities for positions
+          </button>
+          <span class="text-muted" style="font-size:.75rem;">— sets position qty to match pie for all tickers in this platform's pies</span>
+        </div></div>`;
       } else if (data.holdings_imported > 0) {
         html += '<div class="mt-2 text-success" style="font-size:.85rem;">All holdings reconcile with positions.</div>';
       }
@@ -934,6 +942,33 @@ document.getElementById('pie-csv-import-btn').addEventListener('click', async fu
     resultEl.style.display = '';
   }
 });
+
+async function pieCsvAcceptQty(btn, platformId, pieName) {
+  if (!confirm(`Set positions from pie holdings for "${pieName}"?\n\nThis will overwrite position quantities for all tickers held in pies on this account.`)) return;
+  btn.disabled = true;
+  btn.textContent = 'Updating…';
+  try {
+    const fd = new FormData();
+    fd.append('platform_id', platformId);
+    fd.append('pie_name', pieName);
+    const resp = await fetch('/import/pie-accept', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      alert('Error: ' + (data.error || 'Update failed.'));
+      btn.disabled = false;
+      btn.textContent = 'Use pie quantities for positions';
+    } else {
+      const row = btn.closest('div.d-flex');
+      row.insertAdjacentHTML('afterend',
+        `<div class="alert alert-success mt-2 mb-0 py-1" style="font-size:.82rem;">${data.summary}</div>`);
+      row.remove();
+    }
+  } catch (err) {
+    alert('Error: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Use pie quantities for positions';
+  }
+}
 </script>
 </body>
 </html>
