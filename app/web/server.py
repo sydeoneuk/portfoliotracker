@@ -1541,7 +1541,7 @@ _COMBINED_SQL = text(f"""
         SUM(p.quantity)                                        AS quantity,
         SUM(p.quantity * p.average_price)
             / NULLIF(SUM(p.quantity), 0)                       AS average_price,
-        {_ep}                                                  AS current_price,
+        {_PRICE_SUBQ.format(t="p.ticker")}                     AS current_price,
         ROUND(SUM(p.quantity * p.average_price)::numeric, 2)  AS cost,
         ROUND({_ep_sum}::numeric, 2)                           AS value,
         ROUND(({_ep_sum} - SUM(p.quantity * p.average_price))::numeric, 2) AS ppl,
@@ -1642,7 +1642,7 @@ _ACCOUNT_TYPE_SQL = text(f"""
         SUM(p.quantity)                                        AS quantity,
         SUM(p.quantity * p.average_price)
             / NULLIF(SUM(p.quantity), 0)                       AS average_price,
-        {_ep_at}                                               AS current_price,
+        {_PRICE_SUBQ.format(t="p.ticker")}                     AS current_price,
         ROUND(SUM(p.quantity * p.average_price)::numeric, 2)  AS cost,
         ROUND({_ep_at_sum}::numeric, 2)                        AS value,
         ROUND(({_ep_at_sum} - SUM(p.quantity * p.average_price))::numeric, 2) AS ppl,
