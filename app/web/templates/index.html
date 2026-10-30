@@ -1,289 +1,138 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-QN3KWW2EFD"></script>
   <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
     gtag('js', new Date());
-
     gtag('config', 'G-QN3KWW2EFD');
   </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Trading 212 Portfolio</title>
+  <title>Portfolio Overview</title>
 
-  <!-- Bootstrap 5 -->
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <!-- DataTables + Bootstrap 5 integration -->
-  <link href="https://cdn.datatables.net/2.0.8/css/dataTables.bootstrap5.min.css" rel="stylesheet">
 
   <style>
-    :root {
-      --t212-green: #00c896;
-      --t212-dark:  #0f1923;
-    }
+    :root { --t212-green: #00c896; --t212-dark: #0f1923; }
     body { background: #f4f6f9; font-size: 0.875rem; }
 
-    .side-nav .nav-link {
-      border-bottom: 1px solid rgba(255,255,255,0.07);
-      transition: background .15s;
-      font-size: .88rem;
-      letter-spacing: .3px;
-    }
+    /* ── Side nav ── */
+    .side-nav .nav-link { border-bottom: 1px solid rgba(255,255,255,0.07); transition: background .15s; font-size: .88rem; letter-spacing: .3px; }
     .side-nav .nav-link:hover { background: rgba(0,200,150,0.1); color: var(--t212-green) !important; }
     .side-nav .nav-link.active { background: rgba(0,200,150,0.15); color: var(--t212-green) !important; font-weight: 600; }
 
-    .top-bar {
-      background: var(--t212-dark);
-      color: #fff;
-      padding: 1rem 1.5rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
+    /* ── Top bar ── */
+    .top-bar { background: var(--t212-dark); color: #fff; padding: 1rem 1.5rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; }
     .top-bar .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: .5px; }
     .top-bar .brand span { color: var(--t212-green); }
     .top-bar .synced { font-size: 0.75rem; color: #8a9bb0; }
     .top-bar .user-info { display: flex; align-items: center; gap: .75rem; font-size: .82rem; }
-
-    /* Account chooser dropdown */
-    .ac-wrap { position: relative; }
-    .ac-btn {
-      background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2);
-      color: #fff; border-radius: 6px; padding: .25rem .75rem;
-      font-size: .78rem; cursor: pointer; white-space: nowrap;
-      display: flex; align-items: center; gap: .4rem;
-    }
-    .ac-btn:hover { background: rgba(255,255,255,.18); }
-    .ac-dropdown {
-      position: absolute; top: calc(100% + 6px); left: 0;
-      background: #1c2a38; border: 1px solid rgba(255,255,255,.15);
-      border-radius: 8px; padding: .5rem 0; min-width: 220px;
-      z-index: 1050; box-shadow: 0 8px 24px rgba(0,0,0,.4);
-      display: none;
-    }
-    .ac-dropdown.open { display: block; }
-    .ac-item {
-      display: flex; align-items: center; gap: .5rem;
-      padding: .3rem 1rem; color: #cdd6e0; font-size: .8rem;
-      cursor: pointer; user-select: none;
-    }
-    .ac-item:hover { background: rgba(0,200,150,.1); color: #fff; }
-    .ac-item input[type=checkbox] { accent-color: var(--t212-green); cursor: pointer; }
-    .ac-section-label {
-      padding: .35rem 1rem .15rem; font-size: .68rem; font-weight: 600;
-      text-transform: uppercase; letter-spacing: .7px; color: #5d7a96;
-    }
-    .ac-platform-item {
-      padding-left: 2rem;
-    }
-    .ac-divider { border-top: 1px solid rgba(255,255,255,.08); margin: .35rem 0; }
-    .ac-footer {
-      padding: .4rem 1rem 0; display: flex; justify-content: flex-end;
-    }
-    .ac-apply {
-      background: var(--t212-green); border: none; color: #0f1923;
-      border-radius: 5px; padding: .25rem .75rem; font-size: .78rem;
-      font-weight: 600; cursor: pointer;
-    }
-    .ac-apply:hover { opacity: .88; }
     .top-bar .avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
 
-    .summary-card {
-      border: none;
-      border-radius: 10px;
-      box-shadow: 0 1px 4px rgba(0,0,0,.08);
-    }
-    .summary-card .label { font-size: .7rem; text-transform: uppercase;
-                            letter-spacing: .8px; color: #6c757d; }
-    .summary-card .amount { font-size: 1.35rem; font-weight: 700; }
-
-    .table-card {
-      border: none;
-      border-radius: 10px;
-      box-shadow: 0 1px 4px rgba(0,0,0,.08);
-      overflow: hidden;
-    }
-    /* Horizontal scroll lives here - header and body scroll as one table */
-    .table-card .card-body { overflow-x: auto; }
-
-    #positions-table thead th {
+    /* ── Summary banner ── */
+    .summary-banner {
       background: var(--t212-dark);
-      color: #c8d6e5;
-      font-size: .72rem;
-      text-transform: uppercase;
-      letter-spacing: .6px;
-      border: none;
-      white-space: normal;      /* allow long headers to wrap onto two lines */
-      min-width: 4.5rem;        /* prevent columns collapsing too narrow */
-      vertical-align: bottom;   /* align all headers to bottom edge when wrapping */
-    }
-    #positions-table tbody tr:hover { background: #f0fbf7; cursor: pointer; }
-    #positions-table td { vertical-align: middle; border-color: #f0f2f5; }
-
-    .badge-exchange {
-      background: #e9ecef; color: #495057;
-      font-size: .68rem; font-weight: 500; border-radius: 4px;
-      padding: 2px 6px;
-    }
-    .pnl-pos { color: #0fa968 !important; font-weight: 600; }
-    .pnl-neg { color: #e0334c !important; font-weight: 600; }
-    .pnl-zero { color: #6c757d !important; }
-    .cov-good { color: #0fa968 !important; font-weight: 400; }
-    .cov-warn { color: #fd7e14 !important; font-weight: 400; }
-    .cov-bad  { color: #e0334c !important; font-weight: 400; }
-
-    .dt-search input, .dt-length select {
-      font-size: .8rem !important;
-    }
-    .holdings-toolbar {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-    }
-    .holdings-toolbar .btn {
-      white-space: nowrap;
-    }
-    .holdings-controls-bar {
-      display: flex !important;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      flex-wrap: nowrap;
-      width: 100%;
-    }
-    .holdings-controls-bar .dt-length,
-    .holdings-controls-bar .holdings-toolbar {
-      flex: 0 0 auto;
-    }
-    .holdings-controls-bar .dt-search {
-      flex: 1 1 260px;
-      display: flex;
-      justify-content: flex-end;
-      min-width: 0;
-      margin: 0;
-    }
-    .holdings-controls-bar .dt-search input {
-      width: min(280px, 100%);
-      min-width: 0;
-    }
-    @media (max-width: 768px) {
-      .holdings-controls-bar {
-        flex-wrap: wrap;
-      }
-      .holdings-controls-bar .dt-search {
-        flex-basis: 100%;
-        justify-content: flex-start;
-      }
-      .holdings-controls-bar .dt-search input {
-        width: 100%;
-      }
-    }
-
-    .pie-filter-bar {
-      background: #1a2634;
-      padding: 0.35rem 1.5rem;
-      display: flex;
-      align-items: center;
-      gap: 0.35rem;
-      flex-wrap: wrap;
+      color: #fff;
+      padding: 1.25rem 1.5rem 1.5rem;
       border-top: 1px solid rgba(255,255,255,0.07);
     }
-    .pie-filter-bar .pf-label {
-      font-size: .7rem; color: #8a9bb0; font-weight: 600;
-      white-space: nowrap; margin-right: .25rem;
-    }
-    .pie-filter-bar .btn { font-size: .72rem; padding: 2px 10px; }
+    .summary-banner .total-label { font-size: .72rem; text-transform: uppercase; letter-spacing: .7px; color: #8a9bb0; }
+    .summary-banner .total-value { font-size: 2rem; font-weight: 700; color: var(--t212-green); line-height: 1.1; }
 
-    .active-filter-bar {
-      background: #fff8e1;
-      border-bottom: 1px solid #ffe082;
-      padding: .35rem 1.5rem;
-      display: flex;
-      align-items: center;
-      gap: .5rem;
-      flex-wrap: wrap;
-      font-size: .78rem;
-      color: #5d4037;
-    }
-    .filter-chip {
-      background: #ffe082;
-      border-radius: 20px;
-      padding: 2px 10px 2px 8px;
-      display: inline-flex;
-      align-items: center;
-      gap: .35rem;
-      font-weight: 500;
-    }
-    .filter-chip-close {
-      color: #795548;
-      text-decoration: none;
+    /* ── Provider section ── */
+    .provider-section { margin-bottom: 2rem; }
+    .provider-heading {
+      font-size: .7rem;
       font-weight: 700;
-      font-size: .85rem;
-      line-height: 1;
-    }
-    .filter-chip-close:hover { color: #bf360c; }
-    .section-header-row {
-      display: inline-flex;
-      align-items: center;
-      gap: .45rem;
-      font-size: .8rem;
-      font-weight: 600;
-      color: #fff;
-      text-decoration: none;
-      background: #0f1923;
-      border-radius: 10px;
-      padding: .7rem .9rem;
-      width: 100%;
-      justify-content: flex-start;
-    }
-    .section-header-row .section-title {
-      color: #fff;
-    }
-    .section-header-row .section-meta {
-      font-size: .68rem;
-      font-weight: 500;
-      color: #8a9bb0;
-      margin-left: .35rem;
-    }
-    .secondary-toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: .45rem;
-      font-size: .8rem;
-      font-weight: 600;
-      color: #fff;
-      text-decoration: none;
-      background: #0f1923;
-      border-radius: 10px;
-      padding: .7rem .9rem;
-      width: 100%;
-      justify-content: flex-start;
-    }
-    .secondary-toggle:hover { color: var(--t212-green); }
-    .secondary-toggle .chevron {
-      transition: transform .2s ease;
-      font-size: .72rem;
-    }
-    .secondary-toggle[aria-expanded="true"] .chevron {
-      transform: rotate(90deg);
-    }
-    .secondary-panel {
-      background: #fbfcfd;
-      border: 1px solid #e8edf2;
-      border-radius: 12px;
-      padding: 1rem 1rem .5rem;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: #6b8096;
+      padding: 0 .25rem .5rem;
+      border-bottom: 1px solid #e0e7ef;
       margin-bottom: 1rem;
     }
+
+    /* ── Account card ── */
+    .account-card {
+      background: #fff;
+      border: none;
+      border-radius: 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.07);
+      padding: 1.25rem 1.4rem 1.1rem;
+      text-decoration: none;
+      color: inherit;
+      display: block;
+      transition: box-shadow .15s, transform .12s;
+      height: 100%;
+    }
+    .account-card:hover {
+      box-shadow: 0 4px 16px rgba(0,0,0,.13);
+      transform: translateY(-2px);
+      color: inherit;
+      text-decoration: none;
+    }
+    .account-card .acct-type-badge {
+      display: inline-block;
+      font-size: .65rem;
+      font-weight: 700;
+      letter-spacing: .5px;
+      text-transform: uppercase;
+      padding: .18rem .55rem;
+      border-radius: 4px;
+      background: #e8f4ff;
+      color: #1a5f9e;
+      margin-bottom: .6rem;
+    }
+    .account-card .acct-name {
+      font-size: .98rem;
+      font-weight: 600;
+      color: #1a2634;
+      margin-bottom: 1rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .account-card .metric-label {
+      font-size: .68rem;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: #8a9bb0;
+      margin-bottom: .15rem;
+    }
+    .account-card .metric-value {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #1a2634;
+    }
+    .account-card .metric-value.empty { color: #c0cad6; font-weight: 400; font-size: .88rem; }
+    .account-card .pnl-positive { color: #00a878; }
+    .account-card .pnl-negative { color: #e05c5c; }
+    .account-card .holdings-count {
+      font-size: .72rem;
+      color: #8a9bb0;
+      margin-top: .9rem;
+      padding-top: .75rem;
+      border-top: 1px solid #f0f3f7;
+    }
+    .account-card .arrow-icon {
+      color: #c8d4de;
+      float: right;
+      margin-top: -1.4rem;
+      transition: color .15s;
+    }
+    .account-card:hover .arrow-icon { color: var(--t212-green); }
+
+    /* ── Empty state ── */
+    .empty-state { text-align: center; padding: 4rem 1.5rem; color: #8a9bb0; }
+    .empty-state a { color: var(--t212-green); }
   </style>
-  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-6145203907417515" crossorigin="anonymous"></script>
 </head>
 <body>
 
-<!-- ââ Side nav (offcanvas) âââââââââââââââââââââââââââââââââââ -->
+<!-- ── Side nav (offcanvas) ─────────────────────────────────────── -->
 <div class="offcanvas offcanvas-start side-nav" tabindex="-1" id="sideNav"
      style="width:210px; background:#0f1923; border-right:1px solid rgba(255,255,255,0.08);">
   <div class="offcanvas-header pb-2">
@@ -292,6 +141,7 @@
   </div>
   <div class="offcanvas-body p-0">
     <nav class="nav flex-column pt-1">
+      <a class="nav-link text-white px-4 py-3 active" href="/portfolio">Portfolio</a>
       <a class="nav-link text-white px-4 py-3" href="/analysis">Analysis</a>
       <a class="nav-link text-white px-4 py-3" href="/transactions">Transactions</a>
       <a class="nav-link text-white px-4 py-3" href="/dividends">Dividends</a>
@@ -299,12 +149,11 @@
       <a class="nav-link text-white px-4 py-3" href="/instruments">Instruments</a>
       <a class="nav-link text-white px-4 py-3" href="/help">Help</a>
       <a class="nav-link text-white px-4 py-3" href="/settings">Settings</a>
-      <a class="nav-link text-white px-4 py-3 active" href="/portfolio">Portfolio</a>
     </nav>
   </div>
 </div>
 
-<!-- ââ Top bar âââââââââââââââââââââââââââââââââââââââââââââââ -->
+<!-- ── Top bar ──────────────────────────────────────────────────── -->
 <div class="top-bar">
   <div class="d-flex align-items-center gap-3">
     <button class="btn btn-link text-white p-0" data-bs-toggle="offcanvas" data-bs-target="#sideNav" aria-label="Menu">
@@ -314,45 +163,11 @@
     </button>
     <div class="brand">Trading 212 <span>Portfolio</span></div>
   </div>
-  {% set _pf_extra %}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}{% endset %}
-  <div class="ac-wrap ms-4" id="ac-wrap">
-    <button class="ac-btn" id="ac-btn" onclick="acToggle(event)">
-      <span id="ac-label">Portfolio</span>
-      <svg width="10" height="10" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-    </button>
-    <div class="ac-dropdown" id="ac-dropdown">
-      <label class="ac-item">
-        <input type="checkbox" id="ac-all"> All Accounts
-      </label>
-      <div class="ac-divider"></div>
-      {% set ns = namespace(prev_provider='') %}
-      {% for p in user_platforms %}
-        {% if p.provider != ns.prev_provider %}
-          {% if ns.prev_provider != '' %}<div class="ac-divider" style="margin:.15rem 0"></div>{% endif %}
-          <div class="ac-section-label">{{ p.provider }}</div>
-          {% set ns.prev_provider = p.provider %}
-        {% endif %}
-        <label class="ac-item ac-platform-item">
-          <input type="checkbox" class="ac-plat" value="{{ p.value }}"> {{ p.account_type }}
-        </label>
-      {% endfor %}
-      <div class="ac-divider"></div>
-      <div class="ac-footer">
-        <button class="ac-apply" onclick="acApply()">Apply</button>
-      </div>
-    </div>
-  </div>
   <div class="synced">
-    {% if last_synced %}
-      Last synced: {{ last_synced.strftime('%d %b %Y %H:%M') }} UTC
-    {% else %}
-      Not yet synced
-    {% endif %}
+    {% if last_synced %}Last synced: {{ last_synced.strftime('%d %b %Y %H:%M') }} UTC{% else %}Not yet synced{% endif %}
   </div>
   <div class="user-info">
-    {% if user.avatar_url %}
-    <img src="{{ user.avatar_url }}" class="avatar" alt="">
-    {% endif %}
+    {% if user.avatar_url %}<img src="{{ user.avatar_url }}" class="avatar" alt="">{% endif %}
     <span>{{ user.name or user.email }}</span>
     <form method="post" action="/logout" class="d-inline">
       <button class="btn btn-sm btn-outline-secondary">Sign out</button>
@@ -360,480 +175,82 @@
   </div>
 </div>
 
-<!-- ââ Pie filter bar ââââââââââââââââââââââââââââââââââââââââ -->
-{% if available_pies %}
-<div class="pie-filter-bar">
-  <span class="pf-label">Pies:</span>
-  <a href="/portfolio?account={{ account_filter }}&pies=all"
-     class="btn {% if pies_param == 'all' or (selected_pie_ids and selected_pie_ids|length == available_pies|length) %}btn-light{% else %}btn-outline-light{% endif %}">All</a>
-  <a href="/portfolio?account={{ account_filter }}"
-     class="btn {% if not pies_param %}btn-light{% else %}btn-outline-light{% endif %}">Clear</a>
-  {% for pie in available_pies %}
-  <button class="btn {% if pie.id|string in selected_pie_ids %}btn-light{% else %}btn-outline-light{% endif %} pie-btn"
-          data-pie-id="{{ pie.id }}">{{ pie.name }}</button>
-  {% endfor %}
+<!-- ── Summary banner ───────────────────────────────────────────── -->
+<div class="summary-banner">
+  <div class="total-label">Total Portfolio Value</div>
+  <div class="total-value">£{{ "{:,.2f}".format(total_value) }}</div>
 </div>
-{% endif %}
 
-<!-- ââ Active filter indicator âââââââââââââââââââââââââââââââ -->
-{% if country_filter or sector_filter %}
-<div class="active-filter-bar">
-  <span style="font-size:.72rem; color:#795548; font-weight:600;">Filtered by:</span>
-  {% if country_filter %}
-  <span class="filter-chip">
-    ð {{ country_filter }}
-    <a class="filter-chip-close" href="/portfolio?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}" title="Clear country filter">Ã</a>
-  </span>
-  {% endif %}
-  {% if sector_filter %}
-  <span class="filter-chip">
-    ð­ {{ sector_filter }}
-    <a class="filter-chip-close" href="/portfolio?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}" title="Clear sector filter">Ã</a>
-  </span>
-  {% endif %}
-  <a href="/analysis?account={{ account_filter }}{% if pies_param %}&pies={{ pies_param }}{% endif %}" style="margin-left:.25rem; font-size:.72rem; color:#795548;">â back to Analysis</a>
-</div>
-{% endif %}
+<!-- ── Main content ─────────────────────────────────────────────── -->
+<div class="container-fluid px-4 py-4" style="max-width: 1200px;">
 
-<!-- ââ Summary cards âââââââââââââââââââââââââââââââââââââââââ -->
-<div class="container-fluid px-4 py-3">
-  <!-- ââ Grand total (GBP) âââââââââââââââââââââââââââââââââââ -->
-  <div class="row g-3 mb-3">
-    <div class="col-12 d-flex align-items-center gap-2">
-      <small class="section-header-row">
-        <span class="section-title">
-          {% if account_filter and account_filter not in ('', 'combined', 'portfolio') %}{{ account_filter }} Portfolio ({{ display_currency }})
-          {% else %}Total Portfolio ({{ display_currency }}){% endif %}
-        </span>
-        {% if fx_rates_used %}
-        <span class="section-meta">
-          FX:
-          {% for ccy, rate in fx_rates_used.items() %}
-            1 {{ ccy }} = {{ cfmt(rate, display_currency, 4) }}{% if not loop.last %}, {% endif %}
-          {% endfor %}
-        </span>
-        {% endif %}
-      </small>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
-        <div class="label">Total Cost</div>
-        <div class="amount">{{ cfmt(grand_total.cost, display_currency) }}</div>
-      </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
-        <div class="label">Market Value</div>
-        <div class="amount">{{ cfmt(grand_total.value, display_currency) }}</div>
-      </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
-        <div class="label">Unrealised P&L</div>
-        <div class="amount {% if grand_total.ppl > 0 %}pnl-pos{% elif grand_total.ppl < 0 %}pnl-neg{% endif %}">
-          {% if grand_total.ppl >= 0 %}+{% endif %}{{ cfmt(grand_total.ppl, display_currency) }}
-        </div>
-      </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
-        <div class="label">Dividends Actual</div>
-        <div class="amount pnl-pos">{{ cfmt(grand_total.dividends, display_currency) }}</div>
-      </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
-        <div class="label">Forward Div. (12m)</div>
-        <div class="amount pnl-pos">{{ cfmt(grand_total.fwd_dividends, display_currency) }}</div>
-      </div>
-    </div>
-    {% if free_cash or total_pie_cash %}
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3" style="border-left: 3px solid #6c757d;">
-        <div class="label">Free Cash</div>
-        <div class="amount">{{ cfmt(free_cash, display_currency) }}</div>
-        <div style="font-size:.7rem; color:#6c757d; margin-top:2px;">Uninvested, outside pies</div>
-      </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card summary-card p-3" style="border-left: 3px solid #6c757d;">
-        <div class="label">Pie Cash</div>
-        <div class="amount">{{ cfmt(total_pie_cash, display_currency) }}</div>
-        <div style="font-size:.7rem; color:#6c757d; margin-top:2px;">Uninvested inside pies</div>
-      </div>
-    </div>
-    {% endif %}
+  {% if not providers %}
+  <div class="empty-state">
+    <p class="mb-2" style="font-size:1rem;">No accounts configured yet.</p>
+    <p><a href="/settings">Go to Settings</a> to add your first account.</p>
   </div>
-  <hr class="my-2">
+  {% else %}
 
-  {% if totals %}
-  <div class="mb-3">
-    <a class="secondary-toggle"
-       data-bs-toggle="collapse"
-       href="#currencyBreakdown"
-       role="button"
-       aria-expanded="false"
-       aria-controls="currencyBreakdown">
-      <span class="chevron">&#9654;</span>
-      <span>By currency breakdown</span>
-    </a>
-    <div id="currencyBreakdown" class="collapse mt-2">
-      <div class="secondary-panel">
-        {% for ccy, t in totals.items() %}
-        <div class="row g-3 mb-2">
-          <div class="col-12">
-            <small class="text-muted fw-semibold">{{ ccy }} positions</small>
-          </div>
-          <div class="col-6 col-md-3">
-            <div class="card summary-card p-3">
-              <div class="label">Total Cost</div>
-              <div class="amount">{{ cfmt(t.cost, ccy) }}</div>
+  {% for provider_name, accounts in providers.items() %}
+  <div class="provider-section">
+    <div class="provider-heading">{{ provider_name }}</div>
+    <div class="row g-3">
+      {% for acct in accounts %}
+      <div class="col-12 col-sm-6 col-lg-4">
+        <a href="{{ acct.analysis_url }}" class="account-card">
+          <span class="acct-type-badge">{{ acct.account_type }}</span>
+          <div class="acct-name" title="{{ acct.name }}">{{ acct.name }}</div>
+
+          <div class="row g-2 mb-0">
+            <div class="col-6">
+              <div class="metric-label">Value</div>
+              {% if acct.value %}
+              <div class="metric-value">£{{ "{:,.2f}".format(acct.value) }}</div>
+              {% else %}
+              <div class="metric-value empty">—</div>
+              {% endif %}
             </div>
-          </div>
-          <div class="col-6 col-md-3">
-            <div class="card summary-card p-3">
-              <div class="label">Market Value</div>
-              <div class="amount">{{ cfmt(t.value, ccy) }}</div>
+            <div class="col-6">
+              <div class="metric-label">Cost</div>
+              {% if acct.cost %}
+              <div class="metric-value">£{{ "{:,.2f}".format(acct.cost) }}</div>
+              {% else %}
+              <div class="metric-value empty">—</div>
+              {% endif %}
             </div>
-          </div>
-          <div class="col-6 col-md-3">
-            <div class="card summary-card p-3">
-              <div class="label">Unrealised P&L</div>
-              <div class="amount {% if t.ppl > 0 %}pnl-pos{% elif t.ppl < 0 %}pnl-neg{% endif %}">
-                {% if t.ppl >= 0 %}+{% endif %}{{ cfmt(t.ppl, ccy) }}
+            <div class="col-12">
+              <div class="metric-label">Capital P&amp;L</div>
+              {% if acct.cost %}
+              <div class="metric-value {% if acct.pnl >= 0 %}pnl-positive{% else %}pnl-negative{% endif %}">
+                {% if acct.pnl >= 0 %}+{% endif %}£{{ "{:,.2f}".format(acct.pnl) }}
+                {% if acct.pnl_pct is not none %}
+                <span style="font-size:.78rem; font-weight:500; opacity:.85;">
+                  ({% if acct.pnl_pct >= 0 %}+{% endif %}{{ "{:.1f}".format(acct.pnl_pct) }}%)
+                </span>
+                {% endif %}
               </div>
+              {% else %}
+              <div class="metric-value empty">—</div>
+              {% endif %}
             </div>
           </div>
-          <div class="col-6 col-md-3">
-            <div class="card summary-card p-3">
-              <div class="label">Dividends Actual</div>
-              <div class="amount pnl-pos">{{ cfmt(t.dividends, ccy) }}</div>
-            </div>
+
+          <div class="holdings-count">
+            {{ acct.holding_count }} holding{% if acct.holding_count != 1 %}s{% endif %}
+            <svg class="arrow-icon" width="16" height="16" fill="none" viewBox="0 0 16 16">
+              <path d="M3.5 8h9m0 0-3.5-3.5M12.5 8 9 11.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
           </div>
-          <div class="col-6 col-md-3">
-            <div class="card summary-card p-3">
-              <div class="label">Forward Div. (12m)</div>
-              <div class="amount pnl-pos">{{ cfmt(t.fwd_dividends, ccy) }}</div>
-            </div>
-          </div>
-        </div>
-        {% endfor %}
+        </a>
       </div>
+      {% endfor %}
     </div>
   </div>
+  {% endfor %}
+
   {% endif %}
-
-  <!-- ââ Positions table ââââââââââââââââââââââââââââââââââââ -->
-  <div class="mb-2">
-    <small class="section-header-row">Holdings</small>
-  </div>
-  <div id="holdingsCsvButton" class="d-none">
-    <button onclick="exportTableCSV()" class="btn btn-sm btn-outline-secondary">
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
-        <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5"/>
-        <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708z"/>
-      </svg>
-      Download CSV
-    </button>
-  </div>
-  <div class="card table-card mt-0">
-    <div class="card-body p-0">
-      <table id="positions-table" class="table table-hover mb-0 w-100">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Tik.</th>
-            <th>Curr.</th>
-            <th>Acc.</th>
-            <th>Type</th>
-            <th class="text-end">Qty</th>
-            <th class="text-end">Avg Cost ({{ display_currency }})</th>
-            <th class="text-end">Curr. Price ({{ display_currency }})</th>
-            <th class="text-end">Cost ({{ display_currency }})</th>
-            <th class="text-end">Value ({{ display_currency }})</th>
-            <th class="text-end">Cap. P&amp;L ({{ display_currency }})</th>
-            <th class="text-end">Cap. P&amp;L %</th>
-            <th class="text-end">Dividends Actual ({{ display_currency }})</th>
-            <th class="text-end">Div Return%</th>
-            <th class="text-end">Total P&amp;L ({{ display_currency }})</th>
-            <th class="text-end">Total P&amp;L %</th>
-            <th class="text-end">FCF Div. Cov.</th>
-            <th class="text-end">Div. Cov.</th>
-            <th class="text-end">Forward Div. (12m, {{ display_currency }})</th>
-            <th class="text-end">Fwd Yield</th>
-            <th class="text-end">Pies</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for p in positions %}
-          <tr onclick="window.location.href='/holding/{{ p.ticker }}?account={{ account_filter }}'" style="cursor:pointer">
-            <td>{{ p.name }}</td>
-            <td><code>{{ p.short_name }}</code></td>
-            <td>{{ p.currency }}</td>
-            <td><span class="badge-exchange">{{ p.account }}</span></td>
-            <td><span class="badge-exchange">{{ p.display_class }}</span></td>
-            <td class="text-end">{{ fmt(p.quantity, 4) }}</td>
-            <td class="text-end">{{ cfmt(p.avg_price_display, display_currency, 2) }}</td>
-            <td class="text-end">{{ cfmt(p.current_price_display, display_currency, 2) }}</td>
-            <td class="text-end">{{ cfmt(p.cost_display, display_currency) }}</td>
-            <td data-order="{{ p.value_display }}" class="text-end fw-semibold {% if p.value_display >= p.cost_display %}pnl-pos{% else %}pnl-neg{% endif %}">{{ cfmt(p.value_display, display_currency) }}</td>
-            <td data-order="{{ p.ppl_display }}" class="text-end {% if p.ppl_display > 0 %}pnl-pos{% elif p.ppl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if p.ppl_display != 0 %}{% if p.ppl_display > 0 %}+{% endif %}{{ cfmt(p.ppl_display, display_currency) }}{% else %}-{% endif %}
-            </td>
-            <td data-order="{{ p.cap_pnl_pct_display }}" class="text-end {% if p.cap_pnl_pct_display > 0 %}pnl-pos{% elif p.cap_pnl_pct_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if p.cap_pnl_pct_display != 0 %}{% if p.cap_pnl_pct_display > 0 %}+{% endif %}{{ fmt(p.cap_pnl_pct_display, 2) }}%{% else %}-{% endif %}
-            </td>
-            <td data-order="{{ p.dividends_display }}" class="text-end fw-semibold">
-              {% if p.dividends_display > 0 %}{{ cfmt(p.dividends_display, display_currency) }}{% else %}-{% endif %}
-            </td>
-            <td data-order="{{ p.div_return_pct_display }}" class="text-end fw-semibold">
-              {% if p.div_return_pct_display > 0 %}{{ fmt(p.div_return_pct_display, 2) }}%{% else %}-{% endif %}
-            </td>
-            <td data-order="{{ p.total_pnl_display }}" class="text-end {% if p.total_pnl_display > 0 %}pnl-pos{% elif p.total_pnl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if p.total_pnl_display != 0 %}{% if p.total_pnl_display > 0 %}+{% endif %}{{ cfmt(p.total_pnl_display, display_currency) }}{% else %}-{% endif %}
-            </td>
-            <td data-order="{{ p.total_pnl_pct_display }}" class="text-end {% if p.total_pnl_pct_display > 0 %}pnl-pos{% elif p.total_pnl_pct_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">
-              {% if p.total_pnl_pct_display != 0 %}{% if p.total_pnl_pct_display > 0 %}+{% endif %}{{ fmt(p.total_pnl_pct_display, 2) }}%{% else %}-{% endif %}
-            </td>
-            {% set annual_dps = (p.annual_rate_per_share or 0)|float %}
-            {% set fcf_ps = (p.fcf_per_share_3y_avg or 0)|float %}
-            {% set fcf_cov = (annual_dps / fcf_ps * 100) if (fcf_ps > 0 and annual_dps > 0) else 0 %}
-            <td data-order="{{ fcf_cov }}" class="text-end {% if fcf_cov > 0 %}{% if fcf_cov > 75 %}cov-bad{% elif fcf_cov > 50 %}cov-warn{% else %}cov-good{% endif %}{% endif %}">
-              {% if fcf_cov > 0 %}{{ fmt(fcf_cov, 1) }}%{% elif fcf_ps < 0 and annual_dps > 0 %}<span class="cov-bad">-ve FCF</span>{% else %}-{% endif %}
-            </td>
-            {% set eps = (p.eps_ttm or 0)|float %}
-            {% set div_cov = (eps / annual_dps) if (annual_dps > 0 and eps > 0) else 0 %}
-            <td data-order="{{ div_cov }}" class="text-end {% if div_cov > 0 %}{% if div_cov >= 2 %}cov-good{% elif div_cov >= 1 %}cov-warn{% else %}cov-bad{% endif %}{% elif eps < 0 and annual_dps > 0 %}cov-bad{% endif %}">
-              {% if div_cov > 0 %}{{ fmt(div_cov, 1) }}x{% elif eps < 0 and annual_dps > 0 %}<span class="cov-bad">-ve EPS</span>{% else %}-{% endif %}
-            </td>
-            <td data-order="{{ p.forward_dividends_display }}" class="text-end fw-semibold">
-              {% if p.forward_dividends_display > 0 %}{{ cfmt(p.forward_dividends_display, display_currency) }}{% else %}-{% endif %}
-            </td>
-            <td data-order="{{ p.fwd_yield_display }}" class="text-end fw-semibold">
-              {% if p.fwd_yield_display > 0 %}{{ fmt(p.fwd_yield_display, 2) }}%{% else %}-{% endif %}
-            </td>
-            {% set pc = (p.pie_count or 0)|int %}
-            <td data-order="{{ pc }}" class="text-end">
-              {% if pc > 0 %}{{ pc }}{% else %}-{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
 </div>
 
-<!-- ââ Scripts âââââââââââââââââââââââââââââââââââââââââââââââ -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.datatables.net/2.0.8/js/dataTables.min.js"></script>
-<script src="https://cdn.datatables.net/2.0.8/js/dataTables.bootstrap5.min.js"></script>
-<script>
-  function attachCsvButtonToToolbar(tableApi) {
-    var wrapper = $(tableApi.table().container());
-    var topRow = wrapper.find('.dt-layout-row').first();
-    if (!topRow.length) {
-      topRow = wrapper.children().first();
-    }
-    var lengthBlock = topRow.find('.dt-length').first();
-    var searchBlock = topRow.find('.dt-search').first();
-    if (!lengthBlock.length || !searchBlock.length) {
-      return;
-    }
-
-    var controlsBar = wrapper.find('.holdings-controls-bar');
-    var host = wrapper.find('.holdings-toolbar');
-    if (!controlsBar.length) {
-      controlsBar = $('<div class="holdings-controls-bar"></div>');
-      host = $('<div class="holdings-toolbar"></div>');
-      controlsBar.append(lengthBlock);
-      controlsBar.append(host);
-      controlsBar.append(searchBlock);
-      topRow.empty().append(controlsBar);
-    }
-
-    var buttonMarkup = $('#holdingsCsvButton').html();
-    if (buttonMarkup) {
-      host.html(buttonMarkup);
-    }
-  }
-
-  $(document).ready(function () {
-    var positionsTable = $('#positions-table').DataTable({
-      pageLength: 50,
-      order: [[9, 'desc']],   // sort by Value desc by default
-      columnDefs: [
-        // Right-align numeric columns for sorting by stripping commas
-        { targets: [5,6,7,8,9,10,11,12,13,14,15,18,19], type: 'num-fmt' }
-      ],
-      lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, 'All']],
-      language: {
-        search: 'Filter:',
-        lengthMenu: 'Show _MENU_ positions'
-      },
-      initComplete: function () {
-        attachCsvButtonToToolbar(this.api());
-      }
-    });
-
-    attachCsvButtonToToolbar(positionsTable);
-  });
-
-  function exportTableCSV() {
-    var dt = $('#positions-table').DataTable();
-
-    // Headers - use the visible header text
-    var headers = [];
-    $('#positions-table thead th').each(function () {
-      headers.push('"' + $(this).text().trim().replace(/"/g, '""') + '"');
-    });
-
-    // Rows - use DataTables' own filtered/sorted row set; prefer data-order value
-    // for numeric cells (clean number) over display text (formatted with Â£/% etc.)
-    var rows = [];
-    dt.rows({ search: 'applied' }).every(function () {
-      var node = this.node();
-      var cells = [];
-      $(node).find('td').each(function () {
-        var raw = $(this).attr('data-order');
-        var val;
-        if (raw !== undefined) {
-          val = raw;
-        } else {
-          // Strip currency symbols, thousands commas, +/- signs and % so
-          // Excel sees plain numbers rather than formatted display text
-          val = $(this).text().trim()
-            .replace(/Â£/g, '')
-            .replace(/,/g, '')
-            .replace(/^\+/, '')
-            .replace(/%$/, '')
-            .trim();
-        }
-        cells.push('"' + String(val).replace(/"/g, '""') + '"');
-      });
-      rows.push(cells.join(','));
-    });
-
-    // Prepend UTF-8 BOM so Excel opens the file with correct encoding
-    var csv = '\ufeff' + headers.join(',') + '\n' + rows.join('\n');
-    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'portfolio.csv';
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  // ── Account chooser ──────────────────────────────────────────────────────
-  (function () {
-    var currentAccount = {{ account_filter | tojson }};
-    var allVals = [{% for p in user_platforms %}'{{ p.value }}'{% if not loop.last %},{% endif %}{% endfor %}];
-
-    function acInit() {
-      var checkboxes = document.querySelectorAll('.ac-plat');
-      var allCb = document.getElementById('ac-all');
-      if (!currentAccount || currentAccount === 'portfolio' || currentAccount === '') {
-        allCb.checked = true;
-        checkboxes.forEach(function(cb) { cb.checked = true; });
-      } else {
-        var parts = new Set(currentAccount.split(',').map(function(s) { return s.trim(); }));
-        checkboxes.forEach(function(cb) { cb.checked = parts.has(cb.value); });
-        allCb.checked = checkboxes.length > 0 && Array.from(checkboxes).every(function(cb) { return cb.checked; });
-      }
-      acUpdateLabel();
-
-      allCb.addEventListener('change', function() {
-        document.querySelectorAll('.ac-plat').forEach(function(cb) { cb.checked = allCb.checked; });
-        acUpdateLabel();
-      });
-      checkboxes.forEach(function(cb) {
-        cb.addEventListener('change', function() {
-          var all = document.querySelectorAll('.ac-plat');
-          document.getElementById('ac-all').checked = Array.from(all).every(function(c) { return c.checked; });
-          acUpdateLabel();
-        });
-      });
-    }
-
-    function acUpdateLabel() {
-      var checked = Array.from(document.querySelectorAll('.ac-plat:checked'));
-      var all = document.querySelectorAll('.ac-plat');
-      var label;
-      if (checked.length === 0 || checked.length === all.length) {
-        label = 'Portfolio';
-      } else if (checked.length === 1) {
-        label = checked[0].closest('label').textContent.trim();
-      } else {
-        label = checked.length + ' accounts';
-      }
-      document.getElementById('ac-label').textContent = label;
-    }
-
-    window.acToggle = function(e) {
-      e.stopPropagation();
-      document.getElementById('ac-dropdown').classList.toggle('open');
-    };
-    window.acApply = function() {
-      var checked = Array.from(document.querySelectorAll('.ac-plat:checked'));
-      var all = document.querySelectorAll('.ac-plat');
-      var account;
-      if (checked.length === 0 || checked.length === all.length) {
-        account = 'portfolio';
-      } else {
-        account = checked.map(function(cb) { return cb.value; }).join(',');
-      }
-      var params = new URLSearchParams(window.location.search);
-      params.set('account', account);
-      window.location.href = '/portfolio?' + params.toString();
-    };
-    document.addEventListener('click', function(e) {
-      if (!document.getElementById('ac-wrap').contains(e.target)) {
-        document.getElementById('ac-dropdown').classList.remove('open');
-      }
-    });
-
-    acInit();
-  })();
-
-  // Pie toggle - adds/removes individual pie IDs from the pies URL param
-  document.querySelectorAll('.pie-btn').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      var pieId = this.dataset.pieId;
-      var params = new URLSearchParams(window.location.search);
-      var current = (params.get('pies') === 'all')
-        ? {{ available_pies | map(attribute='id') | map('string') | list | tojson }}
-        : (params.get('pies') || '').split(',').filter(Boolean);
-      var idx = current.indexOf(pieId);
-      if (idx > -1) { current.splice(idx, 1); } else { current.push(pieId); }
-      params.set('pies', current.join(','));
-      window.location.href = '/portfolio?' + params.toString();
-    });
-  });
-</script>
-
-<!-- AdSense -->
-<div style="max-width:1400px; margin:0 auto; padding:.5rem 1.5rem 1rem;">
-  <ins class="adsbygoogle"
-       style="display:block"
-       data-ad-client="ca-pub-6145203907417515"
-       data-ad-slot="auto"
-       data-ad-format="auto"
-       data-full-width-responsive="true"></ins>
-  <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
-</div>
-
-<!-- Disclaimer footer -->
-<footer style="background:#0f1923; color:#8a9bb0; font-size:.72rem; text-align:center; padding:.9rem 1.5rem; margin-top:1rem; line-height:1.6;">
-  <strong style="color:#c8d6e5;">Disclaimer:</strong>
-  This application is a <strong style="color:#c8d6e5;">technology demonstration only</strong> and is provided strictly for informational purposes.
-  It does <strong style="color:#c8d6e5;">not</strong> constitute financial advice, investment recommendations, or any form of regulated financial service.
-  We make no guarantee as to the accuracy, completeness, or timeliness of any figures, valuations, or data presented.
-  You should <strong style="color:#c8d6e5;">not</strong> rely on this application when making investment decisions - always consult a qualified financial adviser.
-  No liability is accepted for any loss or damage arising directly or indirectly from the use of, or reliance on, this application.
-  <br><span style="color:#4a5a6a; margin-top:.4rem; display:inline-block;">&copy; {{ now().year }} <a href="https://www.sydeone.co.uk" target="_blank" rel="noopener noreferrer" style="color:#8a9bb0; text-decoration:underline;">Sydeone Ltd</a>. All rights reserved.</span>
-</footer>
-
 </body>
 </html>

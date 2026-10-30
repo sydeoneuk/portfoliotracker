@@ -3039,99 +3039,89 @@ def default_page(request: Request):
 
 
 @app.get("/portfolio", response_class=HTMLResponse)
-def index(request: Request, account: str = "combined", pies: str = "",
-          country: str = "", sector: str = "",
-          db: Session = Depends(get_session)):
+def index(request: Request, db: Session = Depends(get_session)):
     user = _get_current_user(request, db)
     if not user:
         return _redirect("/login")
 
-    # normalise legacy values; any unrecognised value becomes portfolio
-    if account in ("combined", ""):
-        account = "portfolio"
+    from app.models import Platform as _Platform
+    platforms = (
+        db.query(_Platform)
+        .filter_by(user_id=user.id, is_active=True)
+        .order_by(_Platform.name)
+        .all()
+    )
 
-    available_pies = _load_pies(db, user.id, account)
-    selectable_pies = _load_pies(db, user.id, "portfolio")
-    selected_pie_tokens = _resolve_selected_pie_tokens(selectable_pies, pies)
-    selected_pie_ids, include_no_pie = _split_selected_pies(selected_pie_tokens)
-    positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids, include_no_pie)
+    # Per-platform value/cost/count in GBP via a single aggregate query.
+    # GBX instruments (prices in pence) are divided by 100 to get GBP.
+    # instrument_prices.price_gbp is already in GBP for any currency.
+    _eff = _eff_price()
+    rows = db.execute(text(f"""
+        SELECT
+            p.platform_id,
+            COUNT(DISTINCT p.ticker)                             AS holding_count,
+            ROUND(SUM(
+                CASE WHEN COALESCE(i.currency_code,'GBP') = 'GBX'
+                     THEN p.quantity * {_eff} / 100.0
+                     ELSE p.quantity * {_eff}
+                END
+            )::numeric, 2)                                       AS value_gbp,
+            ROUND(SUM(
+                CASE WHEN COALESCE(i.currency_code,'GBP') = 'GBX'
+                     THEN p.quantity * COALESCE(p.average_price, 0) / 100.0
+                     ELSE p.quantity * COALESCE(p.average_price, 0)
+                END
+            )::numeric, 2)                                       AS cost_gbp
+        FROM positions p
+        JOIN instruments i ON p.ticker = i.ticker
+        WHERE p.user_id = :user_id
+        GROUP BY p.platform_id
+    """), {"user_id": user.id}).fetchall()
 
-    positions = _normalise_positions_for_display(positions)
+    stats_by_platform = {
+        r.platform_id: {
+            "holding_count": r.holding_count,
+            "value": float(r.value_gbp or 0),
+            "cost": float(r.cost_gbp or 0),
+        }
+        for r in rows
+    }
 
-    # Apply hidden country / sector filters (activated from the Analysis page)
-    if country:
-        if country == "Unknown":
-            positions = [p for p in positions if not (p.get("country") or "").strip()]
-        else:
-            positions = [p for p in positions if (p.get("country") or "").strip() == country]
+    # Group platforms by provider.
+    from collections import OrderedDict
+    providers: dict[str, list[dict]] = OrderedDict()
+    total_value = 0.0
+    for p in platforms:
+        provider = _derive_provider(p.name, p.account_type)
+        stats = stats_by_platform.get(p.id, {"holding_count": 0, "value": 0.0, "cost": 0.0})
+        value = stats["value"]
+        cost = stats["cost"]
+        pnl = value - cost
+        pnl_pct = (pnl / cost * 100) if cost else None
+        total_value += value
+        entry = {
+            "id": p.id,
+            "name": p.name,
+            "account_type": p.account_type,
+            "platform_type": p.platform_type,
+            "holding_count": stats["holding_count"],
+            "value": value,
+            "cost": cost,
+            "pnl": pnl,
+            "pnl_pct": pnl_pct,
+            "analysis_url": f"/analysis?account=platform_{p.id}",
+        }
+        providers.setdefault(provider, []).append(entry)
 
-    if sector:
-        def _eff_sector(p):
-            s = (p.get("sector") or "").strip()
-            return s if s else p["display_class"]
-        positions = [p for p in positions if _eff_sector(p) == sector]
-
-    display_context = _build_position_display_context(db, user.id, account, positions)
-    positions = display_context["positions"]
-    totals = display_context["totals"]
-    user_settings = display_context["user_settings"]
-    display_currency = display_context["display_currency"]
-    fx = display_context["fx"]
-    grand_total_display = display_context["grand_total_display"]
-    fx_rates_display = display_context["fx_rates_display"]
-
-    account_types, user_platforms = _load_filter_items(db, user.id)
     last_synced = db.execute(text(
         "SELECT MAX(last_synced_at) FROM positions WHERE user_id = :uid"
     ), {"uid": user.id}).scalar()
 
-    # Cash positions: free cash per account + uninvested cash sitting in pies.
-    free_cash_trading = float(user_settings.free_cash_trading or 0) if user_settings else 0.0
-    free_cash_isa = float(user_settings.free_cash_isa or 0) if user_settings else 0.0
-    pie_cash_trading = float(user_settings.pie_cash_trading or 0) if user_settings else 0.0
-    pie_cash_isa = float(user_settings.pie_cash_isa or 0) if user_settings else 0.0
-    trading_currency = user_settings.trading_currency_code if user_settings else None
-    isa_currency = user_settings.isa_currency_code if user_settings else None
-
-    _idx_ft, _ = _parse_account_filter(account)
-    if _idx_ft in ("platform", "platforms", "account_type"):
-        free_cash = 0.0
-        total_pie_cash = 0.0
-    elif account == "ISA":
-        free_cash = _convert_amount_between_currencies(free_cash_isa, isa_currency, display_currency, fx)
-        total_pie_cash = _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, fx)
-    elif account in ("Trading", "GIA"):
-        free_cash = _convert_amount_between_currencies(free_cash_trading, trading_currency, display_currency, fx)
-        total_pie_cash = _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, fx)
-    else:
-        free_cash = (
-            _convert_amount_between_currencies(free_cash_trading, trading_currency, display_currency, fx)
-            + _convert_amount_between_currencies(free_cash_isa, isa_currency, display_currency, fx)
-        )
-        total_pie_cash = (
-            _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, fx)
-            + _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, fx)
-        )
-
     return templates.TemplateResponse(request, "index.html", {
         "user": user,
-        "positions": positions,
-        "totals": totals,
-        "grand_total": grand_total_display,
-        "fx_rates_used": fx_rates_display,
+        "providers": providers,
+        "total_value": total_value,
         "last_synced": last_synced,
-        "account_filter": account,
-        "account_types": account_types,
-        "user_platforms": user_platforms,
-        "display_currency": display_currency,
-        "available_pies": available_pies,
-        "selectable_pies": selectable_pies,
-        "selected_pie_ids": set(selected_pie_tokens),
-        "pies_param": pies,
-        "country_filter": country,
-        "sector_filter": sector,
-        "free_cash": free_cash,
-        "total_pie_cash": total_pie_cash,
         "fmt": _fmt,
         "cfmt": _cfmt,
     })
