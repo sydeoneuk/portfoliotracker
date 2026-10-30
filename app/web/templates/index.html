@@ -48,6 +48,48 @@
     .top-bar .brand span { color: var(--t212-green); }
     .top-bar .synced { font-size: 0.75rem; color: #8a9bb0; }
     .top-bar .user-info { display: flex; align-items: center; gap: .75rem; font-size: .82rem; }
+
+    /* Account chooser dropdown */
+    .ac-wrap { position: relative; }
+    .ac-btn {
+      background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2);
+      color: #fff; border-radius: 6px; padding: .25rem .75rem;
+      font-size: .78rem; cursor: pointer; white-space: nowrap;
+      display: flex; align-items: center; gap: .4rem;
+    }
+    .ac-btn:hover { background: rgba(255,255,255,.18); }
+    .ac-dropdown {
+      position: absolute; top: calc(100% + 6px); left: 0;
+      background: #1c2a38; border: 1px solid rgba(255,255,255,.15);
+      border-radius: 8px; padding: .5rem 0; min-width: 220px;
+      z-index: 1050; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+      display: none;
+    }
+    .ac-dropdown.open { display: block; }
+    .ac-item {
+      display: flex; align-items: center; gap: .5rem;
+      padding: .3rem 1rem; color: #cdd6e0; font-size: .8rem;
+      cursor: pointer; user-select: none;
+    }
+    .ac-item:hover { background: rgba(0,200,150,.1); color: #fff; }
+    .ac-item input[type=checkbox] { accent-color: var(--t212-green); cursor: pointer; }
+    .ac-section-label {
+      padding: .35rem 1rem .15rem; font-size: .68rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .7px; color: #5d7a96;
+    }
+    .ac-platform-item {
+      padding-left: 2rem;
+    }
+    .ac-divider { border-top: 1px solid rgba(255,255,255,.08); margin: .35rem 0; }
+    .ac-footer {
+      padding: .4rem 1rem 0; display: flex; justify-content: flex-end;
+    }
+    .ac-apply {
+      background: var(--t212-green); border: none; color: #0f1923;
+      border-radius: 5px; padding: .25rem .75rem; font-size: .78rem;
+      font-weight: 600; cursor: pointer;
+    }
+    .ac-apply:hover { opacity: .88; }
     .top-bar .avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
 
     .summary-card {
@@ -273,10 +315,32 @@
     <div class="brand">Trading 212 <span>Portfolio</span></div>
   </div>
   {% set _pf_extra %}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if country_filter %}&country={{ country_filter | urlencode_val }}{% endif %}{% if sector_filter %}&sector={{ sector_filter | urlencode_val }}{% endif %}{% endset %}
-  <div class="btn-group btn-group-sm ms-4" role="group">
-    <a href="/portfolio?account=portfolio{{ _pf_extra }}" class="btn {% if account_filter in ('', 'combined', 'portfolio') or not account_filter %}btn-light active{% else %}btn-outline-light{% endif %}">Portfolio</a>
-    {% for at in account_types %}<a href="/portfolio?account={{ at }}{{ _pf_extra }}" class="btn {% if account_filter == at %}btn-light active{% else %}btn-outline-light{% endif %}">{{ at }}</a>{% endfor %}
-    {% for p in user_platforms %}<a href="/portfolio?account={{ p.value }}{{ _pf_extra }}" class="btn {% if account_filter == p.value %}btn-light active{% else %}btn-outline-light{% endif %}">{{ p.name }}</a>{% endfor %}
+  <div class="ac-wrap ms-4" id="ac-wrap">
+    <button class="ac-btn" id="ac-btn" onclick="acToggle(event)">
+      <span id="ac-label">Portfolio</span>
+      <svg width="10" height="10" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+    <div class="ac-dropdown" id="ac-dropdown">
+      <label class="ac-item">
+        <input type="checkbox" id="ac-all"> All Accounts
+      </label>
+      <div class="ac-divider"></div>
+      {% set ns = namespace(prev_provider='') %}
+      {% for p in user_platforms %}
+        {% if p.provider != ns.prev_provider %}
+          {% if ns.prev_provider != '' %}<div class="ac-divider" style="margin:.15rem 0"></div>{% endif %}
+          <div class="ac-section-label">{{ p.provider }}</div>
+          {% set ns.prev_provider = p.provider %}
+        {% endif %}
+        <label class="ac-item ac-platform-item">
+          <input type="checkbox" class="ac-plat" value="{{ p.value }}"> {{ p.account_type }}
+        </label>
+      {% endfor %}
+      <div class="ac-divider"></div>
+      <div class="ac-footer">
+        <button class="ac-apply" onclick="acApply()">Apply</button>
+      </div>
+    </div>
   </div>
   <div class="synced">
     {% if last_synced %}
@@ -661,6 +725,77 @@
     a.click();
     URL.revokeObjectURL(url);
   }
+
+  // ── Account chooser ──────────────────────────────────────────────────────
+  (function () {
+    var currentAccount = {{ account_filter | tojson }};
+    var allVals = [{% for p in user_platforms %}'{{ p.value }}'{% if not loop.last %},{% endif %}{% endfor %}];
+
+    function acInit() {
+      var checkboxes = document.querySelectorAll('.ac-plat');
+      var allCb = document.getElementById('ac-all');
+      if (!currentAccount || currentAccount === 'portfolio' || currentAccount === '') {
+        allCb.checked = true;
+        checkboxes.forEach(function(cb) { cb.checked = true; });
+      } else {
+        var parts = new Set(currentAccount.split(',').map(function(s) { return s.trim(); }));
+        checkboxes.forEach(function(cb) { cb.checked = parts.has(cb.value); });
+        allCb.checked = checkboxes.length > 0 && Array.from(checkboxes).every(function(cb) { return cb.checked; });
+      }
+      acUpdateLabel();
+
+      allCb.addEventListener('change', function() {
+        document.querySelectorAll('.ac-plat').forEach(function(cb) { cb.checked = allCb.checked; });
+        acUpdateLabel();
+      });
+      checkboxes.forEach(function(cb) {
+        cb.addEventListener('change', function() {
+          var all = document.querySelectorAll('.ac-plat');
+          document.getElementById('ac-all').checked = Array.from(all).every(function(c) { return c.checked; });
+          acUpdateLabel();
+        });
+      });
+    }
+
+    function acUpdateLabel() {
+      var checked = Array.from(document.querySelectorAll('.ac-plat:checked'));
+      var all = document.querySelectorAll('.ac-plat');
+      var label;
+      if (checked.length === 0 || checked.length === all.length) {
+        label = 'Portfolio';
+      } else if (checked.length === 1) {
+        label = checked[0].closest('label').textContent.trim();
+      } else {
+        label = checked.length + ' accounts';
+      }
+      document.getElementById('ac-label').textContent = label;
+    }
+
+    window.acToggle = function(e) {
+      e.stopPropagation();
+      document.getElementById('ac-dropdown').classList.toggle('open');
+    };
+    window.acApply = function() {
+      var checked = Array.from(document.querySelectorAll('.ac-plat:checked'));
+      var all = document.querySelectorAll('.ac-plat');
+      var account;
+      if (checked.length === 0 || checked.length === all.length) {
+        account = 'portfolio';
+      } else {
+        account = checked.map(function(cb) { return cb.value; }).join(',');
+      }
+      var params = new URLSearchParams(window.location.search);
+      params.set('account', account);
+      window.location.href = '/portfolio?' + params.toString();
+    };
+    document.addEventListener('click', function(e) {
+      if (!document.getElementById('ac-wrap').contains(e.target)) {
+        document.getElementById('ac-dropdown').classList.remove('open');
+      }
+    });
+
+    acInit();
+  })();
 
   // Pie toggle - adds/removes individual pie IDs from the pies URL param
   document.querySelectorAll('.pie-btn').forEach(function (btn) {

@@ -6,9 +6,14 @@ using yfinance FX pairs (e.g. USDGBP=X).  Instruments without a yf_ticker are
 skipped; the caller should fall back to another source for them.
 """
 import logging
+import warnings
 from typing import Sequence
 
 import yfinance as yf
+
+# yfinance uses pandas sort_index(inplace=True) which is deprecated in pandas 4.x.
+# Suppress until yfinance is updated.
+warnings.filterwarnings("ignore", message=".*inplace keyword.*sort_index.*", module="yfinance")
 
 from app.prices.base import PriceProvider, PriceResult
 

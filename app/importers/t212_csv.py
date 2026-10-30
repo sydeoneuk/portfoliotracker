@@ -42,6 +42,7 @@ _SELL_ACTIONS = frozenset({
 })
 _DIVIDEND_ACTIONS = frozenset({
     "dividend (ordinary)",
+    "dividend (dividend)",          # T212's label for ordinary dividends
     "dividend (manufactured payment)",
     "dividend (equalisation)",
     "dividend (property income distribution)",
@@ -277,8 +278,14 @@ class T212CsvImporter:
     def _import_dividend(self, row: dict, hm: dict[str, str], action: str) -> None:
         t212_id = _get(row, hm, "id")
         if not t212_id:
-            self._result.skipped += 1
-            return
+            # T212 doesn't assign IDs to dividend rows; synthesise one from ticker + time
+            ticker_raw = _get(row, hm, "ticker")
+            time_raw = _get(row, hm, "time (utc)", "time")
+            if ticker_raw and time_raw:
+                t212_id = f"div_{ticker_raw}_{time_raw}"
+            else:
+                self._result.skipped += 1
+                return
 
         ticker = _get(row, hm, "ticker")
         isin = _get(row, hm, "isin")

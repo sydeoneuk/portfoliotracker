@@ -222,15 +222,33 @@ def _resolve_display_currency(user_settings: UserSettings | None, account: str) 
 
 # ── Hierarchical account filter helpers ───────────────────────────────────
 
-def _parse_account_filter(account: str) -> tuple[str, str | int | None]:
+def _parse_account_filter(account: str) -> tuple[str, str | int | list | None]:
     """Parse the `account` URL param into (filter_type, filter_value).
 
-    filter_type is one of: "portfolio", "account_type", "platform"
-    - ("portfolio",   None)        → all platforms combined
-    - ("account_type","ISA")       → all ISA platforms combined
-    - ("platform",    5)           → single platform by id
+    filter_type is one of: "portfolio", "account_type", "platform", "platforms"
+    - ("portfolio",   None)         → all platforms combined
+    - ("account_type","ISA")        → all ISA platforms combined
+    - ("platform",    5)            → single platform by id
+    - ("platforms",   [3, 4])       → multiple specific platforms combined
     """
-    if (account or "").startswith("platform_"):
+    if not account or account in ("portfolio", "combined"):
+        return "portfolio", None
+
+    # Comma-separated → multi-platform select
+    if "," in account:
+        parts = [p.strip() for p in account.split(",") if p.strip()]
+        ids = []
+        for p in parts:
+            if p.startswith("platform_"):
+                try:
+                    ids.append(int(p.split("_", 1)[1]))
+                except (ValueError, IndexError):
+                    pass
+        if ids:
+            return ("platform", ids[0]) if len(ids) == 1 else ("platforms", ids)
+        return "portfolio", None
+
+    if account.startswith("platform_"):
         try:
             return "platform", int(account.split("_", 1)[1])
         except (ValueError, IndexError):
@@ -242,13 +260,24 @@ def _parse_account_filter(account: str) -> tuple[str, str | int | None]:
     return "portfolio", None
 
 
+def _derive_provider(name: str, account_type: str) -> str:
+    """Strip account-type keywords from a platform name to get the provider name."""
+    n = name.strip()
+    for suffix in (account_type, "ISA", "SIPP", "GIA", "LISA", "Invest"):
+        if suffix and n.lower().endswith(suffix.lower()):
+            candidate = n[:-len(suffix)].strip()
+            if candidate:
+                return candidate
+    return n
+
+
 def _load_filter_items(db: Session, user_id: int) -> tuple[list[str], list[dict]]:
     """Return (account_types, platforms) for the filter UI."""
     from app.models import Platform as _Platform
     platforms = (
         db.query(_Platform)
         .filter_by(user_id=user_id, is_active=True)
-        .order_by(_Platform.account_type, _Platform.name)
+        .order_by(_Platform.name, _Platform.account_type)
         .all()
     )
     account_types: list[str] = []
@@ -263,10 +292,18 @@ def _load_filter_items(db: Session, user_id: int) -> tuple[list[str], list[dict]
             "name": p.name,
             "account_type": p.account_type,
             "value": f"platform_{p.id}",
+            "provider": _derive_provider(p.name, p.account_type),
         }
         for p in platforms
     ]
     return account_types, platform_list
+
+
+def _platforms_in_clause(ids: list[int], col: str) -> tuple[str, dict]:
+    """Returns (WHERE fragment, params) for a multi-platform IN clause."""
+    params = {f"_pf_{i}": v for i, v in enumerate(ids)}
+    in_expr = ", ".join(f":_pf_{i}" for i in range(len(ids)))
+    return f"AND {col} IN ({in_expr})", params
 
 
 def _is_portfolio_filter(account: str) -> bool:
@@ -281,6 +318,13 @@ def _div_filter(account: str, dp: str = "dp", dpa: str = "dpa") -> tuple[str, st
             f"AND {dp}.platform_id = :div_platform_id",
             f"AND {dpa}.platform_id = :div_platform_id",
             {"div_platform_id": fv},
+        )
+    if ft == "platforms":
+        ids_str = ", ".join(str(i) for i in fv)
+        return (
+            f"AND {dp}.platform_id IN ({ids_str})",
+            f"AND {dpa}.platform_id IN ({ids_str})",
+            {},
         )
     if ft == "account_type":
         sub = "(SELECT id FROM platforms WHERE user_id = :user_id AND account_type = :div_account_type)"
@@ -1853,6 +1897,61 @@ _ACCOUNT_TYPE_SQL = text(f"""
 """)
 
 
+def _build_multi_platform_sql(platform_ids: list[int]):
+    """Positions SQL aggregated across a specific set of platform IDs."""
+    ids_str = ", ".join(str(i) for i in platform_ids)
+    return text(f"""
+        SELECT
+            p.ticker                                               AS ticker,
+            COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
+            COALESCE(NULLIF(i.short_name, ''), p.ticker)           AS short_name,
+            COALESCE(i.exchange, '—')                              AS exchange,
+            COALESCE(i.currency_code, '—')                         AS currency,
+            COALESCE(i.instrument_type, '—')                       AS instrument_type,
+            i.sector,
+            i.industry,
+            i.instrument_class,
+            i.country,
+            CASE WHEN COUNT(DISTINCT p.account) > 1 THEN 'Both'
+                 ELSE MAX(p.account) END                           AS account,
+            SUM(p.quantity)                                        AS quantity,
+            SUM(p.quantity * p.average_price)
+                / NULLIF(SUM(p.quantity), 0)                       AS average_price,
+            {_PRICE_SUBQ.format(t="p.ticker")}                     AS current_price,
+            ROUND(SUM(p.quantity * p.average_price)::numeric, 2)  AS cost,
+            ROUND({_ep_sum}::numeric, 2)                           AS value,
+            ROUND(({_ep_sum} - SUM(p.quantity * p.average_price))::numeric, 2) AS ppl,
+            ROUND((({_ep_sum} - SUM(p.quantity * p.average_price))
+                   / NULLIF(SUM(p.quantity * p.average_price), 0))::numeric, 4) AS result_coef,
+            ROUND(COALESCE((
+                SELECT SUM(dp.amount) FROM dividend_payments dp
+                WHERE dp.ticker = p.ticker AND dp.user_id = :user_id
+                  AND dp.platform_id IN ({ids_str})
+            ), 0)::numeric, 2)                                     AS total_dividends,
+            ROUND(
+                COALESCE((SELECT MAX(df.annual_rate) FROM dividend_forecast df
+                          WHERE df.ticker = p.ticker), 0)::numeric
+                * SUM(p.quantity)::numeric, 2)                     AS forward_dividends,
+            COALESCE((
+                SELECT MAX(df.annual_rate) FROM dividend_forecast df
+                WHERE df.ticker = p.ticker
+            ), 0)                                                   AS annual_rate_per_share,
+            i.fcf_per_share_3y_avg,
+            i.eps_ttm,
+            (SELECT COUNT(*)
+             FROM pie_holdings ph WHERE ph.ticker = p.ticker
+               AND ph.user_id = :user_id)                          AS pie_count
+        FROM positions p
+        JOIN instruments i ON p.ticker = i.ticker
+        WHERE p.user_id = :user_id
+          AND p.platform_id IN ({ids_str})
+        GROUP BY p.ticker, i.name, i.short_name, i.exchange, i.currency_code,
+                 i.instrument_type, i.sector, i.industry, i.instrument_class, i.country,
+                 i.fcf_per_share_3y_avg, i.eps_ttm
+        ORDER BY {_ep_sum} DESC NULLS LAST
+    """)
+
+
 _NO_PIE_FILTER = "no-pie"
 
 
@@ -1862,6 +1961,9 @@ def _has_no_pie_positions(db: Session, user_id: int, account: str) -> bool:
     if filter_type == "platform":
         account_clause = "AND pos.platform_id = :platform_id"
         params["platform_id"] = filter_value
+    elif filter_type == "platforms":
+        account_clause, extra = _platforms_in_clause(filter_value, "pos.platform_id")
+        params.update(extra)
     elif filter_type == "account_type":
         account_clause = "AND pl_f.account_type = :account_type"
         params["account_type"] = filter_value
@@ -1902,6 +2004,9 @@ def _load_pies(db: Session, user_id: int, account: str) -> list[dict]:
     if filter_type == "platform":
         account_filter = "AND pie.platform_id = :platform_id"
         params["platform_id"] = filter_value
+    elif filter_type == "platforms":
+        account_filter, extra = _platforms_in_clause(filter_value, "pie.platform_id")
+        params.update(extra)
     elif filter_type == "account_type":
         account_filter = (
             "AND pie.platform_id IN "
@@ -2034,6 +2139,9 @@ def _fetch_filtered_positions_as_of(
     if filter_type_ao == "platform":
         account_filter = "AND hs.platform_id = :platform_id"
         params["platform_id"] = filter_value_ao
+    elif filter_type_ao == "platforms":
+        account_filter, extra = _platforms_in_clause(filter_value_ao, "hs.platform_id")
+        params.update(extra)
     elif filter_type_ao == "account_type":
         account_filter = "AND hs.account = :account_type"
         params["account_type"] = filter_value_ao
@@ -2073,6 +2181,9 @@ def _fetch_filtered_positions_as_of(
 
     if filter_type_ao == "platform":
         phs_filter = "AND phs.platform_id = :platform_id"
+    elif filter_type_ao == "platforms":
+        phs_filter, phs_extra = _platforms_in_clause(filter_value_ao, "phs.platform_id")
+        params.update(phs_extra)
     elif filter_type_ao == "account_type":
         phs_filter = "AND phs.account = :account_type"
     else:
@@ -2202,9 +2313,9 @@ def _fetch_filtered_positions_as_of(
 
     rows.sort(key=lambda r: float(r.get("value") or 0), reverse=True)
     filter_type, _ = _parse_account_filter(account)
-    if filter_type != "platform":
-        return _merge_position_rows(rows, account)
-    return rows
+    if filter_type == "platform":
+        return rows
+    return _merge_position_rows(rows, account)
 
 
 def _pie_query(pie_ids: list[int], account: str) -> str:
@@ -2215,6 +2326,9 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
     pos_account_join = "AND pos.platform_id = pa.pie_platform_id"
     if filter_type == "platform":
         pos_account_join += " AND pos.platform_id = :platform_id"
+    elif filter_type == "platforms":
+        ids_str = ", ".join(str(i) for i in filter_value)
+        pos_account_join += f" AND pos.platform_id IN ({ids_str})"
     elif filter_type == "account_type":
         pos_account_join += (
             " AND pos.platform_id IN "
@@ -2298,6 +2412,10 @@ def _no_pie_query(account: str) -> str:
     filter_type, filter_value = _parse_account_filter(account)
     if filter_type == "platform":
         account_clause = "AND p.platform_id = :platform_id"
+        join_clause = ""
+    elif filter_type == "platforms":
+        ids_str = ", ".join(str(i) for i in filter_value)
+        account_clause = f"AND p.platform_id IN ({ids_str})"
         join_clause = ""
     elif filter_type == "account_type":
         account_clause = "AND pl_np.account_type = :account_type"
@@ -2497,6 +2615,8 @@ def _fetch_filtered_positions(
         extra: dict = {}
         if filter_type == "platform":
             extra["platform_id"] = filter_value
+        elif filter_type == "platforms":
+            pass  # IDs embedded in SQL by _pie_query / _no_pie_query
         elif filter_type == "account_type":
             extra["account_type"] = filter_value
         if selected_pie_ids:
@@ -2518,6 +2638,8 @@ def _fetch_filtered_positions(
     if filter_type == "platform":
         params["platform_id"] = filter_value
         rows = db.execute(_PLATFORM_SQL, params).fetchall()
+    elif filter_type == "platforms":
+        rows = db.execute(_build_multi_platform_sql(filter_value), params).fetchall()
     elif filter_type == "account_type":
         params["account_type"] = filter_value
         rows = db.execute(_ACCOUNT_TYPE_SQL, params).fetchall()
@@ -2678,7 +2800,7 @@ def index(request: Request, account: str = "combined", pies: str = "",
     isa_currency = user_settings.isa_currency_code if user_settings else None
 
     _idx_ft, _ = _parse_account_filter(account)
-    if _idx_ft == "platform" or _idx_ft == "account_type":
+    if _idx_ft in ("platform", "platforms", "account_type"):
         free_cash = 0.0
         total_pie_cash = 0.0
     elif account == "ISA":
@@ -3048,6 +3170,10 @@ def dividends_page(request: Request, month: str = "", account: str = "",
         div_join = ""
         account_clause = "AND dp.platform_id = :platform_id"
         params["platform_id"] = div_filter_value
+    elif div_filter_type == "platforms":
+        div_join = ""
+        account_clause, extra = _platforms_in_clause(div_filter_value, "dp.platform_id")
+        params.update(extra)
     elif div_filter_type == "account_type":
         div_join = "JOIN platforms dp_pl ON dp_pl.id = dp.platform_id"
         account_clause = "AND dp_pl.account_type = :account_type"
@@ -3758,6 +3884,9 @@ def _build_portfolio_history(
         if ph_ft == "platform":
             params["platform_id"] = ph_fv
             account_filter = "AND ps.platform_id = :platform_id"
+        elif ph_ft == "platforms":
+            account_filter, extra = _platforms_in_clause(ph_fv, "ps.platform_id")
+            params.update(extra)
         elif ph_ft == "account_type":
             params["account_type"] = ph_fv
             account_filter = (
@@ -3782,6 +3911,9 @@ def _build_portfolio_history(
         if ph_ft == "platform":
             params["platform_id"] = ph_fv
             account_filter = "AND ps.platform_id = :platform_id"
+        elif ph_ft == "platforms":
+            account_filter, extra = _platforms_in_clause(ph_fv, "ps.platform_id")
+            params.update(extra)
         elif ph_ft == "account_type":
             params["account_type"] = ph_fv
             account_filter = (
@@ -3815,6 +3947,9 @@ def _build_holding_history(db: Session, user_id: int, ticker: str, account: str)
     if hh_ft == "platform":
         params["platform_id"] = hh_fv
         account_filter = "AND hs.platform_id = :platform_id"
+    elif hh_ft == "platforms":
+        account_filter, extra = _platforms_in_clause(hh_fv, "hs.platform_id")
+        params.update(extra)
     elif hh_ft == "account_type":
         params["account_type"] = hh_fv
         account_filter = (
@@ -3847,6 +3982,9 @@ def _analysis_pie_query(pie_ids: list[int], account: str) -> str:
     apq_ft, apq_fv = _parse_account_filter(account)
     if apq_ft == "platform":
         pos_account_filter = "AND pos.platform_id = :platform_id"
+    elif apq_ft == "platforms":
+        ids_str = ", ".join(str(i) for i in apq_fv)
+        pos_account_filter = f"AND pos.platform_id IN ({ids_str})"
     elif apq_ft == "account_type":
         pos_account_filter = (
             "AND pos.platform_id IN "
@@ -4003,7 +4141,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
 
     cash_fx = _get_fx_rates_to_gbp({trading_currency, isa_currency, display_currency})
     _an_ft, _ = _parse_account_filter(account)
-    if _an_ft in ("platform", "account_type"):
+    if _an_ft in ("platform", "platforms", "account_type"):
         free_cash = 0.0
         total_pie_cash = 0.0
     elif account == "ISA":
@@ -4676,6 +4814,8 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     hd_ft, hd_fv = _parse_account_filter(account)
     if hd_ft == "platform":
         q = q.filter_by(platform_id=hd_fv)
+    elif hd_ft == "platforms":
+        q = q.filter(Position.platform_id.in_(hd_fv))
     elif hd_ft == "account_type":
         from app.models import Platform as _Plat
         plat_ids = [p.id for p in db.query(_Plat).filter_by(user_id=user.id, account_type=hd_fv).all()]

@@ -29,6 +29,20 @@
     .top-bar .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: .5px; }
     .top-bar .brand span { color: var(--t212-green); }
     .top-bar .user-info { display: flex; align-items: center; gap: .75rem; font-size: .82rem; }
+    .ac-wrap { position: relative; }
+    .ac-btn { background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2); color: #fff; border-radius: 6px; padding: .25rem .75rem; font-size: .78rem; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: .4rem; }
+    .ac-btn:hover { background: rgba(255,255,255,.18); }
+    .ac-dropdown { position: absolute; top: calc(100% + 6px); left: 0; background: #1c2a38; border: 1px solid rgba(255,255,255,.15); border-radius: 8px; padding: .5rem 0; min-width: 220px; z-index: 1050; box-shadow: 0 8px 24px rgba(0,0,0,.4); display: none; }
+    .ac-dropdown.open { display: block; }
+    .ac-item { display: flex; align-items: center; gap: .5rem; padding: .3rem 1rem; color: #cdd6e0; font-size: .8rem; cursor: pointer; user-select: none; }
+    .ac-item:hover { background: rgba(0,200,150,.1); color: #fff; }
+    .ac-item input[type=checkbox] { accent-color: var(--t212-green); cursor: pointer; }
+    .ac-section-label { padding: .35rem 1rem .15rem; font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .7px; color: #5d7a96; }
+    .ac-platform-item { padding-left: 2rem; }
+    .ac-divider { border-top: 1px solid rgba(255,255,255,.08); margin: .35rem 0; }
+    .ac-footer { padding: .4rem 1rem 0; display: flex; justify-content: flex-end; }
+    .ac-apply { background: var(--t212-green); border: none; color: #0f1923; border-radius: 5px; padding: .25rem .75rem; font-size: .78rem; font-weight: 600; cursor: pointer; }
+    .ac-apply:hover { opacity: .88; }
     .top-bar .avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
     .pie-filter-bar { background: #1a2634; padding: 0.35rem 1.5rem; display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; border-top: 1px solid rgba(255,255,255,0.07); }
     .pie-filter-bar .pf-label { font-size: .7rem; color: #8a9bb0; font-weight: 600; white-space: nowrap; margin-right: .25rem; }
@@ -126,10 +140,28 @@
     <div class="brand">Trading 212 <span>Analysis</span></div>
   </div>
   {% set _af_extra %}{% if pies_param %}&pies={{ pies_param }}{% endif %}{% if as_of_date %}&as_of={{ as_of_date }}{% endif %}{% if selected_ai_provider %}&ai_provider={{ selected_ai_provider }}{% endif %}{% endset %}
-  <div class="btn-group btn-group-sm ms-4" role="group">
-    <a href="/analysis?account=portfolio{{ _af_extra }}" class="btn {% if account_filter in ('', 'combined', 'portfolio') or not account_filter %}btn-light active{% else %}btn-outline-light{% endif %}">Portfolio</a>
-    {% for at in account_types %}<a href="/analysis?account={{ at }}{{ _af_extra }}" class="btn {% if account_filter == at %}btn-light active{% else %}btn-outline-light{% endif %}">{{ at }}</a>{% endfor %}
-    {% for p in user_platforms %}<a href="/analysis?account={{ p.value }}{{ _af_extra }}" class="btn {% if account_filter == p.value %}btn-light active{% else %}btn-outline-light{% endif %}">{{ p.name }}</a>{% endfor %}
+  <div class="ac-wrap ms-4" id="ac-wrap">
+    <button class="ac-btn" id="ac-btn" onclick="acToggle(event)">
+      <span id="ac-label">Portfolio</span>
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <div class="ac-dropdown" id="ac-dropdown">
+      <label class="ac-item"><input type="checkbox" id="ac-all"> All Accounts</label>
+      <div class="ac-divider"></div>
+      {% set ns = namespace(prev_provider='') %}
+      {% for p in user_platforms %}
+        {% if p.provider != ns.prev_provider %}
+          {% if ns.prev_provider != '' %}<div class="ac-divider" style="margin:.15rem 0"></div>{% endif %}
+          <div class="ac-section-label">{{ p.provider }}</div>
+          {% set ns.prev_provider = p.provider %}
+        {% endif %}
+        <label class="ac-item ac-platform-item">
+          <input type="checkbox" class="ac-plat" value="{{ p.value }}"> {{ p.account_type or p.name }}
+        </label>
+      {% endfor %}
+      <div class="ac-divider"></div>
+      <div class="ac-footer"><button class="ac-apply" onclick="acApply()">Apply</button></div>
+    </div>
   </div>
   <div class="user-info">
     {% if user.avatar_url %}<img src="{{ user.avatar_url }}" class="avatar" alt="">{% endif %}
@@ -470,6 +502,76 @@
     });
   });
   document.querySelectorAll('.pie-btn').forEach(function(btn) { btn.addEventListener('click', function() { const pieId = this.dataset.pieId; const params = new URLSearchParams(window.location.search); let current = params.get('pies') === 'all' ? {{ available_pies | map(attribute='id') | map('string') | list | tojson }} : (params.get('pies') || '').split(',').filter(Boolean); const idx = current.indexOf(pieId); if (idx > -1) { current.splice(idx, 1); } else { current.push(pieId); } params.set('pies', current.join(',')); if (selectedAiProvider) params.set('ai_provider', selectedAiProvider); window.location.href = '/analysis?' + params.toString(); }); });
+</script>
+<script>
+(function() {
+  var currentFilter = {{ account_filter | tojson }};
+  function acInit() {
+    var allCb = document.getElementById('ac-all');
+    var platCbs = document.querySelectorAll('.ac-plat');
+    var selected = [];
+    if (!currentFilter || currentFilter === 'portfolio' || currentFilter === 'combined' || currentFilter === '') {
+      allCb.checked = true;
+    } else if (currentFilter.indexOf(',') !== -1) {
+      selected = currentFilter.split(',').map(function(s) { return s.trim(); });
+    } else {
+      selected = [currentFilter];
+    }
+    platCbs.forEach(function(cb) {
+      cb.checked = selected.indexOf(cb.value) !== -1;
+    });
+    allCb.addEventListener('change', function() {
+      if (this.checked) platCbs.forEach(function(cb) { cb.checked = false; });
+    });
+    platCbs.forEach(function(cb) {
+      cb.addEventListener('change', function() {
+        if (this.checked) allCb.checked = false;
+        var anyChecked = Array.from(platCbs).some(function(c) { return c.checked; });
+        if (!anyChecked) allCb.checked = true;
+      });
+    });
+    acUpdateLabel();
+  }
+  function acUpdateLabel() {
+    var allCb = document.getElementById('ac-all');
+    var platCbs = document.querySelectorAll('.ac-plat');
+    var label = document.getElementById('ac-label');
+    if (allCb && allCb.checked) { label.textContent = 'Portfolio'; return; }
+    var checked = Array.from(platCbs).filter(function(cb) { return cb.checked; });
+    if (checked.length === 0) { label.textContent = 'Portfolio'; }
+    else if (checked.length === 1) { label.textContent = checked[0].closest('label').textContent.trim(); }
+    else { label.textContent = checked.length + ' accounts'; }
+  }
+  window.acToggle = function(e) {
+    e.stopPropagation();
+    var dd = document.getElementById('ac-dropdown');
+    dd.classList.toggle('open');
+  };
+  window.acApply = function() {
+    var allCb = document.getElementById('ac-all');
+    var platCbs = document.querySelectorAll('.ac-plat');
+    var params = new URLSearchParams(window.location.search);
+    {% if pies_param %}params.set('pies', '{{ pies_param }}');{% endif %}
+    {% if as_of_date %}params.set('as_of', '{{ as_of_date }}');{% endif %}
+    {% if selected_ai_provider %}params.set('ai_provider', '{{ selected_ai_provider }}');{% endif %}
+    if (allCb.checked) {
+      params.delete('account');
+    } else {
+      var checked = Array.from(platCbs).filter(function(cb) { return cb.checked; }).map(function(cb) { return cb.value; });
+      if (checked.length === 0) { params.delete('account'); }
+      else { params.set('account', checked.join(',')); }
+    }
+    window.location.href = '/analysis?' + params.toString();
+  };
+  document.addEventListener('click', function(e) {
+    var wrap = document.getElementById('ac-wrap');
+    if (wrap && !wrap.contains(e.target)) {
+      var dd = document.getElementById('ac-dropdown');
+      if (dd) dd.classList.remove('open');
+    }
+  });
+  document.addEventListener('DOMContentLoaded', acInit);
+})();
 </script>
 <div style="max-width:1400px; margin:0 auto; padding:.5rem 1.5rem 1rem;"><ins class="adsbygoogle" style="display:block" data-ad-client="ca-pub-6145203907417515" data-ad-slot="auto" data-ad-format="auto" data-full-width-responsive="true"></ins><script>(adsbygoogle = window.adsbygoogle || []).push({});</script></div>
 <footer style="background:#0f1923; color:#8a9bb0; font-size:.72rem; text-align:center; padding:.9rem 1.5rem; margin-top:1rem; line-height:1.6;"><strong style="color:#c8d6e5;">Disclaimer:</strong> This application is a <strong style="color:#c8d6e5;">technology demonstration only</strong> and is provided strictly for informational purposes. It does <strong style="color:#c8d6e5;">not</strong> constitute financial advice, investment recommendations, or any form of regulated financial service. We make no guarantee as to the accuracy, completeness, or timeliness of any figures, valuations, or data presented. You should <strong style="color:#c8d6e5;">not</strong> rely on this application when making investment decisions - always consult a qualified financial adviser. No liability is accepted for any loss or damage arising directly or indirectly from the use of, or reliance on, this application. <br><span style="color:#4a5a6a; margin-top:.4rem; display:inline-block;">&copy; {{ now().year }} <a href="https://www.sydeone.co.uk" target="_blank" rel="noopener noreferrer" style="color:#8a9bb0; text-decoration:underline;">Sydeone Ltd</a>. All rights reserved.</span></footer>
