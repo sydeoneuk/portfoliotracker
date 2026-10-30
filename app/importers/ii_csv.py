@@ -83,6 +83,8 @@ class IiImportResult:
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
 
+    columns_detected: list[str] = field(default_factory=list)
+
     def summary(self) -> str:
         parts = [f"{self.positions_upserted} positions imported"]
         if self.positions_deleted:
@@ -122,6 +124,7 @@ class IiCsvImporter:
             key = _clean(h).lower().replace(" £", "").replace("£", "").strip()
             norm_map[h] = key
 
+        self._result.columns_detected = list(norm_map.values())
         rows = list(reader)
         if not rows:
             self._result.errors.append("CSV has no data rows.")
@@ -196,7 +199,7 @@ class IiCsvImporter:
                     return _clean(row.get(orig, ""))
             return ""
 
-        ticker = get("symbol")
+        ticker = get("symbol") or get("ticker") or get("epic") or get("code")
         if not ticker:
             self._result.skipped += 1
             return None

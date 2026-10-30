@@ -1859,6 +1859,7 @@ async def import_ii_csv(
         "instruments_created": result.instruments_created,
         "skipped": result.skipped,
         "errors": result.errors[:20],
+        "columns_detected": result.columns_detected,
     })
 
 
