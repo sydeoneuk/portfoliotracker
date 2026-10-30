@@ -670,6 +670,11 @@ def _scheduled_enrich_catalogue() -> None:
         # OpenFIGI enrichment (FIGI, MIC, security type) — fast batch operation
         figi_result = runner.enrich_instruments_openfigi(batch_size=1000)
         print(f"[scheduler] OpenFIGI enrichment complete — {figi_result}.")
+        # Refresh yfinance prices for all held positions (covers CSV-imported
+        # accounts that have no T212 API sync).
+        from app.prices.updater import refresh_yfinance_prices
+        price_result = refresh_yfinance_prices(db)
+        print(f"[scheduler] yfinance price refresh complete — {price_result}.")
     except Exception:
         traceback.print_exc()
     finally:
