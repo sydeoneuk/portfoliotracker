@@ -1671,16 +1671,24 @@ async def delete_platform(
     if not platform:
         return JSONResponse({"error": "Platform not found."}, status_code=404)
 
-    position_count = db.execute(
-        text("SELECT COUNT(*) FROM positions WHERE platform_id = :pid"),
-        {"pid": platform_id},
-    ).scalar() or 0
-
-    if position_count > 0:
-        return JSONResponse(
-            {"error": f"Cannot delete — {position_count} position row(s) exist. Clear data first."},
-            status_code=409,
-        )
+    # Cascade-delete all platform data before removing the platform row.
+    # Order matters: child tables before parent tables, and pie_holdings
+    # before pies (pie_holdings references pies.pk).
+    pid = platform_id
+    uid = user.id
+    for stmt in [
+        text("DELETE FROM pie_holding_snapshots WHERE platform_id = :pid AND user_id = :uid"),
+        text("DELETE FROM portfolio_snapshots WHERE platform_id = :pid AND user_id = :uid"),
+        text("DELETE FROM holding_snapshots WHERE platform_id = :pid AND user_id = :uid"),
+        text("DELETE FROM pie_holdings WHERE pie_id IN (SELECT pk FROM pies WHERE platform_id = :pid AND user_id = :uid)"),
+        text("DELETE FROM pies WHERE platform_id = :pid AND user_id = :uid"),
+        text("DELETE FROM dividend_payment_allocations WHERE platform_id = :pid AND user_id = :uid"),
+        text("DELETE FROM dividend_payments WHERE platform_id = :pid AND user_id = :uid"),
+        text("DELETE FROM transactions WHERE platform_id = :pid AND user_id = :uid"),
+        text("DELETE FROM orders WHERE platform_id = :pid AND user_id = :uid"),
+        text("DELETE FROM positions WHERE platform_id = :pid AND user_id = :uid"),
+    ]:
+        db.execute(stmt, {"pid": pid, "uid": uid})
 
     db.delete(platform)
     db.commit()
