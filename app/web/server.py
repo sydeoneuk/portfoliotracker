@@ -2019,8 +2019,6 @@ def _load_pies(db: Session, user_id: int, account: str) -> list[dict]:
     rows = db.execute(text(f"""
         SELECT DISTINCT pie.pk AS id, pie.name
         FROM pies pie
-        JOIN pie_holdings ph ON ph.pie_id = pie.pk
-        JOIN positions pos ON pos.ticker = ph.ticker AND pos.user_id = :user_id
         WHERE pie.user_id = :user_id
         {account_filter}
         ORDER BY pie.name
