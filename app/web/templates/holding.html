@@ -297,6 +297,51 @@
   </div>
   {% endif %}
 
+  <!-- ── Accounts ──────────────────────────────────────────────────────────── -->
+  {% if all_positions %}
+  <div class="section-title">Accounts</div>
+  <div class="row g-3 mb-4">
+    {% set total_qty = namespace(v=0) %}
+    {% for p in all_positions %}{% set total_qty.v = total_qty.v + p.quantity %}{% endfor %}
+    {% for p in all_positions %}
+    {% set pct = (p.quantity / total_qty.v * 100) if total_qty.v else 0 %}
+    {% set plat_key = 'platform_' ~ p.platform_id %}
+    {% set is_active = account_filter and plat_key in account_filter.split(',') %}
+    <div class="col-6 col-md-3 col-lg-2">
+      <a href="/holding/{{ ticker }}?account={{ plat_key }}"
+         style="text-decoration:none; color:inherit;">
+        <div class="card metric-card p-3" style="cursor:pointer; transition: box-shadow .15s;{% if is_active %} box-shadow:0 0 0 2px var(--t212-green);{% endif %}"
+             onmouseover="this.style.boxShadow='0 4px 12px rgba(0,200,150,.25)'"
+             onmouseout="this.style.boxShadow='{% if is_active %}0 0 0 2px var(--t212-green){% endif %}'">
+          <div class="label d-flex align-items-center justify-content-between">
+            <span>{{ p.platform.name if p.platform else '—' }}</span>
+            {% if p.platform and p.platform.account_type %}
+            <span class="badge-exchange ms-1">{{ p.platform.account_type }}</span>
+            {% endif %}
+          </div>
+          <div class="value" style="font-size:1rem;">{{ fmt(p.quantity, 4) }} shares</div>
+          <div class="sub">{{ fmt(pct, 1) }}% of holding</div>
+        </div>
+      </a>
+    </div>
+    {% endfor %}
+    {% if all_positions | length > 1 %}
+    {% set all_active = not account_filter or account_filter in ('combined', 'portfolio', '') %}
+    <div class="col-6 col-md-3 col-lg-2">
+      <a href="/holding/{{ ticker }}" style="text-decoration:none; color:inherit;">
+        <div class="card metric-card p-3" style="cursor:pointer; transition: box-shadow .15s;{% if all_active %} box-shadow:0 0 0 2px var(--t212-green);{% endif %}"
+             onmouseover="this.style.boxShadow='0 4px 12px rgba(0,200,150,.25)'"
+             onmouseout="this.style.boxShadow='{% if all_active %}0 0 0 2px var(--t212-green){% endif %}'">
+          <div class="label">All Accounts</div>
+          <div class="value" style="font-size:1rem;">{{ fmt(total_qty.v, 4) }} shares</div>
+          <div class="sub">combined</div>
+        </div>
+      </a>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <!-- ── Pies ─────────────────────────────────────────────────────────────── -->
   {% if pies_in %}
   <div class="section-title">Pies</div>

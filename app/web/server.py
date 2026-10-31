@@ -5285,6 +5285,9 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         .all()
     )
 
+    # All positions (unfiltered) for per-account breakdown cards
+    all_positions = db.query(Position).filter_by(ticker=ticker, user_id=user.id).all()
+
     # Pies containing this ticker — scoped to the current user
     pie_rows = db.execute(text("""
         SELECT pie.pk AS id, pie.name, pie.account,
@@ -5308,6 +5311,7 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         "user_platforms": _hd_user_platforms,
         "display_currency": display_currency,
         "positions": positions_list,
+        "all_positions": all_positions,
         "total_quantity": total_quantity,
         "avg_price_display": avg_price_display,
         "current_price_display": current_price_display,
