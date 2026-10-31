@@ -307,6 +307,7 @@ def _load_filter_items(db: Session, user_id: int) -> tuple[list[str], list[dict]
         }
         for p in platforms
     ]
+    platform_list.sort(key=lambda x: (x["provider"], x["name"] or "", x["account_type"] or ""))
     return account_types, platform_list
 
 
