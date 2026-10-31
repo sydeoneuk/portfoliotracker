@@ -124,6 +124,15 @@ class TestParseDt(unittest.TestCase):
         dt = _parse_dt("15/01/2024 10:30:00")
         self.assertEqual(dt, datetime.datetime(2024, 1, 15, 10, 30, 0))
 
+    def test_strips_utc_offset_suffix(self):
+        # T212 SIPP exports timestamps with +00:00 suffix
+        dt = _parse_dt("2026-10-28 14:18:07+00:00")
+        self.assertEqual(dt, datetime.datetime(2026, 10, 28, 14, 18, 7))
+
+    def test_strips_z_suffix(self):
+        dt = _parse_dt("2024-01-15T10:30:00Z")
+        self.assertEqual(dt, datetime.datetime(2024, 1, 15, 10, 30, 0))
+
     def test_empty_returns_none(self):
         self.assertIsNone(_parse_dt(""))
 

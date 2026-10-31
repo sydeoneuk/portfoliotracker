@@ -95,6 +95,10 @@ def _float(s: str) -> float | None:
 def _parse_dt(s: str) -> datetime.datetime | None:
     if not s:
         return None
+    # Strip UTC offset suffix (+HH:MM or Z) so T212 SIPP exports parse correctly.
+    # All T212 timestamps are UTC so discarding the offset is safe.
+    import re as _re
+    s = _re.sub(r'[+-]\d{2}:\d{2}$|Z$', '', s).strip()
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y %H:%M:%S"):
         try:
             return datetime.datetime.strptime(s, fmt)
@@ -325,6 +329,7 @@ class T212CsvImporter:
                     "platform_id": self.platform_id,
                     "account": self.platform.account_type,
                     "amount": total,
+                    "paid_on": paid_on,
                     "synced_at": datetime.datetime.utcnow(),
                 },
             )
