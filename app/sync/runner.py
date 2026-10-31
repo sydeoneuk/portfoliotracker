@@ -15,15 +15,15 @@ from app.models import (
 
 
 class SyncRunner:
-    def __init__(self, session: Session, platform: "Platform",
+    def __init__(self, session: Session, platform: "Platform | None" = None,
                  api_key: str | None = None, api_secret: str | None = None,
                  user_id: int | None = None):
         self.session = session
         self.platform = platform
-        self.platform_id = platform.id
+        self.platform_id = platform.id if platform is not None else None
         # account kept for logging and backward-compat with web-server queries that
         # still filter on the account string column during the migration period.
-        self.account = platform.name
+        self.account = platform.name if platform is not None else None
         self.user_id = user_id
         self.client = Trading212Client(api_key=api_key, api_secret=api_secret)
 
