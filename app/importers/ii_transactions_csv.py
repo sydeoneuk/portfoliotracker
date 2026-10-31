@@ -319,15 +319,39 @@ class IiTransactionsCsvImporter:
     # ── Instruments ────────────────────────────────────────────────────────
 
     def _ensure_instrument(self, ticker: str, name: str | None) -> None:
-        existing = self._db.get(Instrument, ticker)
-        if existing:
-            return
-        inst = Instrument(
-            ticker=ticker,
-            name=name or ticker,
-            currency_code="GBP",
-            instrument_type="STOCK",
+        from sqlalchemy import literal_column
+        # ii instruments are GBP-priced and LSE-listed; use the .L yfinance suffix
+        # so enrichment fetches the correct instrument rather than a same-named US stock.
+        yf_candidate = f"{ticker}.L"
+        set_update = {
+            "updated_at": datetime.datetime.utcnow(),
+        }
+        if name:
+            set_update["name"] = name
+            set_update["short_name"] = name[:50]
+        set_update["yf_ticker"] = literal_column(
+            f"COALESCE(instruments.yf_ticker, '{yf_candidate}')"
         )
-        self._db.add(inst)
+
+        existing = self._db.get(Instrument, ticker)
+        stmt = (
+            pg_insert(Instrument)
+            .values(
+                ticker=ticker,
+                name=name or ticker,
+                short_name=(name[:50] if name else ticker),
+                currency_code="GBP",
+                instrument_type="STOCK",
+                yf_ticker=yf_candidate,
+                created_at=datetime.datetime.utcnow(),
+                updated_at=datetime.datetime.utcnow(),
+            )
+            .on_conflict_do_update(
+                index_elements=["ticker"],
+                set_=set_update,
+            )
+        )
+        self._db.execute(stmt)
         self._db.flush()
-        self._result.instruments_created += 1
+        if existing is None:
+            self._result.instruments_created += 1

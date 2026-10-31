@@ -235,19 +235,43 @@ class IiCsvImporter:
 
     def _ensure_instrument(self, ticker: str, name: str | None, currency: str | None) -> None:
         now = datetime.datetime.utcnow()
+        # Derive the Yahoo Finance ticker for LSE-listed instruments (GBP/GBX priced).
+        # This prevents yfinance enrichment from resolving the bare ticker to a US stock
+        # that happens to share the same symbol (e.g. FWRG → First Watch Restaurant Group
+        # instead of FWRG.L → Invesco FTSE All-World ETF).
+        yf_candidate = None
+        if (currency or "").upper() in ("GBP", "GBX"):
+            yf_candidate = f"{ticker}.L"
+
+        from sqlalchemy import literal_column
+        values: dict = dict(
+            ticker=ticker,
+            name=name or ticker,
+            short_name=(name[:50] if name else ticker),
+            currency_code=currency or None,
+            created_at=now,
+            updated_at=now,
+        )
+        if yf_candidate:
+            values["yf_ticker"] = yf_candidate
+
+        set_update: dict = {
+            "name": name or ticker,
+            "short_name": (name[:50] if name else ticker),
+            "updated_at": now,
+        }
+        if yf_candidate:
+            # Only set yf_ticker if not already present so manually-corrected values survive.
+            set_update["yf_ticker"] = literal_column(
+                f"COALESCE(instruments.yf_ticker, '{yf_candidate}')"
+            )
+
         stmt = (
             pg_insert(Instrument)
-            .values(
-                ticker=ticker,
-                name=name or ticker,
-                short_name=(name[:50] if name else ticker),
-                currency_code=currency or None,
-                created_at=now,
-                updated_at=now,
-            )
+            .values(**values)
             .on_conflict_do_update(
                 index_elements=["ticker"],
-                set_={"updated_at": now},
+                set_=set_update,
             )
         )
         existing = self.session.get(Instrument, ticker)

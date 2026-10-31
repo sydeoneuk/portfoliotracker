@@ -204,12 +204,13 @@ class TestDividendUpsertData(unittest.TestCase):
             "Div 13134   THE RENEWABLES INFRASTRUCTURE GRP   ORD NPV,n/a,n/a,£247.90,£589.72\n"
         )
         importer.import_file(io.BytesIO(csv.encode("utf-8")))
-        # Check that execute was called (dividend upsert)
         self.assertTrue(session.execute.called)
-        # Extract the statement's values from the first execute call
-        stmt = session.execute.call_args_list[0][0][0]
-        vals = stmt.compile(compile_kwargs={"literal_binds": True}).string
-        self.assertIn("div_7_TRIG_2026-09-30", vals)
+        # Search all execute calls for the dividend reference (instrument upsert runs first)
+        all_sql = " ".join(
+            c[0][0].compile(compile_kwargs={"literal_binds": True}).string
+            for c in session.execute.call_args_list
+        )
+        self.assertIn("div_7_TRIG_2026-09-30", all_sql)
 
     def test_dividend_quantity_extracted(self):
         importer, session = _make_importer(platform_id=3)
@@ -224,6 +225,22 @@ class TestDividendUpsertData(unittest.TestCase):
         self.assertEqual(result.errors, [])
 
 
+class TestInstrumentYfTicker(unittest.TestCase):
+    def test_lse_yf_ticker_set_on_instrument_upsert(self):
+        importer, session = _make_importer(platform_id=3)
+        csv = (
+            "Date,Settlement Date,Symbol,Sedol,Quantity,Price,Description,Reference,Debit,Credit,Running Balance\n"
+            "30/09/2026,30/09/2026,TRIG,BBHX2H9,n/a,n/a,"
+            "Div 13134   THE RENEWABLES INFRASTRUCTURE GRP   ORD NPV,n/a,n/a,£247.90,£589.72\n"
+        )
+        importer.import_file(io.BytesIO(csv.encode("utf-8")))
+        all_sql = " ".join(
+            c[0][0].compile(compile_kwargs={"literal_binds": True}).string
+            for c in session.execute.call_args_list
+        )
+        self.assertIn("TRIG.L", all_sql)
+
+
 class TestTradeUsesProvidedReference(unittest.TestCase):
     def test_trade_uses_ii_reference_not_synthesised(self):
         importer, session = _make_importer(platform_id=3)
@@ -234,9 +251,11 @@ class TestTradeUsesProvidedReference(unittest.TestCase):
         )
         result = importer.import_file(io.BytesIO(csv.encode("utf-8")))
         self.assertEqual(result.transactions_upserted, 1)
-        stmt = session.execute.call_args_list[0][0][0]
-        vals = stmt.compile(compile_kwargs={"literal_binds": True}).string
-        self.assertIn("27726IBQHJS", vals)
+        all_sql = " ".join(
+            c[0][0].compile(compile_kwargs={"literal_binds": True}).string
+            for c in session.execute.call_args_list
+        )
+        self.assertIn("27726IBQHJS", all_sql)
 
 
 if __name__ == "__main__":
