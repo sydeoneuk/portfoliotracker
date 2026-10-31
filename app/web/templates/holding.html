@@ -1,3 +1,4 @@
+{% from "_account_picker.html" import ac_styles, ac_picker, ac_scripts %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -32,6 +33,7 @@
     .top-bar .brand span { color: var(--t212-green); }
     .top-bar .user-info { display: flex; align-items: center; gap: .75rem; font-size: .82rem; }
     .top-bar .avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+    {{ ac_styles() }}
 
     .holding-header {
       background: #1a2634; color: #fff;
@@ -121,14 +123,7 @@
     </button>
     <div class="brand">Trading 212 <span>Portfolio</span></div>
     <a href="/portfolio?account={{ account_filter }}" class="btn btn-sm btn-outline-light">← Portfolio</a>
-    <div class="btn-group btn-group-sm ms-2" role="group">
-      <a href="/holding/{{ ticker }}?account=portfolio"
-         class="btn {% if account_filter in ('', 'combined', 'portfolio') or not account_filter %}btn-light active{% else %}btn-outline-light{% endif %}">All</a>
-      {% for at in account_types %}<a href="/holding/{{ ticker }}?account={{ at }}"
-         class="btn {% if account_filter == at %}btn-light active{% else %}btn-outline-light{% endif %}">{{ at }}</a>{% endfor %}
-      {% for p in user_platforms %}<a href="/holding/{{ ticker }}?account={{ p.value }}"
-         class="btn {% if account_filter == p.value %}btn-light active{% else %}btn-outline-light{% endif %}">{{ p.name }}</a>{% endfor %}
-    </div>
+    {{ ac_picker(user_platforms) }}
   </div>
   <div class="user-info">
     {% if user.avatar_url %}
@@ -692,5 +687,6 @@
   <br><span style="color:#4a5a6a; margin-top:.4rem; display:inline-block;">&copy; {{ now().year }} <a href="https://www.sydeone.co.uk" target="_blank" rel="noopener noreferrer" style="color:#8a9bb0; text-decoration:underline;">Sydeone Ltd</a>. All rights reserved.</span>
 </footer>
 
+{{ ac_scripts('/holding/' ~ ticker, account_filter) }}
 </body>
 </html>
