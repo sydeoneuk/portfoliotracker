@@ -5222,6 +5222,8 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     div_q = db.query(DividendPayment).filter_by(ticker=ticker, user_id=user.id)
     if hd_ft == "platform":
         div_q = div_q.filter_by(platform_id=hd_fv)
+    elif hd_ft == "platforms":
+        div_q = div_q.filter(DividendPayment.platform_id.in_(hd_fv))
     elif hd_ft == "account_type":
         div_q = div_q.filter(DividendPayment.platform_id.in_(plat_ids))
     div_payments = div_q.order_by(DividendPayment.paid_on.desc()).all()
@@ -5260,6 +5262,8 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     )
     if hd_ft == "platform":
         orders_q = orders_q.filter(Order.platform_id == hd_fv)
+    elif hd_ft == "platforms":
+        orders_q = orders_q.filter(Order.platform_id.in_(hd_fv))
     elif hd_ft == "account_type":
         orders_q = orders_q.filter(Order.platform_id.in_(plat_ids))
     trade_history = orders_q.order_by(Order.filled_at.desc()).all()
