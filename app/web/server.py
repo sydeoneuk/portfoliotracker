@@ -1908,6 +1908,49 @@ async def import_ii_csv(
     })
 
 
+@app.post("/import/ii-transactions-csv")
+async def import_ii_transactions_csv(
+    request: Request,
+    db: Session = Depends(get_session),
+):
+    """Accept an Interactive Investor transactions CSV and import it."""
+    from fastapi import UploadFile
+    from fastapi.responses import JSONResponse
+    from app.models import Platform
+    from app.importers.ii_transactions_csv import IiTransactionsCsvImporter
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+    form = await request.form()
+    csv_file: UploadFile | None = form.get("csv_file")
+    platform_id = form.get("platform_id", "").strip()
+
+    if csv_file is None or not csv_file.filename:
+        return JSONResponse({"error": "No file uploaded."}, status_code=400)
+
+    if not platform_id:
+        return JSONResponse({"error": "Specify a platform."}, status_code=400)
+
+    platform = db.query(Platform).filter_by(id=int(platform_id), user_id=user.id).first()
+    if not platform:
+        return JSONResponse({"error": "Platform not found."}, status_code=404)
+
+    content = await csv_file.read()
+    importer = IiTransactionsCsvImporter(session=db, platform=platform, user_id=user.id)
+    result = importer.import_file(__import__("io").BytesIO(content))
+
+    return JSONResponse({
+        "summary": result.summary(),
+        "dividends_upserted": result.dividends_upserted,
+        "transactions_upserted": result.transactions_upserted,
+        "instruments_created": result.instruments_created,
+        "skipped": result.skipped,
+        "errors": result.errors[:20],
+    })
+
+
 @app.post("/import/pie-csv")
 async def import_pie_csv(
     request: Request,

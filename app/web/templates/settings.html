@@ -514,6 +514,32 @@
   </div>
 </div>
 
+<!-- ── ii Transactions CSV import modal ───────────────────────────────── -->
+<div class="modal fade" id="iiTransactionsCsvModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title">Import ii Transactions CSV</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="ii-tx-csv-platform-id">
+        <p class="mb-2">Platform: <strong id="ii-tx-csv-platform-name"></strong></p>
+        <p class="text-muted small mb-3">Export from <strong>ii → My ii → Transactions → Download transactions CSV</strong>. Re-importing will not create duplicates.</p>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">Transactions CSV</label>
+          <input type="file" class="form-control form-control-sm" id="ii-tx-csv-file" accept=".csv">
+        </div>
+        <div id="ii-tx-csv-result" class="alert mb-0" style="display:none;"></div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-t212" id="ii-tx-csv-import-btn">Import Transactions</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ── Clear data confirmation modal ──────────────────────────────────── -->
 <div class="modal fade" id="clearDataModal" tabindex="-1" aria-labelledby="clearDataModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
@@ -664,6 +690,7 @@ function loadAccounts() {
               ${p.key_slot ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showSetKeyModal(${p.id}, '${p.key_slot}', '${p.name}')">Set key</button>` : ''}
               ${method !== 'API' ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showImportCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}', '${p.platform_type}')">Import CSV</button>` : ''}
               ${p.platform_type && p.platform_type.startsWith('t212') ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showPieCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Import Pie CSV</button>` : ''}
+              ${p.platform_type === 'interactive_investor' ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showIiTransactionsCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Import Transactions CSV</button>` : ''}
               <button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showRenameModal(${p.id}, '${p.name}')">Rename</button>
               <button class="btn btn-sm btn-outline-danger py-0" style="font-size:.78rem;" onclick="deletePlatform(${p.id}, '${p.name}', ${p.position_count})">Delete</button>
             </div>
@@ -988,6 +1015,59 @@ async function pieCsvAcceptQty(btn, platformId, pieName) {
     btn.textContent = 'Use pie quantities for positions';
   }
 }
+
+// ── ii Transactions CSV import ─────────────────────────────────────────────
+function showIiTransactionsCsvModal(id, name) {
+  document.getElementById('ii-tx-csv-platform-id').value = id;
+  document.getElementById('ii-tx-csv-platform-name').textContent = name;
+  document.getElementById('ii-tx-csv-file').value = '';
+  const resultEl = document.getElementById('ii-tx-csv-result');
+  resultEl.style.display = 'none';
+  resultEl.textContent = '';
+  const btn = document.getElementById('ii-tx-csv-import-btn');
+  btn.disabled = false;
+  btn.textContent = 'Import Transactions';
+  new bootstrap.Modal(document.getElementById('iiTransactionsCsvModal')).show();
+}
+
+document.getElementById('ii-tx-csv-import-btn').addEventListener('click', async function () {
+  const pid  = document.getElementById('ii-tx-csv-platform-id').value;
+  const file = document.getElementById('ii-tx-csv-file').files[0];
+  const resultEl = document.getElementById('ii-tx-csv-result');
+
+  if (!file) { alert('Please select a CSV file.'); return; }
+
+  this.disabled = true;
+  this.textContent = 'Importing…';
+  resultEl.style.display = 'none';
+
+  try {
+    const fd = new FormData();
+    fd.append('platform_id', pid);
+    fd.append('csv_file', file);
+    const resp = await fetch('/import/ii-transactions-csv', { method: 'POST', body: fd });
+    const data = await resp.json();
+
+    if (!resp.ok || data.error) {
+      resultEl.className = 'alert alert-danger mb-0';
+      resultEl.textContent = data.error || 'Import failed.';
+    } else {
+      let html = '<strong>' + data.summary + '</strong>';
+      if (data.errors && data.errors.length) {
+        html += '<ul class="mb-0 mt-2">' + data.errors.map(e => '<li class="text-danger">' + e + '</li>').join('') + '</ul>';
+      }
+      resultEl.className = 'alert alert-success mb-0';
+      resultEl.innerHTML = html;
+    }
+  } catch (err) {
+    resultEl.className = 'alert alert-danger mb-0';
+    resultEl.textContent = 'Upload failed: ' + err.message;
+  } finally {
+    this.disabled = false;
+    this.textContent = 'Import Transactions';
+    resultEl.style.display = '';
+  }
+});
 </script>
 </body>
 </html>
