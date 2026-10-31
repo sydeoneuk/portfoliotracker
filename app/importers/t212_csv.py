@@ -278,11 +278,13 @@ class T212CsvImporter:
     def _import_dividend(self, row: dict, hm: dict[str, str], action: str) -> None:
         t212_id = _get(row, hm, "id")
         if not t212_id:
-            # T212 doesn't assign IDs to dividend rows; synthesise one from ticker + time
+            # T212 doesn't assign IDs to dividend rows; synthesise one that is
+            # unique per platform so ISA and SIPP dividends for the same ticker
+            # on the same day don't collide on the (user_id, reference) constraint.
             ticker_raw = _get(row, hm, "ticker")
             time_raw = _get(row, hm, "time (utc)", "time")
             if ticker_raw and time_raw:
-                t212_id = f"div_{ticker_raw}_{time_raw}"
+                t212_id = f"div_{self.platform_id}_{ticker_raw}_{time_raw}"
             else:
                 self._result.skipped += 1
                 return

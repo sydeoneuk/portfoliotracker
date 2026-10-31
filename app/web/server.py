@@ -668,7 +668,7 @@ def _scheduled_sync_all_users() -> None:
 
 
 def _snapshot_csv_platforms(db) -> dict:
-    """Write today's HoldingSnapshot rows for all non-API platforms.
+    """Write today's HoldingSnapshot and PortfolioSnapshot rows for all non-API platforms.
 
     API platforms are snapshotted during their own SyncRunner run; this
     covers CSV-imported platforms (ii, T212 SIPP, etc.) so they also
@@ -676,7 +676,6 @@ def _snapshot_csv_platforms(db) -> dict:
     Requires instrument_prices to have been refreshed first.
     """
     from sqlalchemy import text as _t
-    from app.models import Platform
     from app.models.holding_snapshot import HoldingSnapshot
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -695,7 +694,7 @@ def _snapshot_csv_platforms(db) -> dict:
     written = 0
     for pl in platforms:
         # Fetch positions with best available price
-        rows = db.execute(_t(f"""
+        rows = db.execute(_t("""
             SELECT
                 pos.ticker,
                 pos.quantity,
@@ -716,12 +715,14 @@ def _snapshot_csv_platforms(db) -> dict:
               AND pos.quantity > 0
         """), {"platform_id": pl.id, "user_id": pl.user_id}).fetchall()
 
+        account_total = 0.0
         for row in rows:
             quantity = float(row.quantity or 0)
             price = float(row.price_native or 0)
             # Convert GBX pence to GBP for value calculation
             price_gbp = price / 100.0 if (row.currency or "").upper() == "GBX" else price
             value_gbp = quantity * price_gbp
+            account_total += value_gbp
 
             stmt = (
                 pg_insert(HoldingSnapshot)
@@ -748,6 +749,31 @@ def _snapshot_csv_platforms(db) -> dict:
             )
             db.execute(stmt)
             written += 1
+
+        # Write the account-level PortfolioSnapshot so the Value History chart
+        # includes this platform alongside API-synced accounts.
+        # Delete-then-insert mirrors SyncRunner; ON CONFLICT is unreliable when
+        # pie_id is NULL because PostgreSQL treats NULLs as distinct.
+        db.execute(_t("""
+            DELETE FROM portfolio_snapshots
+            WHERE user_id = :user_id
+              AND platform_id = :platform_id
+              AND snapshot_date = :snapshot_date
+              AND scope_type = 'account'
+        """), {"user_id": pl.user_id, "platform_id": pl.id, "snapshot_date": today})
+        db.execute(_t("""
+            INSERT INTO portfolio_snapshots
+                (user_id, snapshot_date, captured_at, platform_id, account, scope_type, pie_id, total_value_gbp)
+            VALUES
+                (:user_id, :snapshot_date, :captured_at, :platform_id, :account, 'account', NULL, :total_value_gbp)
+        """), {
+            "user_id": pl.user_id,
+            "snapshot_date": today,
+            "captured_at": now,
+            "platform_id": pl.id,
+            "account": pl.account_type,
+            "total_value_gbp": account_total,
+        })
 
     db.commit()
     return {"platforms": len(platforms), "snapshots_written": written}
