@@ -2107,9 +2107,16 @@ _PRICE_SUBQ = (
 
 
 def _eff_price(ticker_col: str = "p.ticker", avg_col: str = "p.average_price") -> str:
-    """SQL expression for the best available GBP price, falling back to average cost then current price."""
+    """SQL expression for the best available price for current value.
+
+    Priority: instrument_prices table → current_price on position → average_price.
+    current_price is preferred over average_price because average_price can be
+    misleadingly low for CSV-imported platforms where some shares were transferred
+    in at zero cost (e.g. ii transfers), whereas current_price always reflects the
+    live market price from the last CSV export.
+    """
     cur_col = avg_col.replace("average_price", "current_price")
-    return f"COALESCE({_PRICE_SUBQ.format(t=ticker_col)}, {avg_col}, {cur_col})"
+    return f"COALESCE({_PRICE_SUBQ.format(t=ticker_col)}, {cur_col}, {avg_col})"
 
 
 # ── Main dashboard ─────────────────────────────────────────────────────────
