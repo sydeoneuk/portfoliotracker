@@ -260,8 +260,19 @@ def _parse_account_filter(account: str) -> tuple[str, str | int | list | None]:
     return "portfolio", None
 
 
-def _derive_provider(name: str, account_type: str) -> str:
-    """Strip account-type keywords from a platform name to get the provider name."""
+_PLATFORM_TYPE_LABELS: dict[str, str] = {
+    "t212_api": "Trading 212",
+    "t212_csv": "Trading 212",
+    "interactive_investor": "Interactive Investor",
+    "charles_stanley": "Charles Stanley",
+    "best_invest": "Best Invest",
+}
+
+
+def _derive_provider(name: str, account_type: str, platform_type: str = "") -> str:
+    if platform_type in _PLATFORM_TYPE_LABELS:
+        return _PLATFORM_TYPE_LABELS[platform_type]
+    # Fallback: strip account-type keywords from the display name
     n = name.strip()
     for suffix in (account_type, "ISA", "SIPP", "GIA", "LISA", "Invest"):
         if suffix and n.lower().endswith(suffix.lower()):
@@ -292,7 +303,7 @@ def _load_filter_items(db: Session, user_id: int) -> tuple[list[str], list[dict]
             "name": p.name,
             "account_type": p.account_type,
             "value": f"platform_{p.id}",
-            "provider": _derive_provider(p.name, p.account_type),
+            "provider": _derive_provider(p.name, p.account_type, p.platform_type),
         }
         for p in platforms
     ]

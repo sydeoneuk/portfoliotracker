@@ -49,8 +49,8 @@
     .ac-item { display: flex; align-items: center; gap: .5rem; padding: .3rem 1rem; color: #cdd6e0; font-size: .8rem; cursor: pointer; user-select: none; }
     .ac-item:hover { background: rgba(0,200,150,.1); color: #fff; }
     .ac-item input[type=checkbox] { accent-color: var(--t212-green); cursor: pointer; }
-    .ac-section-label { padding: .35rem 1rem .15rem; font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .7px; color: #5d7a96; }
-    .ac-platform-item { padding-left: 2rem; }
+    .ac-prov-item { font-weight: 600; }
+    .ac-platform-item { padding-left: 2.5rem; }
     .ac-divider { border-top: 1px solid rgba(255,255,255,.08); margin: .35rem 0; }
     .ac-footer { padding: .4rem 1rem 0; display: flex; justify-content: flex-end; }
     .ac-apply { background: var(--t212-green); border: none; color: #0f1923; border-radius: 5px; padding: .25rem .75rem; font-size: .78rem; font-weight: 600; cursor: pointer; }
@@ -144,10 +144,12 @@
         {% for p in user_platforms %}
           {% if p.provider != ns.prev_provider %}
             {% if ns.prev_provider != '' %}<div class="ac-divider" style="margin:.15rem 0"></div>{% endif %}
-            <div class="ac-section-label">{{ p.provider }}</div>
+            <label class="ac-item ac-prov-item">
+              <input type="checkbox" class="ac-prov" data-provider="{{ p.provider }}"> {{ p.provider }}
+            </label>
             {% set ns.prev_provider = p.provider %}
           {% endif %}
-          <label class="ac-item ac-platform-item"><input type="checkbox" class="ac-plat" value="{{ p.value }}"> {{ p.account_type }}</label>
+          <label class="ac-item ac-platform-item"><input type="checkbox" class="ac-plat" value="{{ p.value }}" data-provider="{{ p.provider }}"> {{ p.account_type }}</label>
         {% endfor %}
         <div class="ac-divider"></div>
         <div class="ac-footer"><button class="ac-apply" onclick="acApply()">Apply</button></div>
@@ -259,46 +261,74 @@
   // Account chooser
   (function () {
     var currentAccount = {{ account_filter | tojson }};
+    function updateProviderStates() {
+      document.querySelectorAll('.ac-prov').forEach(function(provCb) {
+        var prov = provCb.dataset.provider;
+        var children = Array.from(document.querySelectorAll('.ac-plat[data-provider="' + prov + '"]'));
+        var n = children.filter(function(c) { return c.checked; }).length;
+        if (n === 0) { provCb.checked = false; provCb.indeterminate = false; }
+        else if (n === children.length) { provCb.checked = true; provCb.indeterminate = false; }
+        else { provCb.checked = false; provCb.indeterminate = true; }
+      });
+    }
     function acInit() {
-      var checkboxes = document.querySelectorAll('.ac-plat');
       var allCb = document.getElementById('ac-all');
+      var platCbs = document.querySelectorAll('.ac-plat');
+      var provCbs = document.querySelectorAll('.ac-prov');
       if (!currentAccount || currentAccount === 'portfolio' || currentAccount === '') {
         allCb.checked = true;
-        checkboxes.forEach(function(cb) { cb.checked = true; });
       } else {
         var parts = new Set(currentAccount.split(',').map(function(s) { return s.trim(); }));
-        checkboxes.forEach(function(cb) { cb.checked = parts.has(cb.value); });
-        allCb.checked = checkboxes.length > 0 && Array.from(checkboxes).every(function(cb) { return cb.checked; });
+        platCbs.forEach(function(cb) { cb.checked = parts.has(cb.value); });
       }
+      updateProviderStates();
       acUpdateLabel();
       allCb.addEventListener('change', function() {
-        document.querySelectorAll('.ac-plat').forEach(function(cb) { cb.checked = allCb.checked; });
+        if (this.checked) {
+          platCbs.forEach(function(cb) { cb.checked = false; });
+          provCbs.forEach(function(cb) { cb.checked = false; cb.indeterminate = false; });
+        }
         acUpdateLabel();
       });
-      checkboxes.forEach(function(cb) {
+      provCbs.forEach(function(provCb) {
+        provCb.addEventListener('change', function() {
+          var prov = this.dataset.provider;
+          document.querySelectorAll('.ac-plat[data-provider="' + prov + '"]').forEach(function(cb) { cb.checked = provCb.checked; });
+          if (provCb.checked) allCb.checked = false;
+          if (!Array.from(platCbs).some(function(c) { return c.checked; })) allCb.checked = true;
+          acUpdateLabel();
+        });
+      });
+      platCbs.forEach(function(cb) {
         cb.addEventListener('change', function() {
-          var all = document.querySelectorAll('.ac-plat');
-          document.getElementById('ac-all').checked = Array.from(all).every(function(c) { return c.checked; });
+          if (this.checked) allCb.checked = false;
+          updateProviderStates();
+          if (!Array.from(platCbs).some(function(c) { return c.checked; })) allCb.checked = true;
           acUpdateLabel();
         });
       });
     }
     function acUpdateLabel() {
-      var checked = Array.from(document.querySelectorAll('.ac-plat:checked'));
-      var all = document.querySelectorAll('.ac-plat');
-      var label;
-      if (checked.length === 0 || checked.length === all.length) { label = 'Portfolio'; }
-      else if (checked.length === 1) { label = checked[0].closest('label').textContent.trim(); }
-      else { label = checked.length + ' accounts'; }
-      document.getElementById('ac-label').textContent = label;
+      var allCb = document.getElementById('ac-all');
+      var platCbs = document.querySelectorAll('.ac-plat');
+      var label = document.getElementById('ac-label');
+      if (allCb && allCb.checked) { label.textContent = 'Portfolio'; return; }
+      var checked = Array.from(platCbs).filter(function(cb) { return cb.checked; });
+      if (checked.length === 0) { label.textContent = 'Portfolio'; }
+      else if (checked.length === 1) { label.textContent = checked[0].closest('label').textContent.trim(); }
+      else { label.textContent = checked.length + ' accounts'; }
     }
     window.acToggle = function(e) { e.stopPropagation(); document.getElementById('ac-dropdown').classList.toggle('open'); };
     window.acApply = function() {
-      var checked = Array.from(document.querySelectorAll('.ac-plat:checked'));
-      var all = document.querySelectorAll('.ac-plat');
-      var account = (checked.length === 0 || checked.length === all.length) ? 'portfolio' : checked.map(function(cb) { return cb.value; }).join(',');
+      var allCb = document.getElementById('ac-all');
+      var platCbs = document.querySelectorAll('.ac-plat');
       var params = new URLSearchParams(window.location.search);
-      params.set('account', account);
+      if (allCb.checked) {
+        params.set('account', 'portfolio');
+      } else {
+        var checked = Array.from(platCbs).filter(function(cb) { return cb.checked; }).map(function(cb) { return cb.value; });
+        params.set('account', checked.length === 0 ? 'portfolio' : checked.join(','));
+      }
       window.location.href = '/dividends?' + params.toString();
     };
     document.addEventListener('click', function(e) {

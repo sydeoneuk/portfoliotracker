@@ -37,8 +37,8 @@
     .ac-item { display: flex; align-items: center; gap: .5rem; padding: .3rem 1rem; color: #cdd6e0; font-size: .8rem; cursor: pointer; user-select: none; }
     .ac-item:hover { background: rgba(0,200,150,.1); color: #fff; }
     .ac-item input[type=checkbox] { accent-color: var(--t212-green); cursor: pointer; }
-    .ac-section-label { padding: .35rem 1rem .15rem; font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .7px; color: #5d7a96; }
-    .ac-platform-item { padding-left: 2rem; }
+    .ac-prov-item { font-weight: 600; }
+    .ac-platform-item { padding-left: 2.5rem; }
     .ac-divider { border-top: 1px solid rgba(255,255,255,.08); margin: .35rem 0; }
     .ac-footer { padding: .4rem 1rem 0; display: flex; justify-content: flex-end; }
     .ac-apply { background: var(--t212-green); border: none; color: #0f1923; border-radius: 5px; padding: .25rem .75rem; font-size: .78rem; font-weight: 600; cursor: pointer; }
@@ -152,11 +152,13 @@
       {% for p in user_platforms %}
         {% if p.provider != ns.prev_provider %}
           {% if ns.prev_provider != '' %}<div class="ac-divider" style="margin:.15rem 0"></div>{% endif %}
-          <div class="ac-section-label">{{ p.provider }}</div>
+          <label class="ac-item ac-prov-item">
+            <input type="checkbox" class="ac-prov" data-provider="{{ p.provider }}"> {{ p.provider }}
+          </label>
           {% set ns.prev_provider = p.provider %}
         {% endif %}
         <label class="ac-item ac-platform-item">
-          <input type="checkbox" class="ac-plat" value="{{ p.value }}"> {{ p.account_type or p.name }}
+          <input type="checkbox" class="ac-plat" value="{{ p.value }}" data-provider="{{ p.provider }}"> {{ p.account_type or p.name }}
         </label>
       {% endfor %}
       <div class="ac-divider"></div>
@@ -506,9 +508,20 @@
 <script>
 (function() {
   var currentFilter = {{ account_filter | tojson }};
+  function updateProviderStates() {
+    document.querySelectorAll('.ac-prov').forEach(function(provCb) {
+      var prov = provCb.dataset.provider;
+      var children = Array.from(document.querySelectorAll('.ac-plat[data-provider="' + prov + '"]'));
+      var n = children.filter(function(c) { return c.checked; }).length;
+      if (n === 0) { provCb.checked = false; provCb.indeterminate = false; }
+      else if (n === children.length) { provCb.checked = true; provCb.indeterminate = false; }
+      else { provCb.checked = false; provCb.indeterminate = true; }
+    });
+  }
   function acInit() {
     var allCb = document.getElementById('ac-all');
     var platCbs = document.querySelectorAll('.ac-plat');
+    var provCbs = document.querySelectorAll('.ac-prov');
     var selected = [];
     if (!currentFilter || currentFilter === 'portfolio' || currentFilter === 'combined' || currentFilter === '') {
       allCb.checked = true;
@@ -517,17 +530,30 @@
     } else {
       selected = [currentFilter];
     }
-    platCbs.forEach(function(cb) {
-      cb.checked = selected.indexOf(cb.value) !== -1;
-    });
+    platCbs.forEach(function(cb) { cb.checked = selected.indexOf(cb.value) !== -1; });
+    updateProviderStates();
     allCb.addEventListener('change', function() {
-      if (this.checked) platCbs.forEach(function(cb) { cb.checked = false; });
+      if (this.checked) {
+        platCbs.forEach(function(cb) { cb.checked = false; });
+        provCbs.forEach(function(cb) { cb.checked = false; cb.indeterminate = false; });
+      }
+      acUpdateLabel();
+    });
+    provCbs.forEach(function(provCb) {
+      provCb.addEventListener('change', function() {
+        var prov = this.dataset.provider;
+        document.querySelectorAll('.ac-plat[data-provider="' + prov + '"]').forEach(function(cb) { cb.checked = provCb.checked; });
+        if (provCb.checked) allCb.checked = false;
+        if (!Array.from(platCbs).some(function(c) { return c.checked; })) allCb.checked = true;
+        acUpdateLabel();
+      });
     });
     platCbs.forEach(function(cb) {
       cb.addEventListener('change', function() {
         if (this.checked) allCb.checked = false;
-        var anyChecked = Array.from(platCbs).some(function(c) { return c.checked; });
-        if (!anyChecked) allCb.checked = true;
+        updateProviderStates();
+        if (!Array.from(platCbs).some(function(c) { return c.checked; })) allCb.checked = true;
+        acUpdateLabel();
       });
     });
     acUpdateLabel();
