@@ -15,6 +15,11 @@ from app.models.ai_portfolio_analysis_cache import AIPortfolioAnalysisCache
 from app.models.ai_analysis_usage import AIAnalysisUsage
 from app.models.app_setting import AppSetting
 from app.models.instrument_price import InstrumentPrice
+from app.models.instrument_mapping import UserInstrumentMapping, InstrumentMappingProposal, InstrumentMappingAudit
+from app.models.ingestion import IngestionBatch, IngestionRow, ImportHoldingObservation, ImportAuthority
+from app.models.listing_identity import Security, Listing, ProviderListingMapping, InstrumentListingLink, ListingIdentityAudit
+from app.models.scoped_identity import AccountListingResolution, AccountListingAudit
+from app.models.account_price import AccountListingPrice
 
 __all__ = [
     "Base", "Platform",

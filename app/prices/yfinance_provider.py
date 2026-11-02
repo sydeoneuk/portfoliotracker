@@ -7,6 +7,7 @@ skipped; the caller should fall back to another source for them.
 """
 import logging
 import warnings
+import math
 from typing import Sequence
 
 import yfinance as yf
@@ -16,6 +17,7 @@ import yfinance as yf
 warnings.filterwarnings("ignore", message=".*inplace keyword.*sort_index.*", module="yfinance")
 
 from app.prices.base import PriceProvider, PriceResult
+from app.valuation import currency_code
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +49,8 @@ def _fetch_fx_rates(currencies: set[str]) -> dict[str, float]:
                 rate = float(col.dropna().iloc[-1])
                 # pair is e.g. "USDGBP=X" → currency is "USD"
                 currency = pair.replace("GBP=X", "")
-                rates[currency] = rate
+                if math.isfinite(rate) and rate > 0:
+                    rates[currency] = rate
             except Exception:
                 pass
     except Exception as exc:
@@ -63,11 +66,11 @@ class YFinanceProvider(PriceProvider):
         instruments: list of {ticker, yf_ticker, currency, exchange}
         """
         # Build yf_ticker → instrument mapping; skip anything without a yf_ticker
-        yf_map: dict[str, dict] = {}
+        yf_map: dict[str, dict[str, dict]] = {}
         for inst in instruments:
             yf_t = inst.get("yf_ticker") or _derive_yf_ticker(inst)
             if yf_t:
-                yf_map[yf_t] = inst
+                yf_map.setdefault(yf_t, {})[inst['ticker']] = inst
 
         if not yf_map:
             return []
@@ -98,11 +101,24 @@ class YFinanceProvider(PriceProvider):
             except Exception:
                 log.debug("No close price for %s", yf_t)
 
+        # Downloaded closes use Yahoo's quote units, which can differ from an
+        # uploaded listing's units (notably GBP versus GBp). Never label those
+        # prices using the holding file's currency without checking the source.
+        quote_currencies = {}
+        for yf_t in prices_native:
+            try:
+                ccy = currency_code(yf.Ticker(yf_t).fast_info["currency"])
+                if ccy:
+                    quote_currencies[yf_t] = ccy
+            except Exception:
+                log.warning("Quote currency unavailable for %s; price skipped", yf_t)
+
         # Collect currencies needed for FX conversion
         needed_currencies: set[str] = set()
         for yf_t, price in prices_native.items():
-            inst = yf_map[yf_t]
-            ccy = inst.get("currency") or "GBP"
+            ccy = quote_currencies.get(yf_t)
+            if not ccy:
+                continue
             if ccy not in ("GBP",) and ccy not in _GBX_CURRENCIES:
                 needed_currencies.add(ccy)
 
@@ -111,24 +127,17 @@ class YFinanceProvider(PriceProvider):
 
         results: list[PriceResult] = []
         for yf_t, native_price in prices_native.items():
-            inst = yf_map[yf_t]
-            ccy = inst.get("currency") or "GBP"
+            ccy = quote_currencies.get(yf_t)
+            if not ccy:
+                continue
 
-            if ccy in _GBX_CURRENCIES:
-                # Prices in pence — convert to pounds for price, gbp = /100
-                gbp_price = native_price / 100.0
+            rate = fx.get(ccy)
+            gbp_price = native_price / 100.0 if ccy in _GBX_CURRENCIES else native_price * rate if rate is not None else None
+            for inst in yf_map[yf_t].values():
                 results.append(PriceResult(
                     ticker=inst["ticker"],
                     price=native_price,
                     price_gbp=gbp_price,
-                    currency=ccy,
-                ))
-            else:
-                rate = fx.get(ccy, 1.0)
-                results.append(PriceResult(
-                    ticker=inst["ticker"],
-                    price=native_price,
-                    price_gbp=native_price * rate,
                     currency=ccy,
                 ))
 

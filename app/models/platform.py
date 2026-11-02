@@ -1,6 +1,7 @@
 import datetime
 from sqlalchemy import Boolean, Column, DateTime, Integer, ForeignKey, String
 from sqlalchemy.orm import relationship
+from sqlalchemy import UniqueConstraint
 from app.models.base import Base
 
 # Valid platform_type values
@@ -19,6 +20,7 @@ ACCOUNT_TYPE_LISA = "LISA"     # Lifetime ISA
 
 class Platform(Base):
     __tablename__ = "platforms"
+    __table_args__ = (UniqueConstraint("id", "user_id", name="uq_platforms_id_user"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)

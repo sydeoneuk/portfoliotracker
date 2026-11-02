@@ -25,6 +25,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.sync.runner import SyncRunner
 from app.sync.dividend_sync import DividendSync
+from app.models import Platform
 
 
 def run_migrations():
@@ -80,7 +81,14 @@ def main():
     try:
         if not args.dividends_only:
             for account_label, api_key, api_secret in accounts:
-                runner = SyncRunner(session, account=account_label,
+                wrapper = 'ISA' if account_label == 'ISA' else 'GIA'
+                matches = session.query(Platform).filter_by(user_id=args.user_id, platform_type='t212_api',
+                    account_type=wrapper, is_active=True).all()
+                if len(matches) != 1:
+                    raise ValueError(f'Expected exactly one active {wrapper} API account for this user; found {len(matches)}. No account is guessed or created.')
+                if not api_key:
+                    raise ValueError(f'No API credentials configured for {account_label}')
+                runner = SyncRunner(session, platform=matches[0],
                                     api_key=api_key, api_secret=api_secret,
                                     user_id=args.user_id)
                 runner.sync_all()

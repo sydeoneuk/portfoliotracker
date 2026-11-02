@@ -173,6 +173,7 @@
 
 <!-- ── Main content ─────────────────────────────────────────────────────── -->
 <div class="container-fluid px-4 py-3">
+{% if cost_unknown %}<div class="alert alert-warning">Cost basis unavailable; preserved legacy values require reconciliation.</div>{% elif cost_estimated %}<div class="alert alert-info">Moving-average cost estimate; opening history is unverified.</div>{% endif %}
 
   {% if instrument.description %}
   <!-- ── About ──────────────────────────────────────────────────────────── -->
@@ -214,7 +215,7 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Market Value</div>
-        <div class="value {% if value_display >= cost_display %}pnl-pos{% else %}pnl-neg{% endif %}">
+        <div class="value {% if cost_display is not none %}{% if value_display >= cost_display %}pnl-pos{% else %}pnl-neg{% endif %}{% endif %}">
           {{ cfmt(value_display, display_currency) }}
         </div>
       </div>
@@ -223,11 +224,11 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Cap. P&amp;L</div>
-        <div class="value {% if cap_pnl_display > 0 %}pnl-pos{% elif cap_pnl_display < 0 %}pnl-neg{% endif %}">
-          {% if cap_pnl_display >= 0 %}+{% endif %}{{ cfmt(cap_pnl_display, display_currency) }}
+        <div class="value {% if (cap_pnl_display is not none and cap_pnl_display > 0) %}pnl-pos{% elif (cap_pnl_display is not none and cap_pnl_display < 0) %}pnl-neg{% endif %}">
+          {% if (cap_pnl_display is not none and cap_pnl_display >= 0) %}+{% endif %}{{ cfmt(cap_pnl_display, display_currency) }}
         </div>
-        <div class="sub {% if cap_pnl_pct > 0 %}pnl-pos{% elif cap_pnl_pct < 0 %}pnl-neg{% endif %}">
-          {% if cap_pnl_pct >= 0 %}+{% endif %}{{ fmt(cap_pnl_pct, 2) }}%
+        <div class="sub {% if (cap_pnl_pct is not none and cap_pnl_pct > 0) %}pnl-pos{% elif (cap_pnl_pct is not none and cap_pnl_pct < 0) %}pnl-neg{% endif %}">
+          {% if (cap_pnl_pct is not none and cap_pnl_pct >= 0) %}+{% endif %}{{ fmt(cap_pnl_pct, 2) }}%
         </div>
       </div>
     </div>
@@ -235,11 +236,11 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Total P&amp;L</div>
-        <div class="value {% if total_pnl_display > 0 %}pnl-pos{% elif total_pnl_display < 0 %}pnl-neg{% endif %}">
-          {% if total_pnl_display >= 0 %}+{% endif %}{{ cfmt(total_pnl_display, display_currency) }}
+        <div class="value {% if (total_pnl_display is not none and total_pnl_display > 0) %}pnl-pos{% elif (total_pnl_display is not none and total_pnl_display < 0) %}pnl-neg{% endif %}">
+          {% if (total_pnl_display is not none and total_pnl_display >= 0) %}+{% endif %}{{ cfmt(total_pnl_display, display_currency) }}
         </div>
-        <div class="sub {% if total_pnl_pct > 0 %}pnl-pos{% elif total_pnl_pct < 0 %}pnl-neg{% endif %}">
-          {% if total_pnl_pct >= 0 %}+{% endif %}{{ fmt(total_pnl_pct, 2) }}%
+        <div class="sub {% if (total_pnl_pct is not none and total_pnl_pct > 0) %}pnl-pos{% elif (total_pnl_pct is not none and total_pnl_pct < 0) %}pnl-neg{% endif %}">
+          {% if (total_pnl_pct is not none and total_pnl_pct >= 0) %}+{% endif %}{{ fmt(total_pnl_pct, 2) }}%
         </div>
       </div>
     </div>
@@ -250,8 +251,8 @@
         <div class="value {% if total_divs_display > 0 %}pnl-pos{% endif %}">
           {{ cfmt(total_divs_display, display_currency) if total_divs_display else '—' }}
         </div>
-        <div class="sub {% if actual_yield > 0 %}pnl-pos{% endif %}">
-          {% if actual_yield > 0 %}{{ fmt(actual_yield, 2) }}% yield{% else %}No dividends received{% endif %}
+        <div class="sub {% if (actual_yield is not none and actual_yield > 0) %}pnl-pos{% endif %}">
+          {% if (actual_yield is not none and actual_yield > 0) %}{{ fmt(actual_yield, 2) }}% yield{% else %}No dividends received{% endif %}
         </div>
       </div>
     </div>
@@ -381,8 +382,8 @@
         <div class="value {% if fwd_div_display > 0 %}pnl-pos{% endif %}">
           {{ cfmt(fwd_div_display, display_currency) if fwd_div_display else '—' }}
         </div>
-        <div class="sub {% if personal_fwd_yield > 0 %}pnl-pos{% endif %}">
-          {% if personal_fwd_yield > 0 %}Personal fwd yield: {{ fmt(personal_fwd_yield, 2) }}%{% else %}Personal fwd yield: —{% endif %}
+        <div class="sub {% if (personal_fwd_yield is not none and personal_fwd_yield > 0) %}pnl-pos{% endif %}">
+          {% if (personal_fwd_yield is not none and personal_fwd_yield > 0) %}Personal fwd yield: {{ fmt(personal_fwd_yield, 2) }}%{% else %}Personal fwd yield: —{% endif %}
         </div>
         <div class="sub {% if share_fwd_yield > 0 %}pnl-pos{% endif %}">
           {% if share_fwd_yield > 0 %}Share fwd yield: {{ fmt(share_fwd_yield, 2) }}%{% else %}Share fwd yield: —{% endif %}
@@ -393,7 +394,7 @@
     <div class="col-6 col-md-3 col-lg-2">
       <div class="card metric-card p-3">
         <div class="label">Annual DPS</div>
-        <div class="value">{{ cfmt(annual_dps, instrument.currency_code or 'GBP', 4) if annual_dps else '—' }}</div>
+        <div class="value">{{ cfmt(annual_dps, instrument.currency_code or '', 4) if annual_dps else '—' }}</div>
         <div class="sub">per share (forecast)</div>
       </div>
     </div>
@@ -406,7 +407,7 @@
           {% elif eps_ttm < 0 %}<span class="cov-bad">—ve EPS</span>
           {% else %}—{% endif %}
         </div>
-        <div class="sub">EPS {{ cfmt(eps_ttm, instrument.currency_code or 'GBP', 4) if eps_ttm else '—' }}</div>
+        <div class="sub">EPS {{ cfmt(eps_ttm, instrument.currency_code or '', 4) if eps_ttm else '—' }}</div>
       </div>
     </div>
 
@@ -430,7 +431,7 @@
           {% elif fcf_ps < 0 and annual_dps > 0 %}—ve FCF
           {% else %}—{% endif %}
         </div>
-        <div class="sub">FCF/sh {{ cfmt(fcf_ps, instrument.currency_code or 'GBP', 4) if fcf_ps else '—' }}</div>
+        <div class="sub">FCF/sh {{ cfmt(fcf_ps, instrument.currency_code or '', 4) if fcf_ps else '—' }}</div>
       </div>
     </div>
 
@@ -461,7 +462,7 @@
             <td class="text-end">{{ fmt(dp.quantity, 4) if dp.quantity else '—' }}</td>
             <td class="text-end pnl-pos">{{ cfmt(dp.amount_display, display_currency) if dp.amount else '—' }}</td>
             <td class="text-end">
-              {% if dp.gross_amount_per_share %}{{ cfmt(dp.gross_amount_per_share, instrument.currency_code or 'GBP', 4) }}{% else %}—{% endif %}
+              {% if dp.gross_amount_per_share %}{{ cfmt(dp.gross_amount_per_share, instrument.currency_code or '', 4) }}{% else %}—{% endif %}
             </td>
             <td><small class="text-muted">{{ dp.type or '—' }}</small></td>
             <td><small class="text-muted font-monospace">{{ dp.reference or '—' }}</small></td>
@@ -502,7 +503,7 @@
         <tbody>
           {% for o in trade_history %}
           {% set qty = o.filled_quantity or o.quantity or 0 %}
-          {% set val = qty * (o.fill_price or 0) %}
+          {% set val = o.settlement_amount %}
           <tr>
             <td data-order="{{ o.filled_at.strftime('%Y%m%d%H%M') if o.filled_at else '0' }}">{{ o.filled_at.strftime('%d %b %Y %H:%M') if o.filled_at else '—' }}</td>
             <td><span style="background:#e9ecef;color:#495057;font-size:.68rem;font-weight:500;border-radius:4px;padding:2px 6px">{{ o.account or '—' }}</span></td>
@@ -513,8 +514,8 @@
             </td>
             <td><small class="text-muted">{{ o.order_type or '—' }}</small></td>
             <td class="text-end">{{ fmt(qty, 4) }}</td>
-            <td class="text-end">{{ cfmt(o.fill_price, instrument.currency_code or 'GBP', 4) if o.fill_price else '—' }}</td>
-            <td class="text-end fw-semibold">{{ cfmt(val, instrument.currency_code or 'GBP') if val else '—' }}</td>
+            <td class="text-end">{{ cfmt(o.execution_price, o.execution_currency or '', 4) if o.execution_price is not none and o.execution_currency else '—' }}</td>
+            <td class="text-end fw-semibold">{{ cfmt(val, o.settlement_currency or '') if val is not none and o.settlement_currency else '—' }}</td>
           </tr>
           {% endfor %}
         </tbody>

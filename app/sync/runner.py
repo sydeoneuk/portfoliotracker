@@ -1,3 +1,4 @@
+from app.identity import T212, UnresolvedIdentityError, require_resolved_identity
 import datetime
 import time
 import requests
@@ -6,7 +7,9 @@ from sqlalchemy import literal_column
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
 
+from app.cost_basis import broker_cost_values
 from app.client.trading212 import Trading212Client
+from app.valuation import effective_price_sql, get_fx_rates_to_gbp, value_holding
 from app.models import (
     Instrument, Pie, PieHolding, Position, Order, Transaction,
     DividendPayment, DividendPaymentAllocation, PortfolioSnapshot,
@@ -42,7 +45,7 @@ class SyncRunner:
                 return
 
             print(f"  {fn.__name__} failed: {exc}")
-            if fatal:
+            if fatal or isinstance(exc, UnresolvedIdentityError):
                 raise
 
     @staticmethod
@@ -130,6 +133,11 @@ class SyncRunner:
         instrument.last_enriched_at = attempted_at
 
     def sync_all(self, full_catalogue: bool = False):
+        from app.account_lock import account_write_lock
+        with account_write_lock(self.session, self.platform_id):
+            return self._sync_all_locked(full_catalogue)
+
+    def _sync_all_locked(self, full_catalogue: bool = False):
         print(f"Starting full sync for account: {self.account}...")
         # Positions and pies are synced first so we know which tickers are held.
         # full_catalogue=True (nightly only) additionally stores all ~16k T212
@@ -148,15 +156,7 @@ class SyncRunner:
         print("Sync complete.")
 
     def _get_fx_rates_to_gbp(self, currencies: set[str]) -> dict[str, float]:
-        rates: dict[str, float] = {"GBP": 1.0, "GBX": 0.01}
-        needed = {c for c in currencies if c and c not in {"GBP", "GBX", "-", "—"}}
-        for currency in needed:
-            try:
-                ticker = yf.Ticker(f"{currency}GBP=X")
-                rates[currency] = float(ticker.fast_info["last_price"])
-            except Exception:
-                continue
-        return rates
+        return get_fx_rates_to_gbp(currencies)
 
     def snapshot_portfolio_day(self):
         """Store the latest daily account and pie totals for this user/account."""
@@ -168,26 +168,27 @@ class SyncRunner:
         now = datetime.datetime.utcnow()
         snapshot_date = now.date()
 
-        position_rows = self.session.execute(_text("""
+        position_rows = self.session.execute(_text(f"""
             SELECT
                 p.ticker,
                 p.quantity,
-                COALESCE(p.current_price, p.average_price, 0) AS price,
-                COALESCE(i.currency_code, 'GBP') AS currency
+                {effective_price_sql()} AS price,
+                i.currency_code AS currency
             FROM positions p
             JOIN instruments i ON i.ticker = p.ticker
             WHERE p.user_id = :user_id
               AND p.platform_id = :platform_id
+              AND p.quantity > 0
         """), {"user_id": self.user_id, "platform_id": self.platform_id}).fetchall()
 
-        fx = self._get_fx_rates_to_gbp({row.currency for row in position_rows if row.currency})
+        fx = get_fx_rates_to_gbp({row.currency for row in position_rows if row.currency})
         account_total = 0.0
         per_ticker_value_gbp: dict[str, float] = {}
         per_ticker_quantity: dict[str, float] = {}
 
         for row in position_rows:
             quantity = float(row.quantity or 0)
-            value_gbp = quantity * float(row.price or 0) * fx.get(row.currency or "GBP", 1.0)
+            value_gbp = float(value_holding(quantity, row.price, row.currency, fx).value_gbp)
             account_total += value_gbp
             per_ticker_value_gbp[row.ticker] = value_gbp
             per_ticker_quantity[row.ticker] = quantity
@@ -217,7 +218,7 @@ class SyncRunner:
         for row in position_rows:
             quantity = float(row.quantity or 0)
             price_native = float(row.price or 0)
-            value_gbp = quantity * price_native * fx.get(row.currency or "GBP", 1.0)
+            value_gbp = per_ticker_value_gbp[row.ticker]
             self.session.add(HoldingSnapshot(
                 user_id=self.user_id,
                 snapshot_date=snapshot_date,
@@ -564,6 +565,9 @@ class SyncRunner:
         print("Syncing positions...")
         data = self.client.get_positions()
         now = datetime.datetime.utcnow()
+        from app.ingestion import holdings, record_api_observation
+        from types import SimpleNamespace
+        before = holdings(self.session, SimpleNamespace(source='t212_api', user_id=self.user_id, platform_id=self.platform_id), full=True)
 
         live_tickers = {item["ticker"] for item in data}
         q = self.session.query(Position.ticker).filter(Position.platform_id == self.platform_id)
@@ -601,6 +605,9 @@ class SyncRunner:
             print(f"  Inserted {len(position_tickers - existing_tickers)} instrument stub(s) for positions.")
 
         for item in data:
+            instrument = self.session.get(Instrument, item["ticker"])
+            basis = broker_cost_values(item.get("quantity"), item.get("averagePrice"),
+                                       instrument.currency_code if instrument else None)
             stmt = (
                 insert(Position)
                 .values(
@@ -608,6 +615,7 @@ class SyncRunner:
                     platform_id=self.platform_id,
                     user_id=self.user_id,
                     account=self.platform.account_type,
+                    **basis,
                     quantity=item.get("quantity"),
                     average_price=item.get("averagePrice"),
                     current_price=item.get("currentPrice"),
@@ -619,6 +627,7 @@ class SyncRunner:
                 .on_conflict_do_update(
                     index_elements=["ticker", "platform_id", "user_id"],
                     set_={
+                        **basis,
                         "account": self.platform.account_type,
                         "quantity": item.get("quantity"),
                         "average_price": item.get("averagePrice"),
@@ -632,6 +641,7 @@ class SyncRunner:
             )
             self.session.execute(stmt)
 
+        record_api_observation(self.session, self.user_id, self.platform_id, data, before, now)
         self.session.commit()
         print(f"  Synced {len(data)} positions.")
         self._sync_prices_from_positions(data)
@@ -649,7 +659,9 @@ class SyncRunner:
             if not ticker or price is None:
                 continue
             inst = self.session.get(Instrument, ticker)
-            currency = (inst.currency_code if inst else None) or "GBP"
+            currency = inst.currency_code if inst else None
+            if not currency:
+                continue
             # T212 prices are in the instrument's native currency.
             # price_gbp is only set directly for GBP instruments; non-GBP
             # instruments will have price_gbp populated by yfinance on next refresh.
@@ -671,9 +683,9 @@ class SyncRunner:
         latest_pie = self.session.execute(
             _text(
                 "SELECT MAX(last_synced_at) FROM pies "
-                "WHERE user_id = :uid AND (platform_id = :pid OR platform_id IS NULL)"
+                "WHERE user_id = :uid AND platform_id = :pid AND source_namespace = :ns"
             ),
-            {"uid": self.user_id, "pid": self.platform_id},
+            {"uid": self.user_id, "pid": self.platform_id, "ns": T212},
         ).scalar()
         if latest_pie and (datetime.datetime.utcnow() - latest_pie).total_seconds() < 14400:
             print("  Pies up to date (synced < 4h ago), skipping.")
@@ -704,10 +716,11 @@ class SyncRunner:
             result_data = detail.get("result", {})
             pie_cash = result_data.get("cash")
 
+            require_resolved_identity(self.session, Pie, self.user_id, "id", pie_id, self.platform_id)
             stmt = (
                 insert(Pie)
                 .values(
-                    id=pie_id,
+                    source_namespace=T212, id=pie_id,
                     user_id=self.user_id,
                     name=s.get("name"),
                     platform_id=self.platform_id,
@@ -724,7 +737,7 @@ class SyncRunner:
                 )
                 .on_conflict_do_update(
                     # Unique constraint is (user_id, id) — each user owns their own pie row
-                    index_elements=["user_id", "id"],
+                    index_elements=["user_id", "platform_id", "source_namespace", "id"],
                     set_={
                         "name": s.get("name"),
                         "platform_id": self.platform_id,
@@ -900,13 +913,18 @@ class SyncRunner:
         self.session.query(Order).filter(
             Order.status == "LOCAL_OPEN",
             Order.user_id == self.user_id,
+            Order.platform_id == self.platform_id,
+            Order.source_namespace == T212,
         ).delete()
 
         for item in data:
+            instrument = self.session.get(Instrument, item.get("ticker")) if item.get("ticker") else None
+            price_currency = instrument.currency_code if instrument else None
+            require_resolved_identity(self.session, Order, self.user_id, "id", str(item["id"]), self.platform_id)
             stmt = (
                 insert(Order)
                 .values(
-                    id=str(item["id"]),
+                    source_namespace=T212, id=str(item["id"]),
                     user_id=self.user_id,
                     platform_id=self.platform_id,
                     account=self.platform.account_type,
@@ -914,28 +932,36 @@ class SyncRunner:
                     quantity=item.get("quantity"),
                     filled_quantity=item.get("filledQuantity"),
                     order_type=item.get("type"),
+                    side=item.get("side"),
                     status=item.get("status", "LOCAL_OPEN"),
                     limit_price=item.get("limitPrice"),
                     stop_price=item.get("stopPrice"),
                     fill_price=item.get("fillPrice"),
+                    execution_price=item.get("fillPrice"),
+                    execution_currency=price_currency,
                     time_validity=item.get("timeValidity"),
                     created_at=_parse_dt(item.get("creationTime")),
                     filled_at=_parse_dt(item.get("dateModified")),
                     synced_at=now,
                 )
                 .on_conflict_do_update(
-                    index_elements=["user_id", "id"],
+                    index_elements=["user_id", "platform_id", "source_namespace", "id"],
+                    where=Order.platform_id == self.platform_id,
                     set_={
                         "platform_id": self.platform_id,
                         "account": self.platform.account_type,
                         "status": item.get("status", "LOCAL_OPEN"),
+                        "side": item.get("side"),
                         "filled_quantity": item.get("filledQuantity"),
                         "fill_price": item.get("fillPrice"),
+                        "execution_price": item.get("fillPrice"),
+                        "execution_currency": price_currency,
                         "synced_at": now,
                     },
                 )
             )
-            self.session.execute(stmt)
+            if self.session.execute(stmt.returning(Order.pk)).scalar_one_or_none() is None:
+                raise ValueError("Order ID belongs to a different account; sync rolled back")
 
         self.session.commit()
         print(f"  Synced {len(data)} open orders.")
@@ -955,8 +981,8 @@ class SyncRunner:
         # On first sync, cap lookback to 12 months to avoid paginating years of history.
         from sqlalchemy import text as _text
         latest = self.session.execute(
-            _text("SELECT MAX(filled_at) FROM orders WHERE user_id = :uid AND platform_id = :pid"),
-            {"uid": self.user_id, "pid": self.platform_id},
+            _text("SELECT MAX(filled_at) FROM orders WHERE user_id = :uid AND platform_id = :pid AND source_namespace = :ns"),
+            {"uid": self.user_id, "pid": self.platform_id, "ns": T212},
         ).scalar()
         if latest:
             newer_than = latest.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
@@ -1011,11 +1037,14 @@ class SyncRunner:
                 if not order_id:
                     continue
                 ticker = order.get("ticker") or (order.get("instrument") or {}).get("ticker")
+                instrument = self.session.get(Instrument, ticker) if ticker else None
+                price_currency = instrument.currency_code if instrument else None
                 fill_price = fill.get("price") or None  # 0 means no price data
+                require_resolved_identity(self.session, Order, self.user_id, "id", str(order_id), self.platform_id)
                 stmt = (
                     insert(Order)
                     .values(
-                        id=str(order_id),
+                        source_namespace=T212, id=str(order_id),
                         ticker=ticker,
                         user_id=self.user_id,
                         platform_id=self.platform_id,
@@ -1028,17 +1057,22 @@ class SyncRunner:
                         limit_price=order.get("limitPrice"),
                         stop_price=order.get("stopPrice"),
                         fill_price=fill_price,
+                        execution_price=fill_price,
+                        execution_currency=price_currency,
                         time_validity=order.get("timeValidity"),
                         created_at=_parse_dt(order.get("createdAt")),
                         filled_at=_parse_dt(fill.get("filledAt")),
                         synced_at=now,
                     )
                     .on_conflict_do_update(
-                        index_elements=["user_id", "id"],
+                        index_elements=["user_id", "platform_id", "source_namespace", "id"],
+                        where=Order.platform_id == self.platform_id,
                         set_={
                             "status": order.get("status"),
                             "filled_quantity": order.get("filledQuantity") or fill.get("quantity"),
                             "fill_price": fill_price,
+                            "execution_price": fill_price,
+                            "execution_currency": price_currency,
                             "filled_at": _parse_dt(fill.get("filledAt")),
                             "side": order.get("side"),
                             "platform_id": self.platform_id,
@@ -1047,7 +1081,8 @@ class SyncRunner:
                         },
                     )
                 )
-                self.session.execute(stmt)
+                if self.session.execute(stmt.returning(Order.pk)).scalar_one_or_none() is None:
+                    raise ValueError("Order ID belongs to a different account; sync rolled back")
 
             total += len(items)
             next_page = response.get("nextPagePath")
@@ -1064,12 +1099,22 @@ class SyncRunner:
         now = datetime.datetime.utcnow()
         next_page = None
         total = 0
+        self.transaction_identity_summary = {'adopted': 0, 'deferred': 0}
+        identity_audits = []
+        from app.sync.legacy_transactions import reconcile_transaction, record_reconciliations
 
         from sqlalchemy import text as _text
         latest = self.session.execute(
-            _text("SELECT MAX(date_time) FROM transactions WHERE user_id = :uid"),
-            {"uid": self.user_id},
+            _text("SELECT MAX(date_time) FROM transactions WHERE user_id = :uid AND platform_id = :pid AND source_namespace = :ns"),
+            {"uid": self.user_id, "pid": self.platform_id, "ns": T212},
         ).scalar()
+        # Keep replaying available API history while unassigned legacy events
+        # remain. Advancing a cursor must not strand a deferred older event.
+        legacy_pending = self.session.query(Transaction.pk).filter(
+            Transaction.user_id == self.user_id, Transaction.source_namespace == 'legacy',
+            (Transaction.platform_id.is_(None) | (Transaction.platform_id == self.platform_id))).first()
+        if legacy_pending:
+            latest = None
         # Subtract 60s buffer to avoid missing records on timestamp boundaries
         if latest:
             cursor_dt = latest - datetime.timedelta(seconds=60)
@@ -1097,10 +1142,20 @@ class SyncRunner:
                 break
 
             for item in items:
+                external_id = str(item.get("reference") or item.get("id") or "")
+                if not external_id:
+                    raise ValueError("Transaction has no provider identifier; sync rolled back")
+                identity_result = reconcile_transaction(self.session, self.user_id, self.platform_id, item, identity_audits)
+                if identity_result['status'] == 'deferred':
+                    self.transaction_identity_summary['deferred'] += 1
+                    continue
+                if identity_result['status'] == 'adopted':
+                    self.transaction_identity_summary['adopted'] += 1
                 stmt = (
                     insert(Transaction)
                     .values(
-                        id=str(item.get("reference", item.get("id", ""))),
+                        source_namespace=T212, id=external_id,
+                        platform_id=self.platform_id,
                         user_id=self.user_id,
                         type=item.get("type"),
                         amount=item.get("amount"),
@@ -1110,7 +1165,7 @@ class SyncRunner:
                         synced_at=now,
                     )
                     .on_conflict_do_update(
-                        index_elements=["user_id", "id"],
+                        index_elements=["user_id", "platform_id", "source_namespace", "id"],
                         set_={"synced_at": now},
                     )
                 )
@@ -1122,6 +1177,7 @@ class SyncRunner:
             if not next_page:
                 break
 
+        record_reconciliations(self.session, self.user_id, self.platform_id, identity_audits)
         self.session.commit()
         print(f"  Synced {total} transactions.")
 
@@ -1138,9 +1194,9 @@ class SyncRunner:
         latest = self.session.execute(
             _text(
                 "SELECT MAX(paid_on) FROM dividend_payments "
-                "WHERE user_id = :uid AND account = :acc"
+                "WHERE user_id = :uid AND platform_id = :pid AND source_namespace = :ns"
             ),
-            {"uid": self.user_id, "acc": self.account},
+            {"uid": self.user_id, "pid": self.platform_id, "ns": T212},
         ).scalar()
         if latest:
             cursor_dt = latest - datetime.timedelta(seconds=60)
@@ -1187,10 +1243,11 @@ class SyncRunner:
                 ticker = item.get("ticker") or (item.get("instrument") or {}).get("ticker")
                 if not ticker:
                     continue
+                require_resolved_identity(self.session, DividendPayment, self.user_id, "reference", item["reference"], self.platform_id)
                 stmt = (
                     insert(DividendPayment)
                     .values(
-                        reference=item["reference"],
+                        source_namespace=T212, reference=item["reference"],
                         ticker=ticker,
                         platform_id=self.platform_id,
                         account=self.platform.account_type,
@@ -1203,7 +1260,7 @@ class SyncRunner:
                         synced_at=now,
                     )
                     .on_conflict_do_update(
-                        index_elements=["user_id", "reference"],
+                        index_elements=["user_id", "platform_id", "source_namespace", "reference"],
                         set_={"synced_at": now},
                     )
                 )
@@ -1216,6 +1273,8 @@ class SyncRunner:
                     self.session.query(DividendPayment)
                     .filter(
                         DividendPayment.user_id == self.user_id,
+                        DividendPayment.platform_id == self.platform_id,
+                        DividendPayment.source_namespace == T212,
                         DividendPayment.reference.in_(references),
                     )
                     .all()
@@ -1240,6 +1299,7 @@ class SyncRunner:
             .filter(
                 DividendPayment.user_id == self.user_id,
                 DividendPayment.platform_id == self.platform_id,
+                DividendPayment.source_namespace == T212,
                 DividendPaymentAllocation.id.is_(None),
             )
             .all()

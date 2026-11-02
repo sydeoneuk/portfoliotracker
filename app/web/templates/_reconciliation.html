@@ -1,0 +1,24 @@
+<div class="card mb-4" id="listing-reconciliation" data-metadata-admin="{{ 'true' if metadata_admin else 'false' }}">
+  <div class="card-body">
+    <h6 class="card-title">Listing reconciliation</h6>
+    {% if metadata_admin %}
+    <p class="alert alert-info">Administrator metadata review: supply the ISIN and price units shown on your statement, then verify a provider symbol. Preview changes before applying. This initial workflow covers instruments in your holdings and blocks instruments with another user's or unassigned records. Existing nonempty currencies cannot be changed here because historical amounts need separate reconciliation. Every metadata correction and undo is audited.</p>
+    {% endif %}
+    <p class="text-muted">Check unpriced holdings against their ISIN, exchange and quote currency. Review a proposal before applying it. {% if metadata_admin %}Ordinary listing corrections affect your price mapping; statement metadata corrections also update the shared catalogue fields shown in the preview.{% else %}Corrections here affect only your price mappings. Shared identity or missing-currency repairs require an administrator.{% endif %} Original quantities, costs and transactions stay unchanged.</p>
+    <p class="small text-muted">Cost warnings are separate: refresh API accounts or re-import source statements to supply cost currencies. A price correction does not reconstruct missing costs or repair historical enrichment.</p>
+    <form id="recon-search" class="d-flex gap-2 mb-2">
+      <input id="recon-query" class="form-control form-control-sm" maxlength="80" aria-label="Search holdings to reconcile" placeholder="Ticker, name or ISIN, e.g. SHEL">
+      <button class="btn btn-sm btn-outline-secondary" type="submit">Search</button>
+    </form>
+    <label class="form-check mb-3"><input id="recon-missing" type="checkbox" class="form-check-input" checked> <span class="form-check-label">Show missing quotes only</span></label>
+    <div id="recon-status" class="small mb-2" role="status" aria-live="polite"></div>
+    <div id="recon-results"></div>
+    <div class="d-flex gap-2 align-items-center mt-2">
+      <button id="recon-prev" type="button" class="btn btn-sm btn-outline-secondary">Previous</button>
+      <span id="recon-page" class="small text-muted"></span>
+      <button id="recon-next" type="button" class="btn btn-sm btn-outline-secondary">Next</button>
+    </div>
+    <button id="recon-refresh" type="button" class="btn btn-sm btn-outline-secondary mt-3">Refresh displayed verified mappings</button>
+    <details class="mt-3"><summary>Correction history and undo</summary><div id="recon-history" class="small mt-2"></div></details>
+  </div>
+</div>

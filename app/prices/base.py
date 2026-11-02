@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 class PriceResult:
     ticker: str          # T212 ticker (canonical key)
     price: float         # native currency
-    price_gbp: float     # GBP equivalent
+    price_gbp: float | None  # None when FX is unavailable; never assume parity
     currency: str        # ISO currency code of price
 
 

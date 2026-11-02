@@ -178,7 +178,8 @@
 <!-- ── Summary banner ───────────────────────────────────────────── -->
 <div class="summary-banner">
   <div class="total-label">Total Portfolio Value</div>
-  <div class="total-value">£{{ "{:,.2f}".format(total_value) }}</div>
+  <div class="total-value">{{ cfmt(total_value, 'GBP') }}</div>
+  {% if unpriced_count %}<div class="text-warning">Complete value unavailable: {{ unpriced_count }} holding(s) need a usable price or exchange rate. Priced holdings subtotal: {{ cfmt(priced_subtotal, 'GBP') }}. <a href="/settings#holding-attention">Review holdings needing attention</a></div>{% endif %}
 </div>
 
 <!-- ── Main content ─────────────────────────────────────────────── -->
@@ -204,7 +205,7 @@
           <div class="row g-2 mb-0">
             <div class="col-6">
               <div class="metric-label">Value</div>
-              {% if acct.value %}
+              {% if acct.value is not none %}
               <div class="metric-value">£{{ "{:,.2f}".format(acct.value) }}</div>
               {% else %}
               <div class="metric-value empty">—</div>
@@ -220,7 +221,7 @@
             </div>
             <div class="col-12">
               <div class="metric-label">Capital P&amp;L</div>
-              {% if acct.cost %}
+              {% if acct.cost and acct.pnl is not none %}
               <div class="metric-value {% if acct.pnl >= 0 %}pnl-positive{% else %}pnl-negative{% endif %}">
                 {% if acct.pnl >= 0 %}+{% endif %}£{{ "{:,.2f}".format(acct.pnl) }}
                 {% if acct.pnl_pct is not none %}
@@ -234,6 +235,7 @@
               {% endif %}
             </div>
           </div>
+          {% if acct.unpriced_count %}<div class="text-warning mt-2">{{ acct.unpriced_count }} holding(s) unpriced — open analysis for details.</div>{% endif %}
 
           <div class="holdings-count">
             {{ acct.holding_count }} holding{% if acct.holding_count != 1 %}s{% endif %}

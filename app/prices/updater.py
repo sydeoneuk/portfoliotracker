@@ -56,6 +56,19 @@ def upsert_prices(db: Session, results: list[PriceResult], source: str) -> int:
 
 
 def refresh_yfinance_prices(db: Session, user_id: int | None = None) -> dict:
+    from app.account_pricing import refresh_due_prices
+    account_quotes = refresh_due_prices(db, user_id)
+    from app.reconciliation import refresh_due_mappings
+    mapped = refresh_due_mappings(db, user_id)
+    result = _refresh_yfinance_prices(db, user_id)
+    result["mapped_fetched"] = mapped["fetched"]
+    result['account_fetched'] = account_quotes['fetched']
+    result['errors'].extend(account_quotes['errors'])
+    result["errors"].extend(mapped["errors"])
+    return result
+
+
+def _refresh_yfinance_prices(db: Session, user_id: int | None = None) -> dict:
     """
     Fetch prices from yfinance for instruments that are either:
       - held in any position (optionally filtered by user_id), or

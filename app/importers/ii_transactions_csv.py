@@ -22,18 +22,27 @@ Row types handled:
 Trades are stored as cash transactions (not Orders) because positions for
 ii accounts are managed by the separate holdings-CSV importer.
 """
+from app.identity import II, require_resolved_identity
+
 
 import csv
 import datetime
 import io
 import re
+import hashlib
+import json
+import math
+from decimal import Decimal
 from dataclasses import dataclass, field
 from typing import IO
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import DividendPayment, Instrument, Platform, Transaction
+from app.models.order import Order, TradeImportObservation
+from app.importers.ii_csv import _parse_ii_value
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -143,7 +152,8 @@ class IiTransactionsImportResult:
 class IiTransactionsCsvImporter:
     """Import an ii transactions CSV export into DividendPayment / Transaction."""
 
-    def __init__(self, session: Session, platform: Platform, user_id: int):
+    def __init__(self, session: Session, platform: Platform, user_id: int, *, managed=False):
+        self.managed = managed
         self._db = session
         self.platform = platform
         self.platform_id = platform.id
@@ -162,15 +172,26 @@ class IiTransactionsCsvImporter:
         if reader.fieldnames:
             reader.fieldnames = [_clean(k) for k in reader.fieldnames]
 
-        for row_num, row in enumerate(reader, start=2):
-            # Re-key with cleaned names (csv.DictReader uses original fieldnames)
-            cleaned = {_clean(k): _clean(v) for k, v in row.items() if k is not None}
-            try:
+        stage = "reading rows"
+        try:
+            for row_num, row in enumerate(reader, start=2):
+                stage = f"Row {row_num}"
+                cleaned = {_clean(k): _clean(v) for k, v in row.items() if k is not None}
                 self._process_row(cleaned, row_num)
-            except Exception as exc:
-                self._result.errors.append(f"Row {row_num}: {exc}")
+                if self._result.errors:
+                    raise ValueError("; ".join(self._result.errors))
 
-        self._db.flush()
+            stage = "Committing import"
+            self._db.flush()
+            if not self.managed:
+                self._db.commit()
+        except Exception as exc:
+            if self.managed:
+                raise
+            self._db.rollback()
+            self._result = IiTransactionsImportResult(
+                errors=[f"{stage}: {exc}. Import rolled back; no changes saved."]
+            )
         return self._result
 
     # ── Private ────────────────────────────────────────────────────────────
@@ -192,7 +213,7 @@ class IiTransactionsCsvImporter:
         if row_type == "dividend":
             self._import_dividend(row, desc, symbol, date, credit)
         else:
-            self._import_transaction(row_type, desc, symbol, ref, date, debit, credit)
+            self._import_transaction(row_type, desc, symbol, ref, date, debit, credit, row)
 
     # ── Dividend ───────────────────────────────────────────────────────────
 
@@ -222,10 +243,11 @@ class IiTransactionsCsvImporter:
         gross_per_share = (credit / qty) if (qty and qty > 0) else None
         reference = f"div_{self.platform_id}_{symbol}_{date.strftime('%Y-%m-%d')}"
 
+        require_resolved_identity(self._db, DividendPayment, self.user_id, "reference", reference, self.platform_id)
         stmt = (
             pg_insert(DividendPayment)
             .values(
-                reference=reference,
+                source_namespace=II, reference=reference,
                 ticker=symbol,
                 platform_id=self.platform_id,
                 account=self.platform.account_type,
@@ -238,7 +260,7 @@ class IiTransactionsCsvImporter:
                 synced_at=datetime.datetime.utcnow(),
             )
             .on_conflict_do_update(
-                index_elements=["user_id", "reference"],
+                index_elements=["user_id", "platform_id", "source_namespace", "reference"],
                 set_={
                     "platform_id": self.platform_id,
                     "account": self.platform.account_type,
@@ -257,11 +279,13 @@ class IiTransactionsCsvImporter:
 
     def _import_transaction(self, row_type: str, desc: str, symbol: str | None,
                             ref: str | None, date: datetime.datetime,
-                            debit: float | None, credit: float | None) -> None:
+                            debit: float | None, credit: float | None, row: dict | None = None) -> None:
         amount = credit if credit is not None else (-(debit) if debit is not None else None)
         if amount is None:
             self._result.skipped += 1
             return
+        if not math.isfinite(amount):
+            raise ValueError("Invalid cash amount")
 
         # Use provided reference for trades; synthesise for everything else
         if ref:
@@ -288,10 +312,11 @@ class IiTransactionsCsvImporter:
 
         notes = desc if desc else None
 
+        require_resolved_identity(self._db, Transaction, self.user_id, "id", tx_id, self.platform_id)
         stmt = (
             pg_insert(Transaction)
             .values(
-                id=tx_id,
+                source_namespace=II, id=tx_id,
                 user_id=self.user_id,
                 platform_id=self.platform_id,
                 type=tx_type,
@@ -302,7 +327,8 @@ class IiTransactionsCsvImporter:
                 synced_at=datetime.datetime.utcnow(),
             )
             .on_conflict_do_update(
-                constraint="uq_transactions_user_t212",
+                index_elements=["user_id", "platform_id", "source_namespace", "id"],
+                where=Transaction.platform_id == self.platform_id,
                 set_={
                     "platform_id": self.platform_id,
                     "type": tx_type,
@@ -313,13 +339,50 @@ class IiTransactionsCsvImporter:
                 },
             )
         )
-        self._db.execute(stmt)
+        if self._db.execute(stmt.returning(Transaction.pk)).scalar_one_or_none() is None:
+            raise ValueError("Transaction reference belongs to a different account; import rolled back")
+        if row_type in ("trade_buy", "trade_sell") and symbol and row is not None:
+            self._import_execution(row, row_type, symbol, tx_id, date, amount)
         self._result.transactions_upserted += 1
+
+    def _import_execution(self, row, row_type, ticker, reference, date, amount):
+        quantity = _parse_amount(row.get("Quantity", ""))
+        price, currency = _parse_ii_value(row.get("Price", ""))
+        if quantity is not None and not math.isfinite(quantity):
+            raise ValueError("Invalid execution quantity")
+        if price is not None and (not math.isfinite(price) or price < 0):
+            raise ValueError("Invalid execution price")
+        settled = _parse_date(row.get("Settlement Date", ""))
+        values = dict(
+            filled_quantity=abs(quantity) if quantity is not None else None,
+            execution_price=Decimal(str(price)) if price is not None else None,
+            execution_currency=currency,
+            settlement_amount=Decimal(str(amount)), settlement_currency="GBP",
+            settlement_date=settled.date() if settled else None, filled_at=date,
+        )
+        side = "BUY" if row_type == "trade_buy" else "SELL"
+        require_resolved_identity(self._db, Order, self.user_id, "id", f"ii:{self.platform_id}:{reference}", self.platform_id)
+        stmt = pg_insert(Order).values(
+            source_namespace=II, id=f"ii:{self.platform_id}:{reference}", user_id=self.user_id,
+            platform_id=self.platform_id, ticker=ticker, side=side, status="FILLED",
+            quantity=values["filled_quantity"], fill_price=price,
+            account=self.platform.account_type, **values,
+        ).on_conflict_do_update(
+            index_elements=["user_id", "platform_id", "source_namespace", "id"], set_=values,
+            where=(Order.platform_id == self.platform_id) & (Order.ticker == ticker) & (Order.side == side),
+        ).returning(Order.pk)
+        order_pk = self._db.execute(stmt).scalar_one_or_none()
+        if order_pk is None:
+            raise ValueError("Conflicting ii trade reference; import rolled back")
+        payload_hash = hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
+        self._db.execute(pg_insert(TradeImportObservation).values(
+            order_pk=order_pk, user_id=self.user_id, payload_hash=payload_hash,
+            payload=row, imported_at=datetime.datetime.utcnow(),
+        ).on_conflict_do_nothing(index_elements=["order_pk", "payload_hash"]))
 
     # ── Instruments ────────────────────────────────────────────────────────
 
     def _ensure_instrument(self, ticker: str, name: str | None) -> None:
-        from sqlalchemy import literal_column
         # ii instruments are GBP-priced and LSE-listed; use the .L yfinance suffix
         # so enrichment fetches the correct instrument rather than a same-named US stock.
         yf_candidate = f"{ticker}.L"
@@ -329,9 +392,7 @@ class IiTransactionsCsvImporter:
         if name:
             set_update["name"] = name
             set_update["short_name"] = name[:50]
-        set_update["yf_ticker"] = literal_column(
-            f"COALESCE(instruments.yf_ticker, '{yf_candidate}')"
-        )
+        set_update["yf_ticker"] = func.coalesce(Instrument.yf_ticker, yf_candidate)
 
         existing = self._db.get(Instrument, ticker)
         stmt = (

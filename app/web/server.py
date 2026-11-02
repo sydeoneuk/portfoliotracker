@@ -20,6 +20,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.snapshots import snapshot_csv_platforms as _snapshot_csv_platforms
+from app.cost_basis import decorate_cost_basis
+from app.identity import T212_PIE_CSV
+from app.valuation import (
+    ValuationUnavailable, convert_amount, effective_price_sql, get_fx_rates_to_gbp,
+    quote_price_sql, required_rate, strict_sum_sql, value_holding, split_priced_positions,
+    execute_position_query,
+)
 from app.config import settings
 from app.database import get_session, SessionLocal
 from app.auth.models import User, UserSettings
@@ -30,6 +38,14 @@ from app.models.ai_analysis_usage import AIAnalysisUsage
 from app.models.app_setting import AppSetting
 
 app = FastAPI(title="Trading 212 Dashboard")
+
+
+@app.exception_handler(ValuationUnavailable)
+async def valuation_unavailable(request: Request, exc: ValuationUnavailable):
+    return PlainTextResponse(
+        f"Valuation unavailable: {exc}. Refresh prices or try again when exchange rates are available.",
+        status_code=503,
+    )
 app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).parent / "static")),
@@ -176,38 +192,11 @@ def _classify(instrument_type: str, sector: str, industry: str,
 
 # ── FX rate cache (1-hour TTL) ─────────────────────────────────────────────
 
-_fx_cache: dict[str, float] = {}
-_fx_cache_ts: float = 0.0
-_FX_TTL = 3600
 _DEFAULT_SHARED_AI_DAILY_LIMIT = 3
 
 
 def _get_fx_rates_to_gbp(currencies: set[str]) -> dict[str, float]:
-    global _fx_cache, _fx_cache_ts
-
-    # Filter out NULL placeholders and known non-currency values before FX lookup
-    needed = {c for c in currencies if c and c not in {"GBP", "GBX", "—", "-"}}
-    now = time.time()
-
-    if now - _fx_cache_ts < _FX_TTL and needed.issubset(_fx_cache):
-        rates = dict(_fx_cache)
-        rates["GBP"] = 1.0
-        rates["GBX"] = 0.01
-        return rates
-
-    rates: dict[str, float] = {"GBP": 1.0, "GBX": 0.01}
-    for ccy in needed:
-        try:
-            ticker = yf.Ticker(f"{ccy}GBP=X")
-            rate = ticker.fast_info["last_price"]
-            rates[ccy] = float(rate)
-            _fx_cache[ccy] = float(rate)
-        except Exception:
-            if ccy in _fx_cache:
-                rates[ccy] = _fx_cache[ccy]
-
-    _fx_cache_ts = now
-    return rates
+    return get_fx_rates_to_gbp(currencies)
 
 
 def _resolve_display_currency(user_settings: UserSettings | None, account: str) -> str:
@@ -351,29 +340,22 @@ def _div_filter(account: str, dp: str = "dp", dpa: str = "dpa") -> tuple[str, st
 def _convert_gbp_to_currency(value: float | int | None, currency: str, fx_to_gbp: dict[str, float] | None = None) -> float:
     if value is None:
         return 0.0
+    if float(value) == 0:
+        return 0.0
     if currency in (None, "", "GBP"):
         return float(value)
     if currency == "GBX":
         return float(value) * 100
     rates = fx_to_gbp or _get_fx_rates_to_gbp({currency})
-    rate = float(rates.get(currency, 1.0) or 1.0)
-    return float(value) / rate if rate else float(value)
+    return convert_amount(value, "GBP", currency, rates)
 
 
 def _native_to_display_rate(native_currency: str, display_currency: str, fx_to_gbp: dict[str, float]) -> float:
-    native = native_currency or "GBP"
+    native = native_currency or ""
     display = display_currency or "GBP"
     if native == display:
         return 1.0
-    native_to_gbp = float(fx_to_gbp.get(native, 1.0) or 1.0)
-    if display == "GBP":
-        return native_to_gbp
-    if display == "GBX":
-        return native_to_gbp * 100
-    display_to_gbp = float(fx_to_gbp.get(display, 1.0) or 1.0)
-    if not display_to_gbp:
-        return native_to_gbp
-    return native_to_gbp / display_to_gbp
+    return convert_amount(1, native, display, fx_to_gbp)
 
 
 def _major_unit_native_value(value: float | int | None, currency: str | None) -> float:
@@ -392,11 +374,12 @@ def _convert_amount_between_currencies(
 ) -> float:
     if value is None:
         return 0.0
-    source = source_currency or "GBP"
+    source = source_currency or ""
+    if not source and float(value) == 0:
+        return 0.0
     if source == target_currency:
         return float(value)
-    value_gbp = float(value) * float(fx_to_gbp.get(source, 1.0) or 1.0)
-    return _convert_gbp_to_currency(value_gbp, target_currency, fx_to_gbp)
+    return convert_amount(value, source, target_currency, fx_to_gbp)
 
 
 # ── Auth helpers ───────────────────────────────────────────────────────────
@@ -573,6 +556,7 @@ def _run_sync(user_id: int, full_catalogue: bool = False) -> None:
             db.commit()
             return
 
+        reconciled_transactions = 0
         for name, platform_type, account_type, key, secret in api_configs:
             platform = db.query(Platform).filter_by(
                 user_id=user_id,
@@ -593,6 +577,7 @@ def _run_sync(user_id: int, full_catalogue: bool = False) -> None:
             runner = SyncRunner(db, platform=platform, api_key=key,
                                 api_secret=secret, user_id=user_id)
             runner.sync_all(full_catalogue=full_catalogue)
+            reconciled_transactions += getattr(runner, 'transaction_identity_summary', {}).get('adopted', 0)
 
         held_tickers = {
             r[0] for r in db.query(Position.ticker).filter(Position.user_id == user_id).all()
@@ -614,6 +599,10 @@ def _run_sync(user_id: int, full_catalogue: bool = False) -> None:
             f"Synced {len(api_configs)} account(s) at "
             f"{user_settings.last_sync_at.strftime('%d %b %Y %H:%M')} UTC"
         )
+        from app.sync.legacy_transactions import sync_notice
+        notice = sync_notice(db, user_id, reconciled_transactions)
+        if notice:
+            user_settings.sync_message += '. ' + notice
         db.commit()
     except Exception as exc:
         try:
@@ -666,118 +655,6 @@ def _scheduled_sync_all_users() -> None:
         traceback.print_exc()
     finally:
         db.close()
-
-
-def _snapshot_csv_platforms(db) -> dict:
-    """Write today's HoldingSnapshot and PortfolioSnapshot rows for all non-API platforms.
-
-    API platforms are snapshotted during their own SyncRunner run; this
-    covers CSV-imported platforms (ii, T212 SIPP, etc.) so they also
-    accumulate the daily history that drives the Value History chart.
-    Requires instrument_prices to have been refreshed first.
-    """
-    from sqlalchemy import text as _t
-    from app.models.holding_snapshot import HoldingSnapshot
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-    today = datetime.date.today()
-    now = datetime.datetime.utcnow()
-
-    # Find all CSV-type platforms that have at least one position
-    platforms = db.execute(_t("""
-        SELECT DISTINCT pl.id, pl.user_id, pl.account_type
-        FROM platforms pl
-        JOIN positions pos ON pos.platform_id = pl.id
-        WHERE pl.platform_type != 't212_api'
-          AND pl.is_active = true
-    """)).fetchall()
-
-    written = 0
-    for pl in platforms:
-        # Fetch positions with best available price
-        rows = db.execute(_t("""
-            SELECT
-                pos.ticker,
-                pos.quantity,
-                COALESCE(i.currency_code, 'GBP') AS currency,
-                COALESCE(
-                    (SELECT ip.price FROM instrument_prices ip
-                     WHERE ip.ticker = pos.ticker
-                     ORDER BY CASE ip.source WHEN 't212_api' THEN 1
-                                             WHEN 'yfinance'  THEN 2
-                                             ELSE 3 END
-                     LIMIT 1),
-                    pos.average_price, 0
-                ) AS price_native
-            FROM positions pos
-            JOIN instruments i ON i.ticker = pos.ticker
-            WHERE pos.platform_id = :platform_id
-              AND pos.user_id = :user_id
-              AND pos.quantity > 0
-        """), {"platform_id": pl.id, "user_id": pl.user_id}).fetchall()
-
-        account_total = 0.0
-        for row in rows:
-            quantity = float(row.quantity or 0)
-            price = float(row.price_native or 0)
-            # Convert GBX pence to GBP for value calculation
-            price_gbp = price / 100.0 if (row.currency or "").upper() == "GBX" else price
-            value_gbp = quantity * price_gbp
-            account_total += value_gbp
-
-            stmt = (
-                pg_insert(HoldingSnapshot)
-                .values(
-                    user_id=pl.user_id,
-                    snapshot_date=today,
-                    captured_at=now,
-                    platform_id=pl.id,
-                    account=pl.account_type,
-                    ticker=row.ticker,
-                    quantity=quantity,
-                    price_native=price,
-                    value_gbp=value_gbp,
-                )
-                .on_conflict_do_update(
-                    constraint="uq_holding_snapshots_daily_ticker",
-                    set_={
-                        "quantity": quantity,
-                        "price_native": price,
-                        "value_gbp": value_gbp,
-                        "captured_at": now,
-                    },
-                )
-            )
-            db.execute(stmt)
-            written += 1
-
-        # Write the account-level PortfolioSnapshot so the Value History chart
-        # includes this platform alongside API-synced accounts.
-        # Delete-then-insert mirrors SyncRunner; ON CONFLICT is unreliable when
-        # pie_id is NULL because PostgreSQL treats NULLs as distinct.
-        db.execute(_t("""
-            DELETE FROM portfolio_snapshots
-            WHERE user_id = :user_id
-              AND platform_id = :platform_id
-              AND snapshot_date = :snapshot_date
-              AND scope_type = 'account'
-        """), {"user_id": pl.user_id, "platform_id": pl.id, "snapshot_date": today})
-        db.execute(_t("""
-            INSERT INTO portfolio_snapshots
-                (user_id, snapshot_date, captured_at, platform_id, account, scope_type, pie_id, total_value_gbp)
-            VALUES
-                (:user_id, :snapshot_date, :captured_at, :platform_id, :account, 'account', NULL, :total_value_gbp)
-        """), {
-            "user_id": pl.user_id,
-            "snapshot_date": today,
-            "captured_at": now,
-            "platform_id": pl.id,
-            "account": pl.account_type,
-            "total_value_gbp": account_total,
-        })
-
-    db.commit()
-    return {"platforms": len(platforms), "snapshots_written": written}
 
 
 def _scheduled_enrich_catalogue() -> None:
@@ -1494,6 +1371,8 @@ async def delete_account(request: Request, db: Session = Depends(get_session)):
         return user
 
     uid = user.id
+    from app.ingestion import remove_import_evidence
+    remove_import_evidence(db, uid)
 
     # Delete all portfolio data
     db.execute(text("DELETE FROM positions         WHERE user_id = :uid"), {"uid": uid})
@@ -1519,6 +1398,9 @@ async def clear_data(request: Request, db: Session = Depends(get_session)):
         return user
 
     uid = user.id
+    db.execute(text("DELETE FROM import_authorities WHERE user_id=:uid"), {'uid': uid})
+    db.execute(text("DELETE FROM account_listing_resolutions WHERE user_id=:uid"), {'uid': uid})
+    db.execute(text("UPDATE ingestion_batches SET status='superseded' WHERE user_id=:uid AND status='review'"), {'uid': uid})
     db.execute(text("DELETE FROM positions         WHERE user_id = :uid"), {"uid": uid})
     db.execute(text("DELETE FROM orders            WHERE user_id = :uid"), {"uid": uid})
     db.execute(text("DELETE FROM dividend_payments WHERE user_id = :uid"), {"uid": uid})
@@ -1714,6 +1596,8 @@ async def delete_platform(
     # before pies (pie_holdings references pies.pk).
     pid = platform_id
     uid = user.id
+    from app.ingestion import remove_import_evidence
+    remove_import_evidence(db, uid, pid)
     for stmt in [
         text("DELETE FROM pie_holding_snapshots WHERE platform_id = :pid AND user_id = :uid"),
         text("DELETE FROM portfolio_snapshots WHERE platform_id = :pid AND user_id = :uid"),
@@ -1829,21 +1713,10 @@ async def import_t212_csv(
     else:
         return JSONResponse({"error": "Specify a platform."}, status_code=400)
 
-    content = await csv_file.read()
-    importer = T212CsvImporter(session=db, platform=platform, user_id=user.id)
-    result = importer.import_file(__import__("io").BytesIO(content))
-
-    response = {
-        "summary": result.summary(),
-        "orders": result.orders,
-        "dividends": result.dividends,
-        "cash_transactions": result.cash_transactions,
-        "instruments_created": result.instruments_created,
-        "positions_upserted": result.positions_upserted,
-        "skipped": result.skipped,
-        "errors": result.errors[:20],
-    }
-    return JSONResponse(response)
+    content = await csv_file.read(10 * 1024 * 1024 + 1)
+    from app.web.ingestion_routes import check_origin, stage_upload
+    check_origin(request)
+    return stage_upload(db, user.id, platform, 't212_history', content, csv_file.filename, form)
 
 
 @app.post("/import/ii-csv")
@@ -1894,19 +1767,10 @@ async def import_ii_csv(
     else:
         return JSONResponse({"error": "Specify a platform."}, status_code=400)
 
-    content = await csv_file.read()
-    importer = IiCsvImporter(session=db, platform=platform, user_id=user.id)
-    result = importer.import_file(__import__("io").BytesIO(content))
-
-    return JSONResponse({
-        "summary": result.summary(),
-        "positions_upserted": result.positions_upserted,
-        "positions_deleted": result.positions_deleted,
-        "instruments_created": result.instruments_created,
-        "skipped": result.skipped,
-        "errors": result.errors[:20],
-        "columns_detected": result.columns_detected,
-    })
+    content = await csv_file.read(10 * 1024 * 1024 + 1)
+    from app.web.ingestion_routes import check_origin, stage_upload
+    check_origin(request)
+    return stage_upload(db, user.id, platform, 'ii_holdings', content, csv_file.filename, form)
 
 
 @app.post("/import/ii-transactions-csv")
@@ -1938,18 +1802,10 @@ async def import_ii_transactions_csv(
     if not platform:
         return JSONResponse({"error": "Platform not found."}, status_code=404)
 
-    content = await csv_file.read()
-    importer = IiTransactionsCsvImporter(session=db, platform=platform, user_id=user.id)
-    result = importer.import_file(__import__("io").BytesIO(content))
-
-    return JSONResponse({
-        "summary": result.summary(),
-        "dividends_upserted": result.dividends_upserted,
-        "transactions_upserted": result.transactions_upserted,
-        "instruments_created": result.instruments_created,
-        "skipped": result.skipped,
-        "errors": result.errors[:20],
-    })
+    content = await csv_file.read(10 * 1024 * 1024 + 1)
+    from app.web.ingestion_routes import check_origin, stage_upload
+    check_origin(request)
+    return stage_upload(db, user.id, platform, 'ii_transactions', content, csv_file.filename, form)
 
 
 @app.post("/import/pie-csv")
@@ -1983,101 +1839,18 @@ async def import_pie_csv(
     if not platform:
         return JSONResponse({"error": "Platform not found."}, status_code=404)
 
-    content = await csv_file.read()
-    importer = T212PieCsvImporter(
-        session=db, platform=platform, user_id=user.id, pie_name=pie_name
-    )
-    result = importer.import_file(__import__("io").BytesIO(content))
-
-    return JSONResponse({
-        "summary": result.summary(),
-        "holdings_imported": result.holdings_imported,
-        "holdings_replaced": result.holdings_replaced,
-        "instruments_created": result.instruments_created,
-        "skipped": result.skipped,
-        "errors": result.errors[:20],
-        "reconciliation": result.reconciliation,
-    })
+    content = await csv_file.read(10 * 1024 * 1024 + 1)
+    from app.web.ingestion_routes import check_origin, stage_upload
+    check_origin(request)
+    return stage_upload(db, user.id, platform, 'pie_snapshot', content, csv_file.filename, form)
 
 
 @app.post("/import/pie-accept")
-async def import_pie_accept(
-    request: Request,
-    db: Session = Depends(get_session),
-):
-    """Accept pie holdings as authoritative: upsert positions from pie data.
-
-    For each holding in the named pie, create or update the position quantity
-    to match the pie-exported quantity. Useful when pie CSV is the only source
-    of truth (e.g. T212 SIPP with no transaction history).
-    """
-    from fastapi.responses import JSONResponse
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    from sqlalchemy import text
-    from app.models import Platform, Position
-    from app.models.pie import Pie, PieHolding
-    import datetime
-
+async def import_pie_accept(request: Request, db: Session = Depends(get_session)):
     user = _require_user(request, db)
     if isinstance(user, RedirectResponse):
         return JSONResponse({"error": "unauthenticated"}, status_code=401)
-
-    form = await request.form()
-    platform_id = form.get("platform_id", "").strip()
-    pie_name = form.get("pie_name", "").strip()
-
-    if not platform_id or not pie_name:
-        return JSONResponse({"error": "platform_id and pie_name are required."}, status_code=400)
-
-    platform = db.query(Platform).filter_by(id=int(platform_id), user_id=user.id).first()
-    if not platform:
-        return JSONResponse({"error": "Platform not found."}, status_code=404)
-
-    pie = db.query(Pie).filter_by(
-        user_id=user.id, platform_id=int(platform_id), name=pie_name
-    ).first()
-    if not pie:
-        return JSONResponse({"error": f"Pie '{pie_name}' not found — import it first."}, status_code=404)
-
-    holdings = db.query(PieHolding).filter_by(user_id=user.id, pie_id=pie.pk).all()
-    if not holdings:
-        return JSONResponse({"error": "No holdings found for this pie."}, status_code=404)
-
-    # Scope to tickers in THIS pie only, but sum across all pies for each
-    # ticker (a ticker can appear in multiple pies on the same platform).
-    # This avoids clobbering positions for other pies that may have had
-    # their quantities updated more recently via a separate transaction import.
-    rows = db.execute(text("""
-        SELECT ph.ticker, SUM(ph2.owned_quantity) AS total_qty
-        FROM pie_holdings ph
-        JOIN pies p ON p.pk = ph.pie_id
-        JOIN pie_holdings ph2 ON ph2.ticker = ph.ticker
-        JOIN pies p2 ON p2.pk = ph2.pie_id
-            AND p2.user_id = :user_id AND p2.platform_id = :platform_id
-        WHERE p.user_id = :user_id AND p.pk = :pie_pk
-        GROUP BY ph.ticker
-    """), {"user_id": user.id, "platform_id": int(platform_id), "pie_pk": pie.pk}).fetchall()
-
-    now = datetime.datetime.utcnow()
-    updated = 0
-    for row in rows:
-        ticker, qty = row.ticker, float(row.total_qty)
-        stmt = pg_insert(Position).values(
-            user_id=user.id,
-            platform_id=int(platform_id),
-            ticker=ticker,
-            quantity=qty,
-            average_price=None,
-            last_synced_at=now,
-        ).on_conflict_do_update(
-            index_elements=["ticker", "platform_id", "user_id"],
-            set_={"quantity": qty, "last_synced_at": now},
-        )
-        db.execute(stmt)
-        updated += 1
-
-    db.commit()
-    return JSONResponse({"updated": updated, "summary": f"{updated} position(s) updated from pie holdings."})
+    return JSONResponse({"error": "Pie allocations do not establish complete account coverage. Import a complete dated holdings statement; account quantities have not changed."}, status_code=409)
 
 
 @app.get("/import/platforms")
@@ -2099,31 +1872,17 @@ def import_platforms(request: Request, db: Session = Depends(get_session)):
 
 # ── Price SQL helper ───────────────────────────────────────────────────────
 
-_PRICE_SUBQ = (
-    "(SELECT COALESCE(ip.price_gbp, ip.price) FROM instrument_prices ip "
-    " WHERE ip.ticker = {t} "
-    " ORDER BY CASE ip.source WHEN 't212_api' THEN 1 WHEN 'yfinance' THEN 2 ELSE 3 END "
-    " LIMIT 1)"
-)
+_PRICE_SUBQ = quote_price_sql("{t}", ":user_id")
 
 
 def _eff_price(ticker_col: str = "p.ticker", avg_col: str = "p.average_price") -> str:
-    """SQL expression for the best available price for current value.
-
-    Priority: instrument_prices table → current_price on position → average_price.
-    current_price is preferred over average_price because average_price can be
-    misleadingly low for CSV-imported platforms where some shares were transferred
-    in at zero cost (e.g. ii transfers), whereas current_price always reflects the
-    live market price from the last CSV export.
-    """
-    cur_col = avg_col.replace("average_price", "current_price")
-    return f"COALESCE({_PRICE_SUBQ.format(t=ticker_col)}, {cur_col}, {avg_col})"
+    return effective_price_sql(ticker_col, avg_col.replace("average_price", "current_price"))
 
 
 # ── Main dashboard ─────────────────────────────────────────────────────────
 
 _ep = _eff_price()           # shorthand used in the SQL constants below
-_ep_sum = f"SUM(p.quantity * {_ep})"
+_ep_sum = strict_sum_sql(f"p.quantity * {_ep}")
 
 _COMBINED_SQL = text(f"""
     SELECT
@@ -2131,7 +1890,7 @@ _COMBINED_SQL = text(f"""
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
         COALESCE(NULLIF(i.short_name, ''), p.ticker)           AS short_name,
         COALESCE(i.exchange, '—')                              AS exchange,
-        COALESCE(i.currency_code, '—')                         AS currency,
+        COALESCE(i.currency_code, 'GBP')                         AS currency,
         COALESCE(i.instrument_type, '—')                       AS instrument_type,
         i.sector,
         i.industry,
@@ -2142,7 +1901,7 @@ _COMBINED_SQL = text(f"""
         SUM(p.quantity)                                        AS quantity,
         SUM(p.quantity * p.average_price)
             / NULLIF(SUM(p.quantity), 0)                       AS average_price,
-        {_PRICE_SUBQ.format(t="p.ticker")}                     AS current_price,
+        ({_ep_sum} / NULLIF(SUM(p.quantity), 0))               AS current_price,
         ROUND(SUM(p.quantity * p.average_price)::numeric, 2)  AS cost,
         ROUND({_ep_sum}::numeric, 2)                           AS value,
         ROUND(({_ep_sum} - SUM(p.quantity * p.average_price))::numeric, 2) AS ppl,
@@ -2182,7 +1941,7 @@ _PLATFORM_SQL = text(f"""
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
         COALESCE(NULLIF(i.short_name, ''), p.ticker)           AS short_name,
         COALESCE(i.exchange, '—')                              AS exchange,
-        COALESCE(i.currency_code, '—')                         AS currency,
+        COALESCE(i.currency_code, 'GBP')                         AS currency,
         COALESCE(i.instrument_type, '—')                       AS instrument_type,
         i.sector,
         i.industry,
@@ -2225,7 +1984,7 @@ _PLATFORM_SQL = text(f"""
 """)
 
 _ep_at = _eff_price()        # p.ticker / p.average_price for account_type query
-_ep_at_sum = f"SUM(p.quantity * {_ep_at})"
+_ep_at_sum = strict_sum_sql(f"p.quantity * {_ep_at}")
 
 _ACCOUNT_TYPE_SQL = text(f"""
     SELECT
@@ -2233,7 +1992,7 @@ _ACCOUNT_TYPE_SQL = text(f"""
         COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
         COALESCE(NULLIF(i.short_name, ''), p.ticker)           AS short_name,
         COALESCE(i.exchange, '—')                              AS exchange,
-        COALESCE(i.currency_code, '—')                         AS currency,
+        COALESCE(i.currency_code, 'GBP')                         AS currency,
         COALESCE(i.instrument_type, '—')                       AS instrument_type,
         i.sector,
         i.industry,
@@ -2243,7 +2002,7 @@ _ACCOUNT_TYPE_SQL = text(f"""
         SUM(p.quantity)                                        AS quantity,
         SUM(p.quantity * p.average_price)
             / NULLIF(SUM(p.quantity), 0)                       AS average_price,
-        {_PRICE_SUBQ.format(t="p.ticker")}                     AS current_price,
+        ({_ep_sum} / NULLIF(SUM(p.quantity), 0))               AS current_price,
         ROUND(SUM(p.quantity * p.average_price)::numeric, 2)  AS cost,
         ROUND({_ep_at_sum}::numeric, 2)                        AS value,
         ROUND(({_ep_at_sum} - SUM(p.quantity * p.average_price))::numeric, 2) AS ppl,
@@ -2289,7 +2048,7 @@ def _build_multi_platform_sql(platform_ids: list[int]):
             COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
             COALESCE(NULLIF(i.short_name, ''), p.ticker)           AS short_name,
             COALESCE(i.exchange, '—')                              AS exchange,
-            COALESCE(i.currency_code, '—')                         AS currency,
+            COALESCE(i.currency_code, 'GBP')                         AS currency,
             COALESCE(i.instrument_type, '—')                       AS instrument_type,
             i.sector,
             i.industry,
@@ -2300,7 +2059,7 @@ def _build_multi_platform_sql(platform_ids: list[int]):
             SUM(p.quantity)                                        AS quantity,
             SUM(p.quantity * p.average_price)
                 / NULLIF(SUM(p.quantity), 0)                       AS average_price,
-            {_PRICE_SUBQ.format(t="p.ticker")}                     AS current_price,
+            ({_ep_sum} / NULLIF(SUM(p.quantity), 0))               AS current_price,
             ROUND(SUM(p.quantity * p.average_price)::numeric, 2)  AS cost,
             ROUND({_ep_sum}::numeric, 2)                           AS value,
             ROUND(({_ep_sum} - SUM(p.quantity * p.average_price))::numeric, 2) AS ppl,
@@ -2743,7 +2502,7 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
             COALESCE(NULLIF(i.name, ''), i.short_name, pa.ticker)  AS name,
             COALESCE(NULLIF(i.short_name, ''), pa.ticker)           AS short_name,
             COALESCE(i.exchange, '—')                              AS exchange,
-            COALESCE(i.currency_code, '—')                         AS currency,
+            COALESCE(i.currency_code, 'GBP')                         AS currency,
             COALESCE(i.instrument_type, '—')                       AS instrument_type,
             i.sector,
             i.industry,
@@ -2754,11 +2513,11 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
             SUM(pa.quantity * pos.average_price)
                 / NULLIF(SUM(pa.quantity), 0)                      AS average_price,
             ROUND(SUM(pa.quantity * pos.average_price)::numeric, 2) AS cost,
-            {_PRICE_SUBQ.format(t="pa.ticker")}                    AS current_price,
-            ROUND(SUM(pa.quantity * {_eff_price("pos.ticker", "pos.average_price")})::numeric, 2) AS value,
-            ROUND((SUM(pa.quantity * {_eff_price("pos.ticker", "pos.average_price")})
+            ({strict_sum_sql("pa.quantity * " + _eff_price("pos.ticker", "pos.average_price"))} / NULLIF(SUM(pa.quantity), 0)) AS current_price,
+            ROUND({strict_sum_sql("pa.quantity * " + _eff_price("pos.ticker", "pos.average_price"))}::numeric, 2) AS value,
+            ROUND(({strict_sum_sql("pa.quantity * " + _eff_price("pos.ticker", "pos.average_price"))}
                    - SUM(pa.quantity * pos.average_price))::numeric, 2) AS ppl,
-            ROUND(((SUM(pa.quantity * {_eff_price("pos.ticker", "pos.average_price")})
+            ROUND((({strict_sum_sql("pa.quantity * " + _eff_price("pos.ticker", "pos.average_price"))}
                     - SUM(pa.quantity * pos.average_price))
                    / NULLIF(SUM(pa.quantity * pos.average_price), 0))::numeric, 4)
                                                                    AS result_coef,
@@ -2786,7 +2545,7 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
         GROUP BY pa.ticker,
                  i.name, i.short_name, i.exchange, i.currency_code, i.instrument_type,
                  i.sector, i.industry, i.instrument_class, i.country, i.fcf_per_share_3y_avg, i.eps_ttm
-        ORDER BY SUM(pa.quantity * {_eff_price("pos.ticker", "pos.average_price")}) DESC NULLS LAST
+        ORDER BY {strict_sum_sql("pa.quantity * " + _eff_price("pos.ticker", "pos.average_price"))} DESC NULLS LAST
     """
 
 
@@ -2811,7 +2570,7 @@ def _no_pie_query(account: str) -> str:
             COALESCE(NULLIF(i.name, ''), i.short_name, p.ticker)  AS name,
             COALESCE(NULLIF(i.short_name, ''), p.ticker)           AS short_name,
             COALESCE(i.exchange, '—')                              AS exchange,
-            COALESCE(i.currency_code, '—')                         AS currency,
+            COALESCE(i.currency_code, 'GBP')                         AS currency,
             COALESCE(i.instrument_type, '—')                       AS instrument_type,
             i.sector,
             i.industry,
@@ -2950,7 +2709,7 @@ def _merge_position_rows(rows: list[dict], account: str) -> list[dict]:
 
         existing["quantity"] = combined_quantity
         existing["cost"] = round(existing_cost + row_cost, 2)
-        existing["value"] = round(existing_value + row_value, 2)
+        existing["value"] = round(existing_value + row_value, 2) if existing.get("value") is not None and row.get("value") is not None else None
         existing["ppl"] = round(float(existing.get("ppl") or 0) + float(row.get("ppl") or 0), 2)
         existing["total_dividends"] = round(
             float(existing.get("total_dividends") or 0) + float(row.get("total_dividends") or 0), 2
@@ -2962,14 +2721,14 @@ def _merge_position_rows(rows: list[dict], account: str) -> list[dict]:
 
         if combined_quantity:
             existing["average_price"] = (existing["cost"] / combined_quantity)
-            existing["current_price"] = (existing["value"] / combined_quantity)
+            existing["current_price"] = (existing["value"] / combined_quantity) if existing["value"] is not None else None
         else:
             existing["average_price"] = 0
             existing["current_price"] = 0
 
         existing["result_coef"] = (
             (existing["value"] - existing["cost"]) / existing["cost"]
-            if existing["cost"] else 0
+            if existing["cost"] and existing["value"] is not None else None
         )
 
         row_account = row.get("account")
@@ -2992,6 +2751,28 @@ def _fetch_filtered_positions(
     filter_type, filter_value = _parse_account_filter(account)
     params: dict = {"user_id": user_id}
 
+    def costs(rows):
+        from app.models import Platform
+        ids = None
+        if filter_type == "platform":
+            ids = [filter_value]
+        elif filter_type == "platforms":
+            ids = filter_value
+        elif filter_type == "account_type":
+            ids = [p.id for p in db.query(Platform).filter_by(user_id=user_id, account_type=filter_value).all()]
+        # Unknown legacy units do not become GBP simply because a newly verified
+        # market quote can be displayed in GBP. Suppress ambiguous legacy metrics.
+        from app.models import Instrument
+        unknown_units = {i.ticker for i in db.query(Instrument).filter(Instrument.ticker.in_([r['ticker'] for r in rows]),
+            Instrument.currency_code.is_(None))}
+        for row in rows:
+            if row['ticker'] in unknown_units:
+                for field in ('forward_dividends', 'annual_rate_per_share', 'eps_ttm', 'fcf_per_share_3y_avg'):
+                    row[field] = None
+        from app.account_pricing import decorate_valuation_issues
+        return decorate_valuation_issues(db, user_id,
+            decorate_cost_basis(db, user_id, rows, ids, selected_pie_ids, include_no_pie), ids)
+
     if selected_pie_ids or include_no_pie:
         rows: list[dict] = []
         extra: dict = {}
@@ -3002,36 +2783,40 @@ def _fetch_filtered_positions(
         elif filter_type == "account_type":
             extra["account_type"] = filter_value
         if selected_pie_ids:
-            pie_rows = db.execute(
-                text(_pie_query(selected_pie_ids, account)),
+            pie_rows = execute_position_query(db,
+                _pie_query(selected_pie_ids, account),
                 {**params, **extra},
-            ).fetchall()
+            )
             rows.extend(dict(r._mapping) for r in pie_rows)
         if include_no_pie:
-            no_pie_rows = db.execute(
-                text(_no_pie_query(account)),
+            no_pie_rows = execute_position_query(db,
+                _no_pie_query(account),
                 {**params, **extra},
-            ).fetchall()
+            )
             rows.extend(dict(r._mapping) for r in no_pie_rows)
         if include_no_pie:
-            return _merge_position_rows(rows, account)
-        return rows
+            return costs(_merge_position_rows(rows, account))
+        return costs(rows)
 
     if filter_type == "platform":
         params["platform_id"] = filter_value
-        rows = db.execute(_PLATFORM_SQL, params).fetchall()
+        rows = execute_position_query(db, _PLATFORM_SQL, params)
     elif filter_type == "platforms":
-        rows = db.execute(_build_multi_platform_sql(filter_value), params).fetchall()
+        rows = execute_position_query(db, _build_multi_platform_sql(filter_value), params)
     elif filter_type == "account_type":
         params["account_type"] = filter_value
-        rows = db.execute(_ACCOUNT_TYPE_SQL, params).fetchall()
+        rows = execute_position_query(db, _ACCOUNT_TYPE_SQL, params)
     else:
-        rows = db.execute(_COMBINED_SQL, params).fetchall()
-    return [dict(r._mapping) for r in rows]
+        rows = execute_position_query(db, _COMBINED_SQL, params)
+    return costs([dict(r._mapping) for r in rows])
 
 
 def _normalise_positions_for_display(positions: list[dict]) -> list[dict]:
     for p in positions:
+        if p.get("value") is None:
+            raise ValuationUnavailable(f"Market price unavailable for {p['ticker']}")
+        if p.get("current_price") is None and p.get("quantity"):
+            p["current_price"] = float(p["value"]) / float(p["quantity"])
         p["display_class"] = _classify(
             p["instrument_type"], p["sector"], p["industry"],
             p["name"], p["instrument_class"],
@@ -3039,7 +2824,7 @@ def _normalise_positions_for_display(positions: list[dict]) -> list[dict]:
 
     for p in positions:
         if p["currency"] == "GBX":
-            for col in ("average_price", "current_price", "cost", "value", "forward_dividends", "annual_rate_per_share"):
+            for col in ("average_price", "current_price", "cost", "value", "ppl", "forward_dividends", "annual_rate_per_share"):
                 if col in p and p[col] is not None:
                     p[col] = round(float(p[col]) / 100, 2)
             p["currency"] = "GBP"
@@ -3070,6 +2855,7 @@ def _build_position_display_context(
     display_currency = _resolve_display_currency(user_settings, account)
 
     fx_needed = set(totals.keys()) | {display_currency}
+    fx_needed.update(c["currency"] for p in positions for c in p.get("cost_components", []) if c["currency"])
     if user_settings:
         if user_settings.trading_currency_code:
             fx_needed.add(user_settings.trading_currency_code)
@@ -3079,10 +2865,10 @@ def _build_position_display_context(
     fx = _get_fx_rates_to_gbp(fx_needed)
     grand_total = {"cost": 0.0, "value": 0.0, "ppl": 0.0, "dividends": 0.0, "fwd_dividends": 0.0}
     for ccy, t in totals.items():
-        rate = fx.get(ccy, 1.0)
+        rate = required_rate(ccy, fx)
         grand_total["cost"] += t["cost"] * rate
         grand_total["value"] += t["value"] * rate
-        grand_total["dividends"] += t["dividends"] * rate
+        grand_total["dividends"] += t["dividends"]
         grand_total["fwd_dividends"] += t["fwd_dividends"] * rate
     grand_total["ppl"] = grand_total["value"] - grand_total["cost"]
 
@@ -3110,6 +2896,36 @@ def _build_position_display_context(
         p["div_return_pct_display"] = (p["dividends_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
         p["fwd_yield_display"] = (p["forward_dividends_display"] / p["cost_display"] * 100) if p["cost_display"] else 0
 
+    for p in positions:
+        cost = None
+        if not p.get("cost_unknown", True):
+            try:
+                cost = sum(convert_amount(c["amount"], c["currency"], display_currency, fx)
+                           for c in p["cost_components"])
+            except ValuationUnavailable:
+                p["cost_unknown"] = True
+        p["cost_display"] = cost
+        p["avg_price_display"] = cost / float(p["quantity"]) if cost is not None and p["quantity"] else None
+        p["ppl_display"] = p["value_display"] - cost if cost is not None else None
+        p["total_pnl_display"] = p["ppl_display"] + p["dividends_display"] if cost is not None else None
+        for key, numerator in (("cap_pnl_pct_display", p["ppl_display"]),
+                               ("total_pnl_pct_display", p["total_pnl_display"]),
+                               ("div_return_pct_display", p["dividends_display"]),
+                               ("fwd_yield_display", p["forward_dividends_display"])):
+            p[key] = numerator / cost * 100 if cost else (0 if cost == 0 else None)
+        rate = _native_to_display_rate(p["currency"], display_currency, fx)
+        p["cost"] = cost / rate if cost is not None else None
+        p["average_price"] = p["cost"] / float(p["quantity"]) if cost is not None and p["quantity"] else None
+        p["ppl"] = float(p["value"]) - p["cost"] if cost is not None else None
+        p["result_coef"] = p["cap_pnl_pct_display"] / 100 if p["cap_pnl_pct_display"] is not None else None
+    costs_available = all(p["cost_display"] is not None for p in positions)
+    grand_total_display["cost"] = sum(p["cost_display"] for p in positions) if costs_available else None
+    grand_total_display["ppl"] = grand_total_display["value"] - grand_total_display["cost"] if costs_available else None
+    for ccy, subtotal in totals.items():
+        group = [p for p in positions if p["currency"] == ccy]
+        subtotal["cost"] = sum(p["cost"] for p in group) if all(p["cost"] is not None for p in group) else None
+        subtotal["ppl"] = subtotal["value"] - subtotal["cost"] if subtotal["cost"] is not None else None
+
     return {
         "positions": positions,
         "totals": totals,
@@ -3118,6 +2934,7 @@ def _build_position_display_context(
         "fx_rates_display": fx_rates_display,
         "grand_total_display": grand_total_display,
         "user_settings": user_settings,
+        "costs_available": costs_available,
     }
 
 
@@ -3140,53 +2957,45 @@ def index(request: Request, db: Session = Depends(get_session)):
         .all()
     )
 
-    # Per-platform value/cost/count in GBP via a single aggregate query.
-    # GBX instruments (prices in pence) are divided by 100 to get GBP.
-    # instrument_prices.price_gbp is already in GBP for any currency.
-    _eff = _eff_price()
+    # Value every holding in its listing currency, then convert exactly once.
     rows = db.execute(text(f"""
-        SELECT
-            p.platform_id,
-            COUNT(DISTINCT p.ticker)                             AS holding_count,
-            ROUND(SUM(
-                CASE WHEN COALESCE(i.currency_code,'GBP') = 'GBX'
-                     THEN p.quantity * {_eff} / 100.0
-                     ELSE p.quantity * {_eff}
-                END
-            )::numeric, 2)                                       AS value_gbp,
-            ROUND(SUM(
-                CASE WHEN COALESCE(i.currency_code,'GBP') = 'GBX'
-                     THEN p.quantity * COALESCE(p.average_price, 0) / 100.0
-                     ELSE p.quantity * COALESCE(p.average_price, 0)
-                END
-            )::numeric, 2)                                       AS cost_gbp
-        FROM positions p
-        JOIN instruments i ON p.ticker = i.ticker
-        WHERE p.user_id = :user_id
-        GROUP BY p.platform_id
+        SELECT p.platform_id, p.ticker, p.quantity, p.average_price, p.cost_basis_amount, p.cost_basis_currency, p.cost_basis_status,
+               COALESCE(i.currency_code, 'GBP') AS currency, {_eff_price()} AS price_native
+        FROM positions p JOIN instruments i ON i.ticker = p.ticker
+        WHERE p.user_id = :user_id AND p.quantity > 0
     """), {"user_id": user.id}).fetchall()
-
-    stats_by_platform = {
-        r.platform_id: {
-            "holding_count": r.holding_count,
-            "value": float(r.value_gbp or 0),
-            "cost": float(r.cost_gbp or 0),
-        }
-        for r in rows
-    }
+    rates = _get_fx_rates_to_gbp({row.currency for row in rows} | {row.cost_basis_currency for row in rows if row.cost_basis_currency})
+    stats_by_platform = {}
+    for row in rows:
+        stats = stats_by_platform.setdefault(row.platform_id, {"holding_count": 0, "value": 0.0, "cost": 0.0, "priced_subtotal": 0.0, "unpriced": []})
+        stats["holding_count"] += 1
+        try:
+            stats["priced_subtotal"] += float(value_holding(row.quantity, row.price_native, row.currency, rates).value_gbp)
+        except ValuationUnavailable:
+            stats["unpriced"].append(row.ticker)
+        stats["value"] = None if stats["unpriced"] else stats["priced_subtotal"]
+        if stats["cost"] is not None:
+            try:
+                stats["cost"] += convert_amount(row.cost_basis_amount, row.cost_basis_currency, "GBP", rates) if row.cost_basis_status in {"reported", "estimated"} else None
+            except (ValuationUnavailable, TypeError):
+                stats["cost"] = None
 
     # Group platforms by provider.
     from collections import OrderedDict
     providers: dict[str, list[dict]] = OrderedDict()
     total_value = 0.0
+    priced_subtotal = 0.0
+    unpriced_count = 0
     for p in platforms:
         provider = _derive_provider(p.name, p.account_type)
-        stats = stats_by_platform.get(p.id, {"holding_count": 0, "value": 0.0, "cost": 0.0})
+        stats = stats_by_platform.get(p.id, {"holding_count": 0, "value": 0.0, "cost": 0.0, "priced_subtotal": 0.0, "unpriced": []})
         value = stats["value"]
         cost = stats["cost"]
-        pnl = value - cost
-        pnl_pct = (pnl / cost * 100) if cost else None
-        total_value += value
+        pnl = value - cost if cost is not None and value is not None else None
+        pnl_pct = (pnl / cost * 100) if cost and pnl is not None else None
+        priced_subtotal += stats["priced_subtotal"]
+        unpriced_count += len(stats["unpriced"])
+        total_value = total_value + value if total_value is not None and value is not None else None
         entry = {
             "id": p.id,
             "name": p.name,
@@ -3197,6 +3006,7 @@ def index(request: Request, db: Session = Depends(get_session)):
             "cost": cost,
             "pnl": pnl,
             "pnl_pct": pnl_pct,
+            "unpriced_count": len(stats["unpriced"]),
             "analysis_url": f"/analysis?account=platform_{p.id}",
         }
         providers.setdefault(provider, []).append(entry)
@@ -3209,6 +3019,8 @@ def index(request: Request, db: Session = Depends(get_session)):
         "user": user,
         "providers": providers,
         "total_value": total_value,
+        "priced_subtotal": priced_subtotal,
+        "unpriced_count": unpriced_count,
         "last_synced": last_synced,
         "fmt": _fmt,
         "cfmt": _cfmt,
@@ -3268,7 +3080,7 @@ def api_instruments(
 
     from sqlalchemy import literal_column
     _ip_price_sq = literal_column(
-        _PRICE_SUBQ.format(t="instruments.ticker")
+        quote_price_sql("instruments.ticker", str(int(user.id)))
     )
 
     annual_rate_sq = (
@@ -3474,8 +3286,9 @@ def transactions_page(request: Request, show_internal: bool = False,
             o.side,
             o.order_type,
             o.filled_quantity                                       AS quantity,
-            o.fill_price,
-            COALESCE(i.currency_code, 'GBP')                       AS currency
+            o.execution_price AS fill_price,
+            o.execution_currency AS currency,
+            o.settlement_amount, o.settlement_currency
         FROM orders o
         LEFT JOIN instruments i ON i.ticker = o.ticker
         WHERE o.user_id = :user_id AND o.status = 'FILLED'
@@ -3487,20 +3300,24 @@ def transactions_page(request: Request, show_internal: bool = False,
     if not show_internal:
         orders = [o for o in orders if o["ticker"] not in _INTERNAL_TICKERS]
 
-    currencies = {o["currency"] for o in orders if o["currency"]}
+    currencies = {o["currency"] for o in orders if o["currency"]} | {o["settlement_currency"] for o in orders if o["settlement_currency"]}
     fx = _get_fx_rates_to_gbp(currencies)
 
     for o in orders:
-        ccy = o["currency"] or "GBP"
-        if ccy == "GBX":
-            price_gbp = float(o["fill_price"] or 0) * 0.01
-        else:
-            price_gbp = float(o["fill_price"] or 0) * fx.get(ccy, 1.0)
+        try:
+            price_gbp = convert_amount(o["fill_price"], o["currency"], "GBP", fx)
+        except ValuationUnavailable:
+            price_gbp = None
         o["fill_price_gbp"] = price_gbp
-        o["value_gbp"] = float(o["quantity"] or 0) * price_gbp
+        try:
+            o["value_gbp"] = abs(convert_amount(o["settlement_amount"], o["settlement_currency"], "GBP", fx))
+        except ValuationUnavailable:
+            o["value_gbp"] = None
 
-    total_buy_gbp  = sum(o["value_gbp"] for o in orders if o["side"] == "BUY")
-    total_sell_gbp = sum(o["value_gbp"] for o in orders if o["side"] == "SELL")
+    def trade_total(side):
+        selected = [o for o in orders if o["side"] == side]
+        return sum(o["value_gbp"] for o in selected) if all(o["value_gbp"] is not None for o in selected) else None
+    total_buy_gbp, total_sell_gbp = trade_total("BUY"), trade_total("SELL")
 
     last_synced = db.execute(text(
         "SELECT MAX(last_synced_at) FROM positions WHERE user_id = :uid"
@@ -3638,7 +3455,7 @@ _ANALYSIS_COMBINED_SQL = text(f"""
         COALESCE(i.currency_code, 'GBP')                       AS currency,
         COALESCE(i.instrument_type, '')                        AS instrument_type,
         i.sector, i.industry, i.instrument_class, i.country,
-        SUM(p.quantity * {_eff_price()}) AS value
+        {strict_sum_sql("p.quantity * " + _eff_price())} AS value
     FROM positions p
     JOIN instruments i ON p.ticker = i.ticker
     WHERE p.user_id = :user_id
@@ -3666,7 +3483,7 @@ _ANALYSIS_ACCOUNT_TYPE_SQL = text(f"""
         COALESCE(i.currency_code, 'GBP')                       AS currency,
         COALESCE(i.instrument_type, '')                        AS instrument_type,
         i.sector, i.industry, i.instrument_class, i.country,
-        SUM(p.quantity * {_eff_price()}) AS value
+        {strict_sum_sql("p.quantity * " + _eff_price())} AS value
     FROM positions p
     JOIN instruments i ON p.ticker = i.ticker
     JOIN platforms pl ON pl.id = p.platform_id
@@ -3831,11 +3648,14 @@ def _build_ai_holdings_payload(
 
     for row in positions:
         currency = row.get("currency") or "GBP"
-        rate_to_gbp = float(fx_to_gbp.get(currency, 1.0) or 1.0)
+        rate_to_gbp = required_rate(currency, fx_to_gbp)
         value_native = float(row.get("value") or 0.0)
-        cost_native = float(row.get("cost") or 0.0)
+        try:
+            cost_gbp = sum(convert_amount(c["amount"], c["currency"], "GBP", fx_to_gbp) for c in row.get("cost_components", [])) if not row.get("cost_unknown", True) else None
+        except ValuationUnavailable:
+            cost_gbp = None
+        cost_native = cost_gbp / rate_to_gbp if cost_gbp is not None else None
         value_gbp = value_native * rate_to_gbp
-        cost_gbp = cost_native * rate_to_gbp
         total_value_gbp += value_gbp
         holdings.append({
             "ticker": row.get("ticker"),
@@ -3844,13 +3664,14 @@ def _build_ai_holdings_payload(
             "quantity": round(float(row.get("quantity") or 0.0), 6),
             "currency": currency,
             "current_price": round(float(row.get("current_price") or 0.0), 6),
-            "average_price": round(float(row.get("average_price") or 0.0), 6),
-            "cost_native": round(cost_native, 2),
+            "average_price": round(cost_native / float(row["quantity"]), 6) if cost_native is not None and row["quantity"] else None,
+            "cost_native": round(cost_native, 2) if cost_native is not None else None,
             "value_native": round(value_native, 2),
-            "cost_gbp": round(cost_gbp, 2),
+            "cost_gbp": round(cost_gbp, 2) if cost_gbp is not None else None,
+            "cost_estimated": row.get("cost_estimated", False),
             "value_gbp": round(value_gbp, 2),
-            "pnl_native": round(float(row.get("ppl") or 0.0), 2),
-            "return_pct": round(float(row.get("result_coef") or 0.0) * 100, 2),
+            "pnl_native": round(value_native - cost_native, 2) if cost_native is not None else None,
+            "return_pct": round((value_native - cost_native) / cost_native * 100, 2) if cost_native else None,
             "total_dividends_gbp": round(float(row.get("total_dividends") or 0.0), 2),
             "forward_dividends_native": round(float(row.get("forward_dividends") or 0.0), 2),
             "annual_dividend_per_share_native": round(float(row.get("annual_rate_per_share") or 0.0), 4),
@@ -4051,7 +3872,7 @@ def _build_existing_portfolio_context(db: Session, user_id: int) -> dict:
     total_value_gbp = 0.0
     for row in positions:
         currency = row.get("currency") or "GBP"
-        value_gbp = float(row.get("value") or 0.0) * float(fx.get(currency, 1.0) or 1.0)
+        value_gbp = float(row.get("value") or 0.0) * required_rate(currency, fx)
         total_value_gbp += value_gbp
         holdings.append({
             "ticker": row.get("ticker"),
@@ -4378,7 +4199,7 @@ def _analysis_pie_query(pie_ids: list[int], account: str) -> str:
             COALESCE(i.currency_code, 'GBP')  AS currency,
             COALESCE(i.instrument_type, '')    AS instrument_type,
             i.sector, i.industry, i.instrument_class, i.country,
-            SUM(pa.quantity * {_eff_price("pa.ticker", "pos.average_price")}) AS value
+            {strict_sum_sql("pa.quantity * " + _eff_price("pa.ticker", "pos.average_price"))} AS value
         FROM pie_agg pa
         JOIN instruments i ON pa.ticker = i.ticker
         JOIN positions pos ON pos.ticker = pa.ticker AND pos.user_id = :user_id
@@ -4414,7 +4235,11 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         positions = _fetch_filtered_positions_as_of(db, user.id, account, selected_pie_ids, as_of_date, include_no_pie)
     else:
         positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids, include_no_pie)
-    positions = _normalise_positions_for_display(positions)
+    # Retain the unnormalised whole-portfolio rows before country/sector filtering
+    # and display conversion. Their native units must not be converted twice.
+    whole_portfolio_positions = positions if (
+        not as_of_date and account == 'portfolio' and not selected_pie_ids and not include_no_pie
+    ) else None
     # Apply hidden country / sector filters from analysis drill-down links.
     requested_country = (country or "").strip()
     requested_sector = (sector or "").strip()
@@ -4440,6 +4265,12 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
 
         positions = [p for p in positions if _effective_sector(p) == requested_sector]
 
+    selected_positions = positions
+    target_currency = _resolve_display_currency(user_settings, account)
+    pricing_fx = _get_fx_rates_to_gbp({p.get("currency") for p in positions} | {target_currency})
+    positions, unpriced_positions = split_priced_positions(positions, target_currency, pricing_fx)
+    positions = _normalise_positions_for_display(positions)
+    valuation_complete = not unpriced_positions
     display_context = _build_position_display_context(db, user.id, account, positions)
     positions = display_context["positions"]
     display_currency = display_context["display_currency"]
@@ -4456,7 +4287,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         if p.get("value_gbp_snapshot") is not None:
             value_gbp = float(p.get("value_gbp_snapshot") or 0)
         else:
-            value_gbp = float(p.get("value") or 0) * fx.get(ccy, 1.0)
+            value_gbp = float(p.get("value") or 0) * required_rate(ccy, fx)
 
         position_country = (p.get("country") or "").strip() or "Unknown"
         geo[position_country] = geo.get(position_country, 0) + value_gbp
@@ -4482,25 +4313,30 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
               AND ps.snapshot_date = :as_of_date
         """), {"user_id": user.id, "as_of_date": as_of_date}).scalar() or 0)
     else:
-        all_positions = _normalise_positions_for_display(_fetch_filtered_positions(db, user.id, "portfolio", [], False))
+        all_positions = whole_portfolio_positions if whole_portfolio_positions is not None else _fetch_filtered_positions(db, user.id, "portfolio", [], False)
         all_currencies = {p["currency"] for p in all_positions if p.get("currency")}
         all_fx = _get_fx_rates_to_gbp(all_currencies)
-        total_portfolio_value_gbp = sum(
-            float(p.get("value") or 0) * all_fx.get(p.get("currency") or "GBP", 1.0)
-            for p in all_positions
+        priced_portfolio, unpriced_portfolio = split_priced_positions(all_positions, "GBP", all_fx)
+        total_portfolio_value_gbp = None if unpriced_portfolio else sum(
+            float(p["value"]) * required_rate(p["currency"], all_fx) for p in priced_portfolio
         )
-    total_portfolio_pct = (total_value / total_portfolio_value_gbp * 100) if total_portfolio_value_gbp else 0.0
-    summary_cost = float(grand_total_display.get("cost") or 0.0)
-    summary_unrealised = float(grand_total_display.get("ppl") or 0.0)
-    summary_dividends = float(grand_total_display.get("dividends") or 0.0)
-    summary_forward_dividends = float(grand_total_display.get("fwd_dividends") or 0.0)
+    total_portfolio_pct = None
+    if valuation_complete and total_portfolio_value_gbp is not None:
+        total_portfolio_pct = total_value / total_portfolio_value_gbp * 100 if total_portfolio_value_gbp else 0.0
+    summary_cost = grand_total_display.get("cost") if valuation_complete else None
+    summary_unrealised = grand_total_display.get("ppl") if valuation_complete else None
+    try:
+        summary_dividends = _convert_gbp_to_currency(sum(float(p.get("total_dividends") or 0) for p in selected_positions), display_currency, pricing_fx)
+    except ValuationUnavailable:
+        summary_dividends = None
+    summary_forward_dividends = float(grand_total_display.get("fwd_dividends") or 0.0) if valuation_complete else None
     analysis_summary = {
         "cost": summary_cost,
-        "value": float(grand_total_display.get("value") or 0.0),
+        "value": float(grand_total_display.get("value") or 0.0) if valuation_complete else None,
         "unrealised": summary_unrealised,
-        "unrealised_pct": (summary_unrealised / summary_cost * 100) if summary_cost else 0.0,
+        "unrealised_pct": (summary_unrealised / summary_cost * 100) if summary_cost else (0 if summary_cost == 0 else None),
         "dividends": summary_dividends,
-        "dividends_pct": (summary_dividends / summary_cost * 100) if summary_cost else 0.0,
+        "dividends_pct": (summary_dividends / summary_cost * 100) if summary_cost and summary_dividends is not None else (0 if summary_cost == 0 else None),
         "fwd_dividends": summary_forward_dividends,
     }
 
@@ -4513,24 +4349,29 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
 
     cash_fx = _get_fx_rates_to_gbp({trading_currency, isa_currency, display_currency})
     _an_ft, _ = _parse_account_filter(account)
-    if _an_ft in ("platform", "platforms", "account_type"):
-        free_cash = 0.0
-        total_pie_cash = 0.0
-    elif account == "ISA":
-        free_cash = _convert_amount_between_currencies(free_cash_isa, isa_currency, display_currency, cash_fx)
-        total_pie_cash = _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, cash_fx)
-    elif account in ("Trading", "GIA"):
-        free_cash = _convert_amount_between_currencies(free_cash_trading, trading_currency, display_currency, cash_fx)
-        total_pie_cash = _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, cash_fx)
-    else:
-        free_cash = (
-            _convert_amount_between_currencies(free_cash_trading, trading_currency, display_currency, cash_fx)
-            + _convert_amount_between_currencies(free_cash_isa, isa_currency, display_currency, cash_fx)
-        )
-        total_pie_cash = (
-            _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, cash_fx)
-            + _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, cash_fx)
-        )
+    cash_issue = None
+    try:
+        if _an_ft in ("platform", "platforms", "account_type"):
+            free_cash = 0.0
+            total_pie_cash = 0.0
+        elif account == "ISA":
+            free_cash = _convert_amount_between_currencies(free_cash_isa, isa_currency, display_currency, cash_fx)
+            total_pie_cash = _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, cash_fx)
+        elif account in ("Trading", "GIA"):
+            free_cash = _convert_amount_between_currencies(free_cash_trading, trading_currency, display_currency, cash_fx)
+            total_pie_cash = _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, cash_fx)
+        else:
+            free_cash = (
+                _convert_amount_between_currencies(free_cash_trading, trading_currency, display_currency, cash_fx)
+                + _convert_amount_between_currencies(free_cash_isa, isa_currency, display_currency, cash_fx)
+            )
+            total_pie_cash = (
+                _convert_amount_between_currencies(pie_cash_trading, trading_currency, display_currency, cash_fx)
+                + _convert_amount_between_currencies(pie_cash_isa, isa_currency, display_currency, cash_fx)
+            )
+    except ValuationUnavailable as exc:
+        free_cash = total_pie_cash = None
+        cash_issue = str(exc)
 
     def _build_rows(d: dict[str, float]) -> list[dict]:
         total = sum(d.values()) or 1
@@ -4878,10 +4719,16 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "as_of_date": as_of_date.isoformat() if as_of_date else "",
         "as_of_date_label": as_of_date.strftime("%d %b %Y") if as_of_date else "",
         "historical_view": bool(as_of_date),
+        "costs_available": display_context["costs_available"] and valuation_complete,
+        "costs_estimated": any(p.get("cost_estimated") for p in positions),
         "analysis_summary": analysis_summary,
         "free_cash": free_cash,
         "total_pie_cash": total_pie_cash,
-        "total_value": total_value,
+        "total_value": total_value if valuation_complete else None,
+        "priced_subtotal_gbp": total_value,
+        "valuation_complete": valuation_complete,
+        "unpriced_positions": unpriced_positions,
+        "cash_issue": cash_issue,
         "total_portfolio_pct": total_portfolio_pct,
         "positions": positions,
         "display_currency": display_currency,
@@ -5196,26 +5043,48 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     if not positions_list and hd_ft != "portfolio":
         positions_list = db.query(Position).filter_by(ticker=ticker, user_id=user.id).all()
 
-    currency = instrument.currency_code or "GBP"
+    currency = instrument.currency_code or "GBP"  # verified market display units only
     user_settings = db.query(UserSettings).filter_by(user_id=user.id).first()
     display_currency = _resolve_display_currency(user_settings, account)
-    fx = _get_fx_rates_to_gbp({currency, display_currency})
+    fx = _get_fx_rates_to_gbp({currency, display_currency} | {p.cost_basis_currency for p in positions_list if p.cost_basis_currency})
     native_to_display = _native_to_display_rate(currency, display_currency, fx)
     # native_to_display converts listing-currency amounts into the active account display currency.
 
     total_quantity = sum(float(p.quantity or 0) for p in positions_list)
-    total_cost_native = sum(float(p.quantity or 0) * float(p.average_price or 0) for p in positions_list)
+    cost_unknown = any(p.cost_basis_amount is None or not p.cost_basis_currency or p.cost_basis_status not in {"reported", "estimated"} for p in positions_list)
+    cost_estimated = any(p.cost_basis_status == "estimated" for p in positions_list)
+    try:
+        total_cost_native = sum(convert_amount(p.cost_basis_amount, p.cost_basis_currency, currency, fx) for p in positions_list) if not cost_unknown else 0
+    except ValuationUnavailable:
+        cost_unknown, total_cost_native = True, 0
     avg_price_native = total_cost_native / total_quantity if total_quantity else 0
-    position_price = float(positions_list[0].current_price or 0) if positions_list else 0
-    fallback_price = float(instrument.fallback_price or 0)
-    current_price_native = position_price or fallback_price
-    current_price_source = "t212" if position_price else (instrument.fallback_price_source if fallback_price else None)
+    # Value each account independently, then derive a quantity-weighted display
+    # price. Never let one account's listing price leak into another account.
+    if positions_list:
+        ids = ','.join(str(int(p.platform_id)) for p in positions_list)
+        account_prices = db.execute(text(f'''SELECT p.quantity, {_eff_price()} AS price
+            FROM positions p WHERE p.user_id=:user_id AND p.ticker=:ticker AND p.platform_id IN ({ids})'''),
+            {'user_id': user.id, 'ticker': ticker}).mappings().all()
+        current_price_native = (sum(float(p['quantity'] or 0) * float(p['price']) for p in account_prices)
+            / total_quantity if total_quantity and all(p['price'] is not None for p in account_prices) else None)
+    else:
+        current_price_native = db.execute(text(f"SELECT {quote_price_sql(':ticker', ':user_id')}"),
+            {'ticker': ticker, 'user_id': user.id}).scalar()
+    current_price_source = 'account market quotes'
+    if current_price_native is None and positions_list:
+        from app.account_pricing import decorate_valuation_issues
+        issue = decorate_valuation_issues(db, user.id, [{'ticker': ticker, 'value': None}],
+            [p.platform_id for p in positions_list])[0].get('valuation_issue')
+        if issue:
+            raise ValuationUnavailable(issue)
+    value_holding(total_quantity, current_price_native, currency, fx)
+    current_price_native = float(current_price_native)
 
     avg_price_display = avg_price_native * native_to_display
     current_price_display = current_price_native * native_to_display
     cost_display = total_cost_native * native_to_display
     value_display = total_quantity * current_price_native * native_to_display
-    market_cap_display = (float(instrument.market_cap or 0) * native_to_display) if instrument.market_cap else 0
+    market_cap_display = (float(instrument.market_cap or 0) * native_to_display) if instrument.market_cap and instrument.currency_code else 0
     cap_pnl_display = value_display - cost_display
     cap_pnl_pct = (cap_pnl_display / cost_display * 100) if cost_display else 0
 
@@ -5242,17 +5111,19 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         text("SELECT MAX(annual_rate) FROM dividend_forecast WHERE ticker = :t"),
         {"t": ticker},
     ).scalar() or 0
+    if not instrument.currency_code:
+        annual_rate = 0  # historical dividend-rate units remain unknown
     fwd_div_display = float(annual_rate) * total_quantity * native_to_display
     personal_fwd_yield = (fwd_div_display / cost_display * 100) if cost_display else 0
     share_fwd_yield = (float(annual_rate) / float(current_price_native) * 100) if (annual_rate and current_price_native) else 0
 
     # Valuation / coverage
-    eps_ttm = float(instrument.eps_ttm or 0)
+    eps_ttm = float(instrument.eps_ttm or 0) if instrument.currency_code else 0
     annual_dps = float(annual_rate)
     current_price_major = _major_unit_native_value(current_price_native, currency)
     annual_dps_major = _major_unit_native_value(annual_dps, currency)
     pe_ratio = (current_price_major / eps_ttm) if (eps_ttm > 0 and current_price_major) else None
-    fcf_ps = float(instrument.fcf_per_share_3y_avg or 0)
+    fcf_ps = float(instrument.fcf_per_share_3y_avg or 0) if instrument.currency_code else 0
     fcf_cov = (annual_dps_major / fcf_ps * 100) if (fcf_ps > 0 and annual_dps_major > 0) else None
     div_cov = (eps_ttm / annual_dps_major) if (eps_ttm > 0 and annual_dps_major > 0) else None
 
@@ -5303,7 +5174,11 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     pies_in = [dict(r._mapping) for r in pie_rows]
     holding_history = _build_holding_history(db, user.id, ticker, account)
 
+    if cost_unknown:
+        avg_price_display = cost_display = cap_pnl_display = cap_pnl_pct = None
+        total_pnl_display = total_pnl_pct = actual_yield = personal_fwd_yield = None
     return templates.TemplateResponse(request, "holding.html", {
+        "cost_unknown": cost_unknown, "cost_estimated": cost_estimated,
         "user": user,
         "instrument": instrument,
         "ticker": ticker,
@@ -5385,3 +5260,39 @@ def refresh_holding_data(ticker: str, request: Request, db: Session = Depends(ge
     except Exception as exc:
         traceback.print_exc()
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+from app.web.reconciliation_routes import build_reconciliation_router
+app.include_router(build_reconciliation_router(_require_user, _is_admin))
+from app.web.ingestion_routes import build_ingestion_router
+app.include_router(build_ingestion_router(_require_user))
+from app.web.listing_identity_routes import build_listing_identity_router
+app.include_router(build_listing_identity_router(_require_user, _is_admin))
+from app.web.scoped_identity_routes import build_scoped_identity_router
+app.include_router(build_scoped_identity_router(_require_user, _is_admin))
+
+
+@app.get('/admin/instruments/reconciliation', response_class=HTMLResponse)
+def admin_reconciliation_page(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(request, 'admin_reconciliation.html', {
+        'user': user, 'metadata_admin': True,
+    })
+
+
+@app.get('/admin/instruments/identity', response_class=HTMLResponse)
+def admin_listing_identity_page(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(request, 'admin_listing_identity.html', {'user': user})
+
+
+@app.get('/admin/instruments/account-identity', response_class=HTMLResponse)
+def admin_account_identity_page(request: Request, db: Session = Depends(get_session)):
+    user = _require_admin(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    return templates.TemplateResponse(request, 'admin_account_identity.html', {'user': user})

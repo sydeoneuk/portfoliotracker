@@ -9,6 +9,28 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: portfolio_test
+          POSTGRES_USER: portfolio_test
+          POSTGRES_PASSWORD: disposable-test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U portfolio_test -d portfolio_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_DB: portfolio_test
+      POSTGRES_USER: portfolio_test
+      POSTGRES_PASSWORD: disposable-test-password
+      POSTGRES_HOST: localhost
+      SESSION_SECRET: disposable-test-session-secret
+      ENCRYPTION_KEY: disposable-test-encryption-placeholder
+      TEST_DATABASE_URL: postgresql+psycopg2://portfolio_test:disposable-test-password@localhost:5432/portfolio_test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,7 +44,10 @@ jobs:
         run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: |
+          alembic upgrade head
+          pytest tests/ -v
+          node --test tests/*.cjs
 
   deploy:
     name: Deploy

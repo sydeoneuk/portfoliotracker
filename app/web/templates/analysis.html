@@ -160,9 +160,30 @@
 </div>
   {% endif %}
 <div class="container-fluid px-4 py-3">
+{% if not historical_view and not costs_available %}<div class="alert alert-warning">Cost or valuation data is incomplete; profit totals are unavailable.</div>{% endif %}
+{% if costs_estimated %}<div class="alert alert-info">Transaction costs are moving-average estimates from supplied history. Opening holdings are unverified.</div>{% endif %}
+{% if unpriced_positions %}
+<p><a href="/settings#holding-attention">Review holdings needing attention</a></p>
+<div class="alert alert-warning" role="alert">
+  <strong>Some holdings cannot currently be valued.</strong> Complete market value and profit totals are unavailable. Charts include priced holdings only.
+  {% if positions %}<div>Priced holdings subtotal: {{ cfmt(priced_subtotal_gbp, 'GBP') }}. This excludes the holdings below.</div>{% else %}<div>No holdings in this selection currently have a usable valuation.</div>{% endif %}
+</div>
+<div class="table-responsive mb-4">
+  <table class="table table-sm">
+    <caption class="caption-top">Holdings awaiting a usable price or exchange rate</caption>
+    <thead><tr><th>Holding</th><th class="text-end">Quantity</th><th>Valuation</th></tr></thead>
+    <tbody>{% for p in unpriced_positions %}<tr>
+      <td><strong>{{ p.ticker }}</strong> {{ p.name }}</td>
+      <td class="text-end">{{ fmt(p.quantity, 6) }}</td>
+      <td>— {{ p.valuation_issue }}</td>
+    </tr>{% endfor %}</tbody>
+  </table>
+</div>
+{% endif %}
+{% if cash_issue %}<div class="alert alert-warning">Cash conversion unavailable: {{ cash_issue }}.</div>{% endif %}
   <div class="d-flex align-items-baseline gap-2 mb-3">
-    <span class="fw-bold" style="font-size:1.15rem;">&pound;{{ "{:,.0f}".format(total_value) }}</span>
-    <span class="text-muted" style="font-size:.82rem;">{{ "{:.1f}".format(total_portfolio_pct) }}% of total portfolio</span>
+    <span class="fw-bold" style="font-size:1.15rem;">{{ cfmt(total_value, 'GBP', 0) }}{% if not valuation_complete %} Complete value unavailable{% endif %}</span>
+    <span class="text-muted" style="font-size:.82rem;">{% if total_portfolio_pct is not none %}{{ "{:.1f}".format(total_portfolio_pct) }}% of total portfolio{% else %}Portfolio percentage unavailable{% endif %}</span>
     {% if selected_pie_ids %}<span class="text-muted" style="font-size:.78rem;">{{ selected_pie_ids|length }} pie filter(s) active</span>{% endif %}
   </div>
   <div class="row g-3 mb-4">
@@ -181,10 +202,10 @@
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3 d-flex flex-column" style="border-left: 3px solid var(--t212-green);">
         <div class="label">Unrealised P&amp;L</div>
-        <div class="amount {% if not historical_view and analysis_summary.unrealised > 0 %}pnl-pos{% elif not historical_view and analysis_summary.unrealised < 0 %}pnl-neg{% endif %}">
-          {% if historical_view %}-{% else %}{% if analysis_summary.unrealised >= 0 %}+{% endif %}{{ cfmt(analysis_summary.unrealised, display_currency) }}{% endif %}
+        <div class="amount {% if not historical_view and (analysis_summary.unrealised is not none and (analysis_summary.unrealised is not none and analysis_summary.unrealised > 0)) %}pnl-pos{% elif not historical_view and (analysis_summary.unrealised is not none and (analysis_summary.unrealised is not none and analysis_summary.unrealised < 0)) %}pnl-neg{% endif %}">
+          {% if historical_view %}-{% else %}{% if (analysis_summary.unrealised is not none and (analysis_summary.unrealised is not none and analysis_summary.unrealised >= 0)) %}+{% endif %}{{ cfmt(analysis_summary.unrealised, display_currency) }}{% endif %}
         </div>
-        <div class="subtext">{% if historical_view %}-{% else %}{% if analysis_summary.unrealised_pct >= 0 %}+{% endif %}{{ fmt(analysis_summary.unrealised_pct, 2) }}%{% endif %}</div>
+        <div class="subtext">{% if historical_view %}-{% else %}{% if (analysis_summary.unrealised_pct is not none and (analysis_summary.unrealised_pct is not none and analysis_summary.unrealised_pct >= 0)) %}+{% endif %}{{ fmt(analysis_summary.unrealised_pct, 2) }}%{% endif %}</div>
       </div>
     </div>
     <div class="col-6 col-md-3">
@@ -264,13 +285,13 @@
               <td><span class="badge-exchange">{{ p.display_class }}</span></td>
               <td class="text-end">{{ fmt(p.quantity, 4) }}</td>
               <td data-order="{{ -1 if historical_view else p.cost_display }}" class="text-end">{% if historical_view %}-{% else %}{{ cfmt(p.cost_display, display_currency) }}{% endif %}</td>
-              <td data-order="{{ p.value_display }}" class="text-end fw-semibold {% if p.value_display >= p.cost_display %}pnl-pos{% else %}pnl-neg{% endif %}">{{ cfmt(p.value_display, display_currency) }}</td>
-              <td data-order="{{ -1 if historical_view else p.ppl_display }}" class="text-end {% if not historical_view and p.ppl_display > 0 %}pnl-pos{% elif not historical_view and p.ppl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">{% if historical_view %}-{% elif p.ppl_display != 0 %}{% if p.ppl_display > 0 %}+{% endif %}{{ cfmt(p.ppl_display, display_currency) }}{% else %}-{% endif %}</td>
-              <td data-order="{{ -1 if historical_view else p.cap_pnl_pct_display }}" class="text-end {% if not historical_view and p.cap_pnl_pct_display > 0 %}pnl-pos{% elif not historical_view and p.cap_pnl_pct_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">{% if historical_view %}-{% elif p.cap_pnl_pct_display != 0 %}{% if p.cap_pnl_pct_display > 0 %}+{% endif %}{{ fmt(p.cap_pnl_pct_display, 2) }}%{% else %}-{% endif %}</td>
+              <td data-order="{{ p.value_display }}" class="text-end fw-semibold {% if p.cost_display is none or p.value_display >= p.cost_display %}pnl-pos{% else %}pnl-neg{% endif %}">{{ cfmt(p.value_display, display_currency) }}</td>
+              <td data-order="{{ -1 if historical_view else p.ppl_display }}" class="text-end {% if not historical_view and (p.ppl_display is not none and (p.ppl_display is not none and p.ppl_display > 0)) %}pnl-pos{% elif not historical_view and (p.ppl_display is not none and (p.ppl_display is not none and p.ppl_display < 0)) %}pnl-neg{% else %}pnl-zero{% endif %}">{% if historical_view %}-{% elif (p.ppl_display is not none and (p.ppl_display is not none and p.ppl_display != 0)) %}{% if (p.ppl_display is not none and (p.ppl_display is not none and p.ppl_display > 0)) %}+{% endif %}{{ cfmt(p.ppl_display, display_currency) }}{% else %}-{% endif %}</td>
+              <td data-order="{{ -1 if historical_view else p.cap_pnl_pct_display }}" class="text-end {% if not historical_view and (p.cap_pnl_pct_display is not none and (p.cap_pnl_pct_display is not none and p.cap_pnl_pct_display > 0)) %}pnl-pos{% elif not historical_view and (p.cap_pnl_pct_display is not none and (p.cap_pnl_pct_display is not none and p.cap_pnl_pct_display < 0)) %}pnl-neg{% else %}pnl-zero{% endif %}">{% if historical_view %}-{% elif (p.cap_pnl_pct_display is not none and (p.cap_pnl_pct_display is not none and p.cap_pnl_pct_display != 0)) %}{% if (p.cap_pnl_pct_display is not none and (p.cap_pnl_pct_display is not none and p.cap_pnl_pct_display > 0)) %}+{% endif %}{{ fmt(p.cap_pnl_pct_display, 2) }}%{% else %}-{% endif %}</td>
               <td data-order="{{ p.dividends_display }}" class="text-end fw-semibold">{% if p.dividends_display > 0 %}{{ cfmt(p.dividends_display, display_currency) }}{% else %}-{% endif %}</td>
-              <td data-order="{{ -1 if historical_view else p.div_return_pct_display }}" class="text-end fw-semibold">{% if historical_view %}-{% elif p.div_return_pct_display > 0 %}{{ fmt(p.div_return_pct_display, 2) }}%{% else %}-{% endif %}</td>
-              <td data-order="{{ -1 if historical_view else p.total_pnl_display }}" class="text-end {% if not historical_view and p.total_pnl_display > 0 %}pnl-pos{% elif not historical_view and p.total_pnl_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">{% if historical_view %}-{% elif p.total_pnl_display != 0 %}{% if p.total_pnl_display > 0 %}+{% endif %}{{ cfmt(p.total_pnl_display, display_currency) }}{% else %}-{% endif %}</td>
-              <td data-order="{{ -1 if historical_view else p.total_pnl_pct_display }}" class="text-end {% if not historical_view and p.total_pnl_pct_display > 0 %}pnl-pos{% elif not historical_view and p.total_pnl_pct_display < 0 %}pnl-neg{% else %}pnl-zero{% endif %}">{% if historical_view %}-{% elif p.total_pnl_pct_display != 0 %}{% if p.total_pnl_pct_display > 0 %}+{% endif %}{{ fmt(p.total_pnl_pct_display, 2) }}%{% else %}-{% endif %}</td>
+              <td data-order="{{ -1 if historical_view else p.div_return_pct_display }}" class="text-end fw-semibold">{% if historical_view %}-{% elif (p.div_return_pct_display is not none and (p.div_return_pct_display is not none and p.div_return_pct_display > 0)) %}{{ fmt(p.div_return_pct_display, 2) }}%{% else %}-{% endif %}</td>
+              <td data-order="{{ -1 if historical_view else p.total_pnl_display }}" class="text-end {% if not historical_view and (p.total_pnl_display is not none and (p.total_pnl_display is not none and p.total_pnl_display > 0)) %}pnl-pos{% elif not historical_view and (p.total_pnl_display is not none and (p.total_pnl_display is not none and p.total_pnl_display < 0)) %}pnl-neg{% else %}pnl-zero{% endif %}">{% if historical_view %}-{% elif (p.total_pnl_display is not none and (p.total_pnl_display is not none and p.total_pnl_display != 0)) %}{% if (p.total_pnl_display is not none and (p.total_pnl_display is not none and p.total_pnl_display > 0)) %}+{% endif %}{{ cfmt(p.total_pnl_display, display_currency) }}{% else %}-{% endif %}</td>
+              <td data-order="{{ -1 if historical_view else p.total_pnl_pct_display }}" class="text-end {% if not historical_view and (p.total_pnl_pct_display is not none and (p.total_pnl_pct_display is not none and p.total_pnl_pct_display > 0)) %}pnl-pos{% elif not historical_view and (p.total_pnl_pct_display is not none and (p.total_pnl_pct_display is not none and p.total_pnl_pct_display < 0)) %}pnl-neg{% else %}pnl-zero{% endif %}">{% if historical_view %}-{% elif (p.total_pnl_pct_display is not none and (p.total_pnl_pct_display is not none and p.total_pnl_pct_display != 0)) %}{% if (p.total_pnl_pct_display is not none and (p.total_pnl_pct_display is not none and p.total_pnl_pct_display > 0)) %}+{% endif %}{{ fmt(p.total_pnl_pct_display, 2) }}%{% else %}-{% endif %}</td>
               {% set annual_dps = (p.annual_rate_per_share or 0)|float %}
               {% set fcf_ps = (p.fcf_per_share_3y_avg or 0)|float %}
               {% set fcf_cov = (annual_dps / fcf_ps * 100) if (fcf_ps > 0 and annual_dps > 0) else 0 %}
@@ -278,7 +299,7 @@
               {% set eps = (p.eps_ttm or 0)|float %}
               {% set div_cov = (eps / annual_dps) if (annual_dps > 0 and eps > 0) else 0 %}
               <td data-order="{{ -1 if historical_view else div_cov }}" class="text-end {% if not historical_view and div_cov > 0 %}{% if div_cov >= 2 %}cov-good{% elif div_cov >= 1 %}cov-warn{% else %}cov-bad{% endif %}{% elif not historical_view and eps < 0 and annual_dps > 0 %}cov-bad{% endif %}">{% if historical_view %}-{% elif div_cov > 0 %}{{ fmt(div_cov, 1) }}x{% elif eps < 0 and annual_dps > 0 %}<span class="cov-bad">-ve EPS</span>{% else %}-{% endif %}</td>
-              <td data-order="{{ -1 if historical_view else p.fwd_yield_display }}" class="text-end fw-semibold">{% if historical_view %}-{% elif p.fwd_yield_display > 0 %}{{ fmt(p.fwd_yield_display, 2) }}%{% else %}-{% endif %}</td>
+              <td data-order="{{ -1 if historical_view else p.fwd_yield_display }}" class="text-end fw-semibold">{% if historical_view %}-{% elif (p.fwd_yield_display is not none and (p.fwd_yield_display is not none and p.fwd_yield_display > 0)) %}{{ fmt(p.fwd_yield_display, 2) }}%{% else %}-{% endif %}</td>
               {% set pc = (p.pie_count or 0)|int %}
               <td data-order="{{ pc }}" class="text-end">{% if pc > 0 %}{{ pc }}{% else %}-{% endif %}</td>
             </tr>

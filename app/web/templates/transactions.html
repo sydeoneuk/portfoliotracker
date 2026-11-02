@@ -115,6 +115,7 @@
 
 <!-- ── Summary cards ───────────────────────────────────────── -->
 <div class="container-fluid px-4 py-3">
+<div class="alert alert-info">Trade values use reported settlement amounts, including charges. Missing legacy currencies or amounts are unavailable; non-GBP settlements use current display FX.</div>
   <div class="row g-3 mb-3">
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3" style="border-left: 3px solid #0fa968;">
@@ -131,7 +132,7 @@
     <div class="col-6 col-md-3">
       <div class="card summary-card p-3" style="border-left: 3px solid var(--t212-green);">
         <div class="label">Net Invested (GBP)</div>
-        <div class="amount">{{ cfmt(total_buy_gbp - total_sell_gbp, "GBP") }}</div>
+        <div class="amount">{{ cfmt(total_buy_gbp - total_sell_gbp if total_buy_gbp is not none and total_sell_gbp is not none else none, "GBP") }}</div>
       </div>
     </div>
     <div class="col-6 col-md-3">
@@ -162,7 +163,7 @@
             <th>Side</th>
             <th>Type</th>
             <th class="text-end">Quantity</th>
-            <th class="text-end">Fill Price (GBP)</th>
+            <th class="text-end">Execution Price</th>
             <th class="text-end">Value (GBP)</th>
           </tr>
         </thead>
@@ -182,7 +183,7 @@
             </td>
             <td><span class="badge-exchange">{{ o.order_type or '—' }}</span></td>
             <td class="text-end fw-semibold">{{ fmt(o.quantity, 4) }}</td>
-            <td class="text-end">{{ cfmt(o.fill_price_gbp, "GBP", 4) }}</td>
+            <td class="text-end">{{ cfmt(o.fill_price, o.currency, 4) if o.currency else "—" }}</td>
             <td data-order="{{ o.value_gbp }}" class="text-end fw-semibold">{{ cfmt(o.value_gbp, "GBP") }}</td>
           </tr>
           {% endfor %}

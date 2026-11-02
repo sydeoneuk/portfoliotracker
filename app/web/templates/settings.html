@@ -103,6 +103,32 @@
   <div class="container py-4" style="max-width: 720px">
     <h4 class="fw-bold mb-4">Settings</h4>
 
+    <div class="card mb-4"><div class="card-body">
+      <h6>Import history and source review</h6>
+      <p class="small text-muted">Uploads retain their original file and preview observations. Review differences before selecting a new holdings source. Existing records retain legacy provenance until a verified source is selected.</p>
+      <button id="import-history-refresh" type="button" class="btn btn-sm btn-outline-secondary">Load recent imports</button>
+      <button id="account-prices-refresh" type="button" class="btn btn-sm btn-outline-secondary">Match investments and refresh prices</button>
+      <div id="account-prices-status" class="small mt-2" role="status" aria-live="polite"></div>
+      <div id="import-history-results" class="mt-2"></div>
+    </div></div>
+
+    <div class="card mb-4" id="holding-attention"><div class="card-body">
+      <h6>Holdings needing attention</h6>
+      <p class="small text-muted">The app first uses existing ISINs to verify listings and restore prices automatically. Only missing, conflicting or ambiguous matches need your review. Purchase costs and transaction history stay unchanged.</p>
+      <p class="small text-muted">If legacy quote units are missing, a newly verified market value is displayed in GBP. This does not assign units to old amounts or reconstruct purchase costs.</p>
+      <label class="form-label" for="holding-attention-search">Find a holding or account</label>
+      <input id="holding-attention-search" class="form-control form-control-sm" maxlength="80" placeholder="Ticker, investment name, account or ISIN">
+      <button id="holding-attention-load" class="btn btn-sm btn-outline-primary mt-2" type="button">Load holdings needing attention</button>
+      <div id="holding-attention-status" class="small mt-2" role="status" aria-live="polite"></div>
+      <div id="holding-attention-results" class="mt-2"></div>
+      <button id="holding-attention-prev" class="btn btn-sm btn-outline-secondary" type="button">Previous</button>
+      <button id="holding-attention-next" class="btn btn-sm btn-outline-secondary" type="button">Next</button>
+    </div></div>
+
+    <details class="mb-4"><summary>Advanced price mapping tools</summary>
+      {% include "_reconciliation.html" %}
+    </details>
+
     <!-- Accounts -->
     <div class="card mb-4">
       <div class="card-body">
@@ -273,6 +299,7 @@
           Removes all synced positions, orders, transactions, dividend payments and pies for your account.
           Instrument metadata and dividend history are not affected.
           Your API keys and login are preserved. Run a sync afterwards to repopulate.
+          Retained import evidence stays in Import history; pending previews, selected source authority and scoped identity resolutions are reset.
         </p>
         <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#clearDataModal">
           Clear All Data
@@ -446,7 +473,7 @@
         </div>
         <div class="modal-footer border-0 pt-0">
           <button type="button" class="btn btn-secondary" id="add-csv-skip-btn">Skip for now</button>
-          <button type="button" class="btn btn-t212" id="add-csv-import-btn">Import CSV</button>
+          <button type="button" class="btn btn-t212" id="add-csv-import-btn">Preview CSV</button>
         </div>
       </div>
     </div>
@@ -458,14 +485,14 @@
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header border-0 pb-0">
-        <h5 class="modal-title fw-bold">Import CSV — <span id="csv-import-platform-name"></span></h5>
+        <h5 class="modal-title fw-bold">Preview CSV — <span id="csv-import-platform-name"></span></h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
         <input type="hidden" id="csv-import-platform-id">
         <input type="hidden" id="csv-import-platform-type">
         <p id="csv-import-hint" class="text-muted mb-3" style="font-size:.85rem;">
-          Export from <strong>T212 → History → Export CSV</strong>. Re-importing will not create duplicates.
+          Export from <strong>T212 → History → Export CSV</strong>. Review uploads before applying; ambiguous overlaps are flagged.
         </p>
         <div class="mb-3">
           <label class="form-label text-muted">CSV File</label>
@@ -475,7 +502,7 @@
       </div>
       <div class="modal-footer border-0 pt-0">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-        <button type="button" class="btn btn-t212" id="csv-import-modal-btn">Import CSV</button>
+        <button type="button" class="btn btn-t212" id="csv-import-modal-btn">Preview CSV</button>
       </div>
     </div>
   </div>
@@ -486,14 +513,14 @@
   <div class="modal-dialog modal-dialog-centered modal-lg">
     <div class="modal-content">
       <div class="modal-header border-0 pb-0">
-        <h5 class="modal-title fw-bold">Import Pie CSV — <span id="pie-csv-platform-name"></span></h5>
+        <h5 class="modal-title fw-bold">Preview Pie CSV — <span id="pie-csv-platform-name"></span></h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
         <input type="hidden" id="pie-csv-platform-id">
         <p class="text-muted mb-3" style="font-size:.85rem;">
           Export a single pie from <strong>T212 → Pies → select pie → Performance</strong> (Download CSV).
-          Each import replaces all holdings for that pie name. A reconciliation report is shown after import.
+          Preview the dated allocation snapshot before replacing this pie. Account holdings remain separate.
         </p>
         <div class="mb-3">
           <label class="form-label text-muted">Pie Name <span class="text-danger">*</span></label>
@@ -508,7 +535,7 @@
       </div>
       <div class="modal-footer border-0 pt-0">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-        <button type="button" class="btn btn-t212" id="pie-csv-import-btn">Import Pie</button>
+        <button type="button" class="btn btn-t212" id="pie-csv-import-btn">Preview Pie</button>
       </div>
     </div>
   </div>
@@ -525,7 +552,7 @@
       <div class="modal-body">
         <input type="hidden" id="ii-tx-csv-platform-id">
         <p class="mb-2">Platform: <strong id="ii-tx-csv-platform-name"></strong></p>
-        <p class="text-muted small mb-3">Export from <strong>ii → My ii → Transactions → Download transactions CSV</strong>. Re-importing will not create duplicates.</p>
+        <p class="text-muted small mb-3">Export from <strong>ii → My ii → Transactions → Download transactions CSV</strong>. Review uploads before applying; ambiguous overlaps are flagged.</p>
         <div class="mb-3">
           <label class="form-label small fw-semibold">Transactions CSV</label>
           <input type="file" class="form-control form-control-sm" id="ii-tx-csv-file" accept=".csv">
@@ -534,7 +561,7 @@
       </div>
       <div class="modal-footer border-0 pt-0">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-        <button type="button" class="btn btn-t212" id="ii-tx-csv-import-btn">Import Transactions</button>
+        <button type="button" class="btn btn-t212" id="ii-tx-csv-import-btn">Preview Transactions</button>
       </div>
     </div>
   </div>
@@ -558,7 +585,7 @@
           <li>All <strong>pies and pie holdings</strong></li>
         </ul>
         <p class="mb-0 text-muted" style="font-size:.82rem;">
-          Instrument metadata, dividend history, and transactions are not affected.
+          Instrument metadata, dividend history, and retained import evidence are not affected. Pending previews and source selections are reset.
           Your API keys and account login are preserved.
         </p>
       </div>
@@ -688,9 +715,9 @@ function loadAccounts() {
             </div>
             <div class="d-flex gap-1 flex-shrink-0">
               ${p.key_slot ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showSetKeyModal(${p.id}, '${p.key_slot}', '${p.name}')">Set key</button>` : ''}
-              ${method !== 'API' ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showImportCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}', '${p.platform_type}')">Import CSV</button>` : ''}
-              ${p.platform_type && p.platform_type.startsWith('t212') ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showPieCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Import Pie CSV</button>` : ''}
-              ${p.platform_type === 'interactive_investor' ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showIiTransactionsCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Import Transactions CSV</button>` : ''}
+              ${method !== 'API' ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showImportCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}', '${p.platform_type}')">Preview CSV</button>` : ''}
+              ${p.platform_type && p.platform_type.startsWith('t212') ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showPieCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Preview Pie CSV</button>` : ''}
+              ${p.platform_type === 'interactive_investor' ? `<button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showIiTransactionsCsvModal(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Preview Transactions CSV</button>` : ''}
               <button class="btn btn-sm btn-outline-secondary py-0" style="font-size:.78rem;" onclick="showRenameModal(${p.id}, '${p.name}')">Rename</button>
               <button class="btn btn-sm btn-outline-danger py-0" style="font-size:.78rem;" onclick="deletePlatform(${p.id}, '${p.name}', ${p.position_count})">Delete</button>
             </div>
@@ -825,7 +852,7 @@ document.getElementById('add-account-form').addEventListener('submit', async fun
     document.getElementById('add-account-step2-name').textContent = name;
     document.getElementById('add-account-step1').style.display = 'none';
     document.getElementById('add-account-step2').style.display = '';
-    document.getElementById('add-account-modal-title').textContent = 'Import CSV';
+    document.getElementById('add-account-modal-title').textContent = 'Preview CSV';
     loadAccounts();
   }
 });
@@ -837,9 +864,9 @@ const CSV_IMPORT_ENDPOINTS = {
   'interactive_investor': '/import/ii-csv',
 };
 const CSV_IMPORT_HINTS = {
-  't212_api':            'Export from <strong>T212 → History → Export CSV</strong>. Re-importing will not create duplicates.',
-  't212_csv':            'Export from <strong>T212 → History → Export CSV</strong>. Re-importing will not create duplicates.',
-  'interactive_investor': 'Export from <strong>ii → My ii → Portfolio → Download</strong>. Each import replaces current positions.',
+  't212_api':            'Export from <strong>T212 → History → Export CSV</strong>. Review uploads before applying; ambiguous overlaps are flagged.',
+  't212_csv':            'Export from <strong>T212 → History → Export CSV</strong>. Review uploads before applying; ambiguous overlaps are flagged.',
+  'interactive_investor': 'Export from <strong>ii → My ii → Portfolio → Download</strong>. Review the dated snapshot before applying changes to current positions.',
 };
 
 async function doImportCsv(platformId, fileInput, resultEl, btn, platformType) {
@@ -853,25 +880,38 @@ async function doImportCsv(platformId, fileInput, resultEl, btn, platformType) {
     const fd = new FormData();
     fd.append('platform_id', platformId);
     fd.append('csv_file', file);
+    window.ImportReview.options(fileInput, fd, platformType === 'interactive_investor' ? 'snapshot' : 't212_history');
     const resp = await fetch(endpoint, { method: 'POST', body: fd });
     const data = await resp.json();
+    if (data.batch_id) {window.ImportReview.render(resultEl, data); return;}
     if (data.error) {
       resultEl.className = 'alert alert-danger mb-0';
       resultEl.textContent = data.error;
     } else {
-      let html = '<strong>' + data.summary + '</strong>';
-      if (data.errors && data.errors.length) {
-        html += '<ul class="mb-0 mt-2">' + data.errors.map(e => '<li class="text-danger">' + e + '</li>').join('') + '</ul>';
+      resultEl.replaceChildren();
+      const heading = document.createElement('strong');
+      heading.textContent = data.summary;
+      resultEl.appendChild(heading);
+      for (const [messages, css] of [[data.errors || [], 'text-danger'], [data.warnings || [], 'text-warning']]) {
+        if (!messages.length) continue;
+        const list = document.createElement('ul');
+        list.className = 'mb-0 mt-2';
+        for (const message of messages) {
+          const item = document.createElement('li');
+          item.className = css;
+          item.textContent = message;
+          list.appendChild(item);
+        }
+        resultEl.appendChild(list);
       }
-      resultEl.className = 'alert alert-success mb-0';
-      resultEl.innerHTML = html;
+      resultEl.className = 'alert mb-0 ' + ((data.errors || []).length ? 'alert-danger' : ((data.warnings || []).length ? 'alert-warning' : 'alert-success'));
     }
   } catch (err) {
     resultEl.className = 'alert alert-danger mb-0';
     resultEl.textContent = 'Upload failed: ' + err.message;
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Import CSV';
+    btn.textContent = 'Preview CSV';
     resultEl.style.display = '';
     loadAccounts();
   }
@@ -889,7 +929,7 @@ function showImportCsvModal(id, name, platformType) {
   resultEl.textContent = '';
   const btn = document.getElementById('csv-import-modal-btn');
   btn.disabled = false;
-  btn.textContent = 'Import CSV';
+  btn.textContent = 'Preview CSV';
   new bootstrap.Modal(document.getElementById('csvImportModal')).show();
 }
 
@@ -922,7 +962,7 @@ function showPieCsvModal(id, name) {
   resultEl.textContent = '';
   const btn = document.getElementById('pie-csv-import-btn');
   btn.disabled = false;
-  btn.textContent = 'Import Pie';
+  btn.textContent = 'Preview Pie';
   new bootstrap.Modal(document.getElementById('pieCsvImportModal')).show();
 }
 
@@ -944,8 +984,10 @@ document.getElementById('pie-csv-import-btn').addEventListener('click', async fu
     fd.append('platform_id', pid);
     fd.append('pie_name', pname);
     fd.append('csv_file', file);
+    window.ImportReview.options(document.getElementById('pie-csv-file'), fd, 'snapshot');
     const resp = await fetch('/import/pie-csv', { method: 'POST', body: fd });
     const data = await resp.json();
+    if (data.batch_id) {window.ImportReview.render(resultEl, data); return;}
 
     if (!resp.ok || data.error) {
       resultEl.className = 'alert alert-danger mb-0';
@@ -984,7 +1026,7 @@ document.getElementById('pie-csv-import-btn').addEventListener('click', async fu
     resultEl.textContent = 'Upload failed: ' + err.message;
   } finally {
     this.disabled = false;
-    this.textContent = 'Import Pie';
+    this.textContent = 'Preview Pie';
     resultEl.style.display = '';
   }
 });
@@ -1026,7 +1068,7 @@ function showIiTransactionsCsvModal(id, name) {
   resultEl.textContent = '';
   const btn = document.getElementById('ii-tx-csv-import-btn');
   btn.disabled = false;
-  btn.textContent = 'Import Transactions';
+  btn.textContent = 'Preview Transactions';
   new bootstrap.Modal(document.getElementById('iiTransactionsCsvModal')).show();
 }
 
@@ -1047,6 +1089,7 @@ document.getElementById('ii-tx-csv-import-btn').addEventListener('click', async 
     fd.append('csv_file', file);
     const resp = await fetch('/import/ii-transactions-csv', { method: 'POST', body: fd });
     const data = await resp.json();
+    if (data.batch_id) {window.ImportReview.render(resultEl, data); return;}
 
     if (!resp.ok || data.error) {
       resultEl.className = 'alert alert-danger mb-0';
@@ -1064,10 +1107,13 @@ document.getElementById('ii-tx-csv-import-btn').addEventListener('click', async 
     resultEl.textContent = 'Upload failed: ' + err.message;
   } finally {
     this.disabled = false;
-    this.textContent = 'Import Transactions';
+    this.textContent = 'Preview Transactions';
     resultEl.style.display = '';
   }
 });
 </script>
+<script src="/static/reconciliation.js?v=3" defer></script>
+<script src="/static/import-review.js?v=7" defer></script>
+<script src="/static/holding-attention.js?v=2" defer></script>
 </body>
 </html>

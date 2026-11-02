@@ -19,14 +19,17 @@ Price format variants:
 import csv
 import datetime
 import io
+import math
 import re
 from dataclasses import dataclass, field
 from typing import IO
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import Instrument, Platform, Position
+from app.cost_basis import broker_cost_values
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -99,14 +102,29 @@ class IiImportResult:
 # ── Importer ───────────────────────────────────────────────────────────────
 
 class IiCsvImporter:
-    def __init__(self, session: Session, platform: Platform, user_id: int):
+    def __init__(self, session: Session, platform: Platform, user_id: int, *, managed=False):
+        self.managed = managed
         self.session = session
         self.platform = platform
         self.platform_id = platform.id
         self.user_id = user_id
         self._result = IiImportResult()
+        self._in_totals_footer = False
 
     def import_file(self, file_obj: IO[bytes] | IO[str]) -> IiImportResult:
+        try:
+            return self._import_file(file_obj)
+        except Exception as exc:
+            if self.managed:
+                raise
+            self.session.rollback()
+            self._result = IiImportResult(
+                columns_detected=self._result.columns_detected,
+                errors=[f"{exc}. Import rolled back; no changes saved."],
+            )
+            return self._result
+
+    def _import_file(self, file_obj: IO[bytes] | IO[str]) -> IiImportResult:
         raw = file_obj.read()
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8-sig")
@@ -125,6 +143,12 @@ class IiCsvImporter:
             norm_map[h] = key
 
         self._result.columns_detected = list(norm_map.values())
+        fields = list(norm_map.values())
+        if not any(k in fields for k in ("symbol", "ticker", "epic", "code")) or "qty" not in fields or "price" not in fields:
+            raise ValueError("Holdings CSV requires Symbol, Qty and Price columns")
+        for key in ("symbol", "ticker", "epic", "code", "qty", "price", "average price"):
+            if fields.count(key) > 1:
+                raise ValueError(f"Ambiguous CSV column: {key}")
         rows = list(reader)
         if not rows:
             self._result.errors.append("CSV has no data rows.")
@@ -132,9 +156,18 @@ class IiCsvImporter:
 
         # Parse valid position rows first (so we can do a clean replace)
         new_positions: list[dict] = []
-        for row in rows:
-            parsed = self._parse_row(row, norm_map)
+        seen = set()
+        for row_num, row in enumerate(rows, start=2):
+            try:
+                if None in row:
+                    raise ValueError("Too many CSV cells")
+                parsed = self._parse_row(row, norm_map)
+            except ValueError as exc:
+                raise ValueError(f"Row {row_num}: {exc}") from exc
             if parsed is not None:
+                if parsed["ticker"] in seen:
+                    raise ValueError(f"Row {row_num}: duplicate holding {parsed['ticker']}")
+                seen.add(parsed["ticker"])
                 new_positions.append(parsed)
 
         if not new_positions:
@@ -162,6 +195,19 @@ class IiCsvImporter:
         now = datetime.datetime.utcnow()
         for p in new_positions:
             self._ensure_instrument(p["ticker"], p.get("name"), p.get("currency"))
+            recorded = self.session.get(Instrument, p['ticker'])
+            recorded_currency = recorded.currency_code if recorded is not None else None
+            if recorded_currency == 'GBp':
+                recorded_currency = 'GBX'
+            if recorded_currency and p['currency'] and recorded_currency != p['currency']:
+                scales = {('GBP', 'GBX'): 100, ('GBX', 'GBP'): 0.01}
+                scale = scales.get((p['currency'], recorded_currency))
+                if scale is None:
+                    raise ValueError(f"Quote currency conflicts with recorded listing for {p['ticker']}; reconcile instrument metadata first")
+                for field in ('current_price', 'average_price'):
+                    if p[field] is not None:
+                        p[field] *= scale
+            basis = p['basis']
             stmt = (
                 pg_insert(Position)
                 .values(
@@ -172,6 +218,7 @@ class IiCsvImporter:
                     quantity=p["quantity"],
                     average_price=p.get("average_price"),
                     current_price=p.get("current_price"),
+                    **basis,
                     last_synced_at=now,
                 )
                 .on_conflict_do_update(
@@ -180,6 +227,7 @@ class IiCsvImporter:
                         "quantity": p["quantity"],
                         "average_price": p.get("average_price"),
                         "current_price": p.get("current_price"),
+                        **basis,
                         "last_synced_at": now,
                     },
                 )
@@ -187,7 +235,8 @@ class IiCsvImporter:
             self.session.execute(stmt)
             self._result.positions_upserted += 1
 
-        self.session.commit()
+        if not self.managed:
+            self.session.commit()
         return self._result
 
     # ── Row parsing ────────────────────────────────────────────────────────
@@ -200,35 +249,78 @@ class IiCsvImporter:
             return ""
 
         ticker = get("symbol") or get("ticker") or get("epic") or get("code")
-        if not ticker:
+        if not ticker and not get('name') and not get('qty') and not get('average price'):
+            footer = get('price')
+            if footer.lower() in {'total', 'totals'} and all(
+                not _clean(value) for original, value in row.items() if norm_map.get(original) != 'price'
+            ):
+                self._in_totals_footer = True
+                self._result.skipped += 1
+                return None
+            if self._in_totals_footer and footer in {'GBP', 'USD', 'EUR', 'GBX', 'CAD', 'AUD', 'CHF', 'JPY', 'HKD', 'SGD', 'NZD', 'SEK', 'NOK', 'DKK', 'ZAR'}:
+                self._result.skipped += 1
+                return None
+        if self._in_totals_footer and ticker:
+            raise ValueError('Holding found after totals footer; snapshot coverage is ambiguous')
+        if ticker.lower() == "total" or not any(v and str(v).strip() for v in row.values()):
             self._result.skipped += 1
             return None
+        if not ticker:
+            raise ValueError("Missing holding symbol")
 
         name = get("name")
         qty_raw = get("qty")
         qty = _safe_float(qty_raw)
-        if qty is None or qty <= 0:
+        if qty is None or not math.isfinite(qty) or qty < 0:
+            raise ValueError(f"Invalid quantity for {ticker}")
+        if qty == 0:
             self._result.skipped += 1
             return None
 
         # Current price — infer currency from format
         price_raw = get("price")
         current_price, currency = _parse_ii_value(price_raw)
+        if price_raw.lower() not in {"", "-", "—", "n/a"} and (current_price is None or not math.isfinite(current_price) or current_price < 0):
+            raise ValueError(f"Invalid price for {ticker}")
 
-        # Average price — should be same currency as current price
+        # ii can express cost in account currency while quoting in USD/GBX.
         avg_raw = get("average price")
         avg_price, avg_ccy = _parse_ii_value(avg_raw)
+        if avg_raw.lower() not in {"", "-", "—", "n/a"} and (avg_price is None or not math.isfinite(avg_price) or avg_price < 0):
+            raise ValueError(f"Invalid average price for {ticker}")
         # Zero average price means no cost basis (transferred in) — store None
         if avg_price is not None and avg_price == 0.0:
             avg_price = None
+        basis = broker_cost_values(qty, avg_price, avg_ccy)
+        book_raw = get('book cost')
+        book_cost, book_ccy = _parse_ii_value(book_raw)
+        if book_raw.lower() not in {'', '-', '—', 'n/a'}:
+            if book_cost is None or not math.isfinite(book_cost) or book_cost < 0:
+                raise ValueError(f'Invalid book cost for {ticker}')
+            if book_cost > 0 and book_ccy:
+                basis = dict(cost_basis_amount=book_cost, cost_basis_currency=book_ccy,
+                    cost_basis_status='reported', cost_basis_source='broker', cost_basis_reason='Book cost from ii statement')
+            elif book_cost == 0:
+                basis = broker_cost_values(qty, None, book_ccy)
+        # The deprecated average_price remains in quote units only. Explicit
+        # cost fields preserve a differently denominated broker cost unchanged.
+        native_avg = avg_price
+        if avg_price is not None and avg_ccy != currency:
+            if avg_ccy == 'GBP' and currency == 'GBX':
+                native_avg = avg_price * 100
+            elif avg_ccy == 'GBX' and currency == 'GBP':
+                native_avg = avg_price / 100
+            else:
+                native_avg = None
 
         return {
             "ticker": ticker,
             "name": name,
             "quantity": qty,
-            "currency": currency or avg_ccy,
+            "currency": currency,
             "current_price": current_price,
-            "average_price": avg_price,
+            "average_price": native_avg,
+            "basis": basis,
         }
 
     # ── Instrument upsert ──────────────────────────────────────────────────
@@ -243,7 +335,6 @@ class IiCsvImporter:
         if (currency or "").upper() in ("GBP", "GBX"):
             yf_candidate = f"{ticker}.L"
 
-        from sqlalchemy import literal_column
         values: dict = dict(
             ticker=ticker,
             name=name or ticker,
@@ -262,9 +353,7 @@ class IiCsvImporter:
         }
         if yf_candidate:
             # Only set yf_ticker if not already present so manually-corrected values survive.
-            set_update["yf_ticker"] = literal_column(
-                f"COALESCE(instruments.yf_ticker, '{yf_candidate}')"
-            )
+            set_update["yf_ticker"] = func.coalesce(Instrument.yf_ticker, yf_candidate)
 
         stmt = (
             pg_insert(Instrument)

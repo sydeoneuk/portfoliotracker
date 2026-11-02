@@ -12,17 +12,26 @@ Expected CSV columns (T212 standard export):
   Exchange rate, Result, Total, Withholding tax,
   Currency (Withholding tax), Stamp duty reserve tax
 """
+from app.identity import T212, require_resolved_identity
+
 
 import csv
 import datetime
 import io
+import hashlib
+import json
+from decimal import Decimal, InvalidOperation
+import re
 from dataclasses import dataclass, field
 from typing import IO
 
 from sqlalchemy import text as _text
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from app.cost_basis import moving_average_cost
+from app.models.order import TradeImportObservation
 from app.models import (
     DividendPayment,
     Instrument,
@@ -66,10 +75,15 @@ def _normalise_headers(headers: list[str]) -> dict[str, str]:
     """Return a {normalised_key: original_header} map for flexible column lookup."""
     result = {}
     for h in headers:
-        key = h.strip().lower()
-        # strip parenthetical currency suffixes: "price / share (gbp)" → "price / share"
-        if key.endswith(")") and "(" in key:
-            key = key[: key.rfind("(")].strip()
+        key = h.strip().lstrip("\ufeff").lower()
+        # Parentheses can describe the field, not its unit. In particular,
+        # each Currency (...) column must retain its own identity.
+        if key == "time (utc)":
+            key = "time"
+        elif not key.startswith("currency ("):
+            key = re.sub(r"\s+\([a-z]{3}\)$", "", key)
+        if key in result:
+            raise ValueError(f"Ambiguous CSV headers: {result[key]!r} and {h!r}")
         result[key] = h
     return result
 
@@ -95,10 +109,13 @@ def _float(s: str) -> float | None:
 def _parse_dt(s: str) -> datetime.datetime | None:
     if not s:
         return None
-    # Strip UTC offset suffix (+HH:MM or Z) so T212 SIPP exports parse correctly.
-    # All T212 timestamps are UTC so discarding the offset is safe.
-    import re as _re
-    s = _re.sub(r'[+-]\d{2}:\d{2}$|Z$', '', s).strip()
+    try:
+        parsed = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y %H:%M:%S"):
         try:
             return datetime.datetime.strptime(s, fmt)
@@ -118,6 +135,7 @@ class ImportResult:
     positions_upserted: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         parts = []
@@ -139,7 +157,10 @@ class ImportResult:
 # ── Importer ───────────────────────────────────────────────────────────────
 
 class T212CsvImporter:
-    def __init__(self, session: Session, platform: Platform, user_id: int):
+    def __init__(self, session: Session, platform: Platform, user_id: int, *, managed=False, rebuild_positions=True, replace_observations=False):
+        self.managed = managed
+        self.rebuild_positions = rebuild_positions
+        self.replace_observations = replace_observations
         self.session = session
         self.platform = platform
         self.platform_id = platform.id
@@ -159,18 +180,32 @@ class T212CsvImporter:
             self._result.errors.append("CSV has no headers — is the file empty?")
             return self._result
 
-        headers_map = _normalise_headers(list(reader.fieldnames))
-
-        for i, row in enumerate(reader, start=2):
-            try:
+        # A failed row must not discard preceding rows and then commit the
+        # remainder as a successful import. Apply the whole file atomically.
+        stage = "reading rows"
+        try:
+            headers_map = _normalise_headers(list(reader.fieldnames))
+            for i, row in enumerate(reader, start=2):
+                stage = f"Row {i}"
                 self._process_row(row, headers_map)
-            except Exception as exc:
-                self._result.errors.append(f"Row {i}: {exc}")
-                self.session.rollback()
-
-        self.session.flush()
-        self._rebuild_positions()
-        self.session.commit()
+            stage = "Rebuilding positions"
+            self.session.flush()
+            if self.rebuild_positions:
+                self._rebuild_positions()
+            else:
+                self._result.warnings.append('Events retained; holdings authority unchanged because complete history was not selected.')
+            stage = "Committing import"
+            if not self.managed:
+                self.session.commit()
+        except Exception as exc:
+            if self.managed:
+                raise
+            self.session.rollback()
+            self._known_tickers.clear()
+            self._seen_trade_ids = {}
+            self._result = ImportResult(
+                errors=[f"{stage}: {exc}. Import rolled back; no changes saved."]
+            )
         return self._result
 
     # ── Row dispatch ───────────────────────────────────────────────────────
@@ -186,6 +221,11 @@ class T212CsvImporter:
         elif action in _DIVIDEND_ACTIONS:
             self._import_dividend(row, hm, action)
         else:
+            if any(label in action for label in (
+                "stock split", "stock transfer", "share transfer", "free stock", "free shares",
+                "merger", "spin-off", "spinoff", "rights issue",
+            )):
+                raise ValueError("Security movement requires holdings/cost reconciliation; transaction projection not supported")
             self._import_transaction(row, hm, action)
 
     # ── Instrument helper ──────────────────────────────────────────────────
@@ -213,7 +253,7 @@ class T212CsvImporter:
             )
             .on_conflict_do_update(
                 index_elements=["ticker"],
-                set_={"isin": isin or None, "updated_at": now},
+                set_={"isin": func.coalesce(Instrument.isin, isin or None), "updated_at": now},
             )
         )
         self.session.execute(stmt)
@@ -235,46 +275,73 @@ class T212CsvImporter:
         name = _get(row, hm, "name")
         currency = _get(row, hm, "currency (price / share)", "currency")
         side = "BUY" if action in _BUY_ACTIONS else "SELL"
-        qty = _float(_get(row, hm, "no. of shares"))
-        # Use GBP-equivalent price per share: Total / No. of shares
-        total = _float(_get(row, hm, "total"))
-        price_local = _float(_get(row, hm, "price / share", "price/share"))
-        fill_price_gbp = (total / qty) if (total is not None and qty and qty > 0) else price_local
+        def number(*keys):
+            raw = _get(row, hm, *keys)
+            if not raw or raw.lower() in {"n/a", "-", "—"}:
+                return None
+            try:
+                value = Decimal(raw.replace(",", "").replace("−", "-").replace("–", "-"))
+            except InvalidOperation as exc:
+                raise ValueError(f"Invalid {keys[0]}") from exc
+            if not value.is_finite():
+                raise ValueError(f"Invalid {keys[0]}")
+            return value
+
+        def field_currency(field):
+            explicit = _get(row, hm, f"currency ({field})")
+            if explicit:
+                return explicit
+            header = hm.get(field, "")
+            match = re.search(r"\(([A-Z]{3})\)$", header)
+            return match.group(1) if match else None
+
+        qty = number("no. of shares")
+        price_local = number("price / share", "price/share")
+        total = number("total")
         filled_at = _parse_dt(_get(row, hm, "time (utc)", "time"))
-        notes = _get(row, hm, "notes") or None
-
-        ticker = self._ensure_instrument(isin, ticker, name, currency)
-
-        stmt = (
-            insert(Order)
-            .values(
-                id=t212_id,
-                ticker=ticker,
-                user_id=self.user_id,
-                platform_id=self.platform_id,
-                account=self.platform.account_type,
-                quantity=qty,
-                filled_quantity=qty,
-                order_type=_order_type(action),
-                side=side,
-                status="FILLED",
-                fill_price=fill_price_gbp,
-                filled_at=filled_at,
-                synced_at=datetime.datetime.utcnow(),
-            )
-            .on_conflict_do_update(
-                index_elements=["user_id", "id"],
-                set_={
-                    "platform_id": self.platform_id,
-                    "account": self.platform.account_type,
-                    "filled_quantity": qty,
-                    "fill_price": fill_price_gbp,
-                    "filled_at": filled_at,
-                    "synced_at": datetime.datetime.utcnow(),
-                },
-            )
+        if not ticker or qty is None or qty <= 0 or filled_at is None:
+            raise ValueError("Trade requires ticker, positive quantity and execution time")
+        if price_local is not None and price_local < 0:
+            raise ValueError("Execution price cannot be negative")
+        currency = field_currency("price / share") or currency or None
+        settlement_currency = field_currency("total")
+        charges = []
+        for field in ("stamp duty reserve tax", "transaction fee", "currency conversion fee", "finra fee", "fee", "withholding tax"):
+            charge = number(field)
+            if charge is not None:
+                charges.append({"type": field, "amount": str(charge), "currency": field_currency(field)})
+        raw_payload = {str(k): v for k, v in row.items()}
+        payload_hash = hashlib.sha256(json.dumps(raw_payload, sort_keys=True).encode()).hexdigest()
+        seen = getattr(self, "_seen_trade_ids", {})
+        if t212_id in seen and seen[t212_id] != payload_hash:
+            raise ValueError(f"Multiple different executions share ID {t212_id}; cannot collapse them safely")
+        self._seen_trade_ids = {**seen, t212_id: payload_hash}
+        ticker = self._ensure_instrument(isin, ticker, name, currency or "")
+        now = datetime.datetime.utcnow()
+        values = dict(
+            execution_price=price_local, execution_currency=currency,
+            settlement_amount=total, settlement_currency=settlement_currency,
+            execution_fx_rate=number("exchange rate"), charges=charges,
         )
-        self.session.execute(stmt)
+        require_resolved_identity(self.session, Order, self.user_id, "id", t212_id, self.platform_id)
+        stmt = insert(Order).values(
+            source_namespace=T212, id=t212_id, ticker=ticker, user_id=self.user_id, platform_id=self.platform_id,
+            account=self.platform.account_type, quantity=qty, filled_quantity=qty,
+            order_type=_order_type(action), side=side, status="FILLED",
+            fill_price=price_local, filled_at=filled_at, synced_at=now, **values,
+        ).on_conflict_do_update(
+            index_elements=["user_id", "platform_id", "source_namespace", "id"],
+            set_={**values, "filled_quantity": qty, "filled_at": filled_at, "synced_at": now,
+                  "status": "FILLED", "side": side},
+            where=(Order.platform_id == self.platform_id) & (Order.ticker == ticker) & ((Order.side == side) | Order.side.is_(None)),
+        ).returning(Order.pk)
+        order_pk = self.session.execute(stmt).scalar_one_or_none()
+        if order_pk is None:
+            raise ValueError(f"Trade ID {t212_id} belongs to another account or instrument; no records changed")
+        self.session.execute(insert(TradeImportObservation).values(
+            order_pk=order_pk, user_id=self.user_id, payload_hash=payload_hash,
+            payload=raw_payload, imported_at=now,
+        ).on_conflict_do_nothing(index_elements=["order_pk", "payload_hash"]))
         self._result.orders += 1
 
     # ── Dividend import ────────────────────────────────────────────────────
@@ -308,10 +375,11 @@ class T212CsvImporter:
             self._result.skipped += 1
             return
 
+        require_resolved_identity(self.session, DividendPayment, self.user_id, "reference", t212_id, self.platform_id)
         stmt = (
             insert(DividendPayment)
             .values(
-                reference=t212_id,
+                source_namespace=T212, reference=t212_id,
                 ticker=ticker,
                 platform_id=self.platform_id,
                 account=self.platform.account_type,
@@ -324,7 +392,7 @@ class T212CsvImporter:
                 synced_at=datetime.datetime.utcnow(),
             )
             .on_conflict_do_update(
-                index_elements=["user_id", "reference"],
+                index_elements=["user_id", "platform_id", "source_namespace", "reference"],
                 set_={
                     "platform_id": self.platform_id,
                     "account": self.platform.account_type,
@@ -349,10 +417,11 @@ class T212CsvImporter:
         date_time = _parse_dt(_get(row, hm, "time (utc)", "time"))
         notes = _get(row, hm, "notes") or None
 
+        require_resolved_identity(self.session, Transaction, self.user_id, "id", t212_id, self.platform_id)
         stmt = (
             insert(Transaction)
             .values(
-                id=t212_id,
+                source_namespace=T212, id=t212_id,
                 user_id=self.user_id,
                 platform_id=self.platform_id,
                 type=_normalise_tx_type(action),
@@ -363,7 +432,7 @@ class T212CsvImporter:
                 synced_at=datetime.datetime.utcnow(),
             )
             .on_conflict_do_update(
-                index_elements=["user_id", "id"],
+                index_elements=["user_id", "platform_id", "source_namespace", "id"],
                 set_={
                     "platform_id": self.platform_id,
                     "amount": total,
@@ -377,76 +446,73 @@ class T212CsvImporter:
     # ── Position rebuild ───────────────────────────────────────────────────
 
     def _rebuild_positions(self) -> None:
-        """Recompute positions for this platform from the full order history."""
-        rows = self.session.execute(_text("""
-            SELECT
-                ticker,
-                SUM(CASE WHEN side = 'BUY'  THEN COALESCE(filled_quantity, 0) ELSE 0 END)
-              - SUM(CASE WHEN side = 'SELL' THEN COALESCE(filled_quantity, 0) ELSE 0 END)
-                AS net_qty,
-                CASE
-                  WHEN SUM(CASE WHEN side = 'BUY' THEN COALESCE(filled_quantity, 0) ELSE 0 END) > 0
-                  THEN SUM(CASE WHEN side = 'BUY'
-                                THEN COALESCE(fill_price, 0) * COALESCE(filled_quantity, 0)
-                                ELSE 0 END)
-                     / SUM(CASE WHEN side = 'BUY' THEN COALESCE(filled_quantity, 0) ELSE 0 END)
-                  ELSE NULL
-                END AS avg_buy_price
-            FROM orders
-            WHERE platform_id = :pid
-              AND user_id     = :uid
-              AND status IN ('FILLED', 'PARTIALLY_FILLED')
-              AND ticker IS NOT NULL
-            GROUP BY ticker
-            HAVING (
-                SUM(CASE WHEN side = 'BUY'  THEN COALESCE(filled_quantity, 0) ELSE 0 END)
-              - SUM(CASE WHEN side = 'SELL' THEN COALESCE(filled_quantity, 0) ELSE 0 END)
-            ) > 0.00001
-        """), {"pid": self.platform_id, "uid": self.user_id}).fetchall()
-
+        """Project chronological costs without overwriting broker or legacy values."""
+        rows = self.session.query(Order).filter(
+            Order.platform_id == self.platform_id, Order.user_id == self.user_id,
+            Order.source_namespace == T212,
+            Order.status.in_(["FILLED", "PARTIALLY_FILLED"]), Order.ticker.isnot(None),
+        ).all()
+        grouped = {}
+        for trade in rows:
+            grouped.setdefault(trade.ticker, []).append(trade)
+        if self.replace_observations:
+            current = self.session.query(Position).filter_by(user_id=self.user_id, platform_id=self.platform_id).all()
+            missing = [p.ticker for p in current if p.quantity and p.ticker not in grouped]
+            if missing:
+                raise ValueError('Declared complete history does not explain existing holdings: ' + ', '.join(missing))
+        capital_returns = {r.ticker for r in self.session.query(DividendPayment).filter(
+            DividendPayment.user_id == self.user_id, DividendPayment.platform_id == self.platform_id,
+            DividendPayment.type == "RETURN_OF_CAPITAL",
+        ).all()}
         now = datetime.datetime.utcnow()
-        for r in rows:
-            stmt = (
-                insert(Position)
-                .values(
-                    ticker=r.ticker,
-                    platform_id=self.platform_id,
-                    user_id=self.user_id,
-                    account=self.platform.account_type,
-                    quantity=float(r.net_qty),
-                    average_price=float(r.avg_buy_price) if r.avg_buy_price else None,
-                    last_synced_at=now,
-                )
-                .on_conflict_do_update(
-                    index_elements=["ticker", "platform_id", "user_id"],
-                    set_={
-                        "quantity": float(r.net_qty),
-                        "average_price": float(r.avg_buy_price) if r.avg_buy_price else None,
-                        "last_synced_at": now,
-                    },
-                )
+        for ticker, trades in grouped.items():
+            basis = moving_average_cost(trades)
+            if ticker in capital_returns:
+                from dataclasses import replace
+                basis = replace(basis, amount=None, reason="Return of capital requires cost reconciliation")
+            existing = self.session.get(Position, (ticker, self.platform_id, self.user_id))
+            # Holdings/pie observations and legacy rows retain authority until
+            # explicitly reconciled. An incomplete history must not shrink them.
+            if existing is not None and existing.cost_basis_source != "transactions" and not self.replace_observations:
+                if existing.cost_basis_source != "broker" and basis.quantity_reconciled and (
+                    abs(Decimal(str(existing.quantity or 0)) - basis.quantity) <= Decimal("0.00000001")
+                ):
+                    existing.cost_basis_amount = basis.amount
+                    existing.cost_basis_currency = basis.currency
+                    existing.cost_basis_status = "estimated" if basis.amount is not None else "unknown"
+                    existing.cost_basis_source = "reconciled"
+                    existing.cost_basis_reason = basis.reason or "Supplied trades match preserved quantity; opening coverage unverified"
+                elif existing.cost_basis_source != "broker":
+                    self._result.warnings.append(f"{ticker}: existing holding retained; transaction quantities need reconciliation")
+                continue
+            if not basis.quantity_reconciled:
+                if self.replace_observations:
+                    raise ValueError(f'{ticker}: complete-history quantity cannot be reconciled: {basis.reason}')
+                self._result.warnings.append(f"{ticker}: {basis.reason}; existing quantity retained")
+                if existing is not None:
+                    existing.cost_basis_amount = None
+                    existing.cost_basis_status = "unknown"
+                    existing.cost_basis_reason = basis.reason
+                continue
+            if basis.quantity == 0:
+                if existing is not None:
+                    self.session.delete(existing)
+                continue
+            values = dict(
+                quantity=basis.quantity, cost_basis_amount=basis.amount,
+                cost_basis_currency=basis.currency,
+                cost_basis_status="estimated" if basis.amount is not None else "unknown",
+                cost_basis_source="transactions",
+                cost_basis_reason=basis.reason or "Moving average of supplied history; opening coverage unverified",
+                last_synced_at=now,
             )
-            self.session.execute(stmt)
+            self.session.execute(insert(Position).values(
+                ticker=ticker, platform_id=self.platform_id, user_id=self.user_id,
+                account=self.platform.account_type, **values,
+            ).on_conflict_do_update(
+                index_elements=["ticker", "platform_id", "user_id"], set_=values,
+            ))
             self._result.positions_upserted += 1
-
-        # Remove positions that are now fully sold (net_qty ≤ 0)
-        self.session.execute(_text("""
-            DELETE FROM positions
-            WHERE platform_id = :pid
-              AND user_id     = :uid
-              AND ticker NOT IN (
-                SELECT ticker
-                FROM orders
-                WHERE platform_id = :pid
-                  AND user_id     = :uid
-                  AND status IN ('FILLED', 'PARTIALLY_FILLED')
-                GROUP BY ticker
-                HAVING (
-                    SUM(CASE WHEN side = 'BUY'  THEN COALESCE(filled_quantity, 0) ELSE 0 END)
-                  - SUM(CASE WHEN side = 'SELL' THEN COALESCE(filled_quantity, 0) ELSE 0 END)
-                ) > 0.00001
-              )
-        """), {"pid": self.platform_id, "uid": self.user_id})
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────

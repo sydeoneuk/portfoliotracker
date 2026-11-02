@@ -16,16 +16,19 @@ Expected CSV columns (T212 standard pie export — flexible matching):
 import csv
 import datetime
 import io
+import math
 import zlib
 from dataclasses import dataclass, field
 from typing import IO
 
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import Instrument, Platform, Position
 from app.models.pie import Pie, PieHolding
 from app.importers.t212_csv import _normalise_headers, _get, _float
+from app.identity import T212_PIE_CSV, require_resolved_identity
 
 
 # ── Result dataclass ───────────────────────────────────────────────────────
@@ -60,7 +63,9 @@ class T212PieCsvImporter:
         platform: Platform,
         user_id: int,
         pie_name: str,
+        *, managed=False,
     ):
+        self.managed = managed
         self.session = session
         self.platform = platform
         self.platform_id = platform.id
@@ -68,10 +73,26 @@ class T212PieCsvImporter:
         self.pie_name = pie_name.strip()
         self._result = PieImportResult(pie_name=self.pie_name)
         self._known_tickers: set[str] = set()
+        self._pending_instruments: dict[str, tuple] = {}
 
     # ── Public entry point ─────────────────────────────────────────────────
 
     def import_file(self, file_obj: IO[bytes] | IO[str]) -> PieImportResult:
+        try:
+            return self._import_file(file_obj)
+        except Exception as exc:
+            if self.managed:
+                raise
+            self.session.rollback()
+            self._known_tickers.clear()
+            self._pending_instruments.clear()
+            self._result = PieImportResult(
+                pie_name=self.pie_name,
+                errors=[f"{exc}. Import rolled back; no changes saved."],
+            )
+            return self._result
+
+    def _import_file(self, file_obj: IO[bytes] | IO[str]) -> PieImportResult:
         raw = file_obj.read()
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8-sig")
@@ -88,7 +109,30 @@ class T212PieCsvImporter:
             self._result.errors.append("CSV has no data rows.")
             return self._result
 
-        # Find or create the Pie record
+        if not any(k in headers_map for k in ("slice", "ticker", "symbol", "code")) or not any(
+            k in headers_map for k in ("shares", "units", "owned quantity", "no. of shares", "quantity", "number of shares")
+        ):
+            raise ValueError("Pie CSV requires ticker and quantity columns")
+
+        # Validate every row before creating a pie, writing instruments, or
+        # replacing existing holdings. A partial snapshot cannot be authoritative.
+        new_holdings = []
+        seen = set()
+        for row_num, row in enumerate(rows, start=2):
+            try:
+                if None in row:
+                    raise ValueError("Too many CSV cells")
+                holding = self._parse_row(row, headers_map, None)
+            except ValueError as exc:
+                raise ValueError(f"Row {row_num}: {exc}") from exc
+            if holding is not None:
+                if holding.ticker in seen:
+                    raise ValueError(f"Row {row_num}: duplicate holding {holding.ticker}")
+                seen.add(holding.ticker)
+                new_holdings.append(holding)
+        if not new_holdings:
+            raise ValueError("No valid holdings found; existing pie retained")
+
         pie = self._ensure_pie()
 
         # Remove stale holdings (replace strategy — CSV is authoritative snapshot)
@@ -102,14 +146,9 @@ class T212PieCsvImporter:
         ).delete()
         self._result.holdings_replaced = old_count
 
-        # Import each holding row
-        new_holdings: list[PieHolding] = []
-        for i, row in enumerate(rows, start=2):
-            holding = self._parse_row(row, headers_map, pie.pk)
-            if holding is not None:
-                new_holdings.append(holding)
-
         for h in new_holdings:
+            self._ensure_instrument(*self._pending_instruments[h.ticker])
+            h.pie_id = pie.pk
             self.session.add(h)
 
         self._result.holdings_imported = len(new_holdings)
@@ -120,7 +159,8 @@ class T212PieCsvImporter:
         # Reconciliation against positions
         self._reconcile(new_holdings)
 
-        self.session.commit()
+        if not self.managed:
+            self.session.commit()
         return self._result
 
     # ── Pie upsert ─────────────────────────────────────────────────────────
@@ -132,11 +172,19 @@ class T212PieCsvImporter:
                 user_id=self.user_id,
                 platform_id=self.platform_id,
                 name=self.pie_name,
+                source_namespace=T212_PIE_CSV,
             )
             .first()
         )
         if existing:
             return existing
+
+        ambiguous = self.session.query(Pie).filter(
+            Pie.user_id == self.user_id, Pie.platform_id == self.platform_id,
+            Pie.name == self.pie_name, Pie.source_namespace != T212_PIE_CSV,
+        ).first()
+        if ambiguous is not None:
+            raise ValueError("Existing pie source is ambiguous; reconcile its identity before importing a snapshot")
 
         # Generate a stable synthetic T212-like ID for CSV-sourced pies.
         # Prefix "csv:" ensures no collision with real T212 API IDs.
@@ -146,11 +194,14 @@ class T212PieCsvImporter:
 
         # Handle the unlikely case where the synthetic ID conflicts with
         # another pie for this user.
-        if self.session.query(Pie).filter_by(user_id=self.user_id, id=synthetic_id).first():
+        if self.session.query(Pie).filter_by(user_id=self.user_id, platform_id=self.platform_id,
+                                            source_namespace=T212_PIE_CSV, id=synthetic_id).first():
             synthetic_id = (synthetic_id + 1) & 0x7FFFFFFF
+        require_resolved_identity(self.session, Pie, self.user_id, "id", synthetic_id, self.platform_id)
 
         now = datetime.datetime.utcnow()
         pie = Pie(
+            source_namespace=T212_PIE_CSV,
             id=synthetic_id,
             user_id=self.user_id,
             platform_id=self.platform_id,
@@ -166,14 +217,16 @@ class T212PieCsvImporter:
     # ── Row parsing ────────────────────────────────────────────────────────
 
     def _parse_row(
-        self, row: dict, hm: dict[str, str], pie_pk: int
+        self, row: dict, hm: dict[str, str], pie_pk: int | None
     ) -> PieHolding | None:
         # T212 pie CSV uses "Slice" as the ticker column, with a trailing
         # "Total" summary row that must be skipped.
         ticker = _get(row, hm, "slice", "ticker", "symbol", "code")
-        if not ticker or ticker.lower() == "total":
+        if ticker.lower() == "total" or not any(v and str(v).strip() for v in row.values()):
             self._result.skipped += 1
             return None
+        if not ticker:
+            raise ValueError("Missing holding ticker")
 
         # Quantity — try several common column names T212 uses
         qty_raw = _get(
@@ -182,37 +235,42 @@ class T212PieCsvImporter:
             "quantity", "number of shares",
         )
         qty = _float(qty_raw)
-        if qty is None or qty <= 0:
+        if qty is None or not math.isfinite(qty) or qty < 0:
+            raise ValueError(f"Invalid quantity for {ticker}")
+        if qty == 0:
             self._result.skipped += 1
             return None
 
         # Optional enrichment fields
         name = _get(row, hm, "name", "instrument", "company", "description")
         isin = _get(row, hm, "isin")
-        currency = _get(row, hm, "currency", "currency (price / share)")
+        currency = _get(row, hm, "currency (price / share)", "currency")
 
-        expected_share = _float(
-            _get(row, hm, "target allocation", "target allocation (%)", "target (%)", "target", "expected share")
-        )
-        if expected_share and expected_share > 1:
-            expected_share = expected_share / 100  # convert percentage to fraction
+        def number(*keys: str) -> float | None:
+            raw = _get(row, hm, *keys)
+            if raw.lower() in {"", "-", "—", "n/a"}:
+                return None
+            value = _float(raw)
+            if value is None or not math.isfinite(value):
+                raise ValueError(f"Invalid {keys[0]} for {ticker}")
+            return value
 
-        current_share = _float(
-            _get(row, hm, "current allocation", "current allocation (%)", "current (%)", "current", "current share")
-        )
-        if current_share and current_share > 1:
-            current_share = current_share / 100
+        def fraction(*keys: str) -> float | None:
+            value = number(*keys)
+            header = next((hm[k] for k in keys if k in hm), "")
+            if value is not None and ("%" in header or abs(value) > 1):
+                return value / 100
+            return value
 
-        avg_invested = _float(
-            _get(row, hm, "price (avg. invested value)", "average buy price", "avg cost", "invested amount")
-        )
-        avg_value = _float(_get(row, hm, "current value", "price (avg. value)", "value"))
-        avg_result = _float(_get(row, hm, "result", "return", "p&l", "ppl"))
-        avg_result_coef_raw = _float(_get(row, hm, "result (%)", "return (%)", "result coef"))
-        avg_result_coef = (avg_result_coef_raw / 100) if avg_result_coef_raw and avg_result_coef_raw > 1 else avg_result_coef_raw
+        expected_share = fraction("target allocation", "target allocation (%)", "target (%)", "target", "expected share")
+        current_share = fraction("current allocation", "current allocation (%)", "current (%)", "current", "current share")
+        avg_invested = number("price (avg. invested value)", "average buy price", "avg cost", "invested amount")
+        avg_value = number("current value", "price (avg. value)", "value")
+        avg_result = number("result", "return", "p&l", "ppl")
+        avg_result_coef = fraction("result (%)", "return (%)", "result coef")
 
         # Ensure instrument exists
-        self._ensure_instrument(isin, ticker, name, currency)
+        self._pending_instruments[ticker] = (isin, ticker, name, currency)
 
         return PieHolding(
             user_id=self.user_id,
@@ -250,7 +308,7 @@ class T212PieCsvImporter:
             )
             .on_conflict_do_update(
                 index_elements=["ticker"],
-                set_={"isin": isin or None, "updated_at": now},
+                set_={"isin": func.coalesce(Instrument.isin, isin or None), "updated_at": now},
             )
         )
         self.session.execute(stmt)

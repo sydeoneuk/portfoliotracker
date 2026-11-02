@@ -1,12 +1,20 @@
 import datetime
 from sqlalchemy import Column, String, Float, DateTime, Integer, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
+from sqlalchemy import ForeignKeyConstraint, Index, text, CheckConstraint
 from app.models.base import Base
 
 
 class Pie(Base):
     __tablename__ = "pies"
-    __table_args__ = (UniqueConstraint("user_id", "id", name="uq_pies_user_t212"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "platform_id", "source_namespace", "id", name="uq_pies_account_source"),
+        ForeignKeyConstraint(["platform_id", "user_id"], ["platforms.id", "platforms.user_id"], name="fk_pies_account_owner"),
+        CheckConstraint("source_namespace = 'legacy' OR (user_id IS NOT NULL AND platform_id IS NOT NULL)", name="ck_pies_resolved_source_owner"),
+        Index("uq_pies_unassigned_source", "user_id", "source_namespace", "id", unique=True,
+              postgresql_where=text("platform_id IS NULL")),
+    )
+    source_namespace = Column(String(80), nullable=False, default="legacy", server_default="legacy")
 
     pk = Column(Integer, primary_key=True, autoincrement=True)
     id = Column(Integer, nullable=False)   # T212 pie ID

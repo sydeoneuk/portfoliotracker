@@ -36,15 +36,28 @@ class TestNormaliseHeaders(unittest.TestCase):
         self.assertIn("action", hm)
         self.assertIn("time", hm)
 
-    def test_strips_parenthetical_suffix(self):
-        # The stripping applies to any trailing (...), including currency suffixes
-        # "Price / share (GBP)" → "price / share"
-        # "Currency (Withholding tax)" → "currency"  (outer parens stripped)
-        # "Time (UTC)" → "time"
+    def test_only_strips_unit_suffixes(self):
         hm = _normalise_headers(["Price / share (GBP)", "Currency (Withholding tax)", "Time (UTC)"])
         self.assertIn("price / share", hm)
-        self.assertIn("currency", hm)
+        self.assertIn("currency (withholding tax)", hm)
         self.assertIn("time", hm)
+
+    def test_currency_columns_remain_distinct(self):
+        headers = ["Currency (Price / share)", "Currency (Total)", "Currency (Withholding tax)"]
+        hm = _normalise_headers(headers)
+        row = dict(zip(headers, ["USD", "GBP", "EUR"]))
+        self.assertEqual(_get(row, hm, "currency (price / share)"), "USD")
+        self.assertEqual(_get(row, hm, "currency (total)"), "GBP")
+        self.assertEqual(_get(row, hm, "currency (withholding tax)"), "EUR")
+        self.assertNotIn("currency", hm)
+
+    def test_semantic_price_fields_remain_distinct(self):
+        hm = _normalise_headers(["Price (avg. invested value)", "Price (avg. value)"])
+        self.assertEqual(len(hm), 2)
+
+    def test_duplicate_normalised_headers_rejected(self):
+        with self.assertRaises(ValueError):
+            _normalise_headers(["Total", "Total (GBP)"])
 
     def test_preserves_original_header(self):
         hm = _normalise_headers(["Total"])
@@ -263,6 +276,7 @@ class TestImportResultSummary(unittest.TestCase):
 def _make_importer():
     """Return a T212CsvImporter with a mock session and platform."""
     session = MagicMock()
+    session.query.return_value.filter.return_value.first.return_value = None
     platform = MagicMock()
     platform.id = 1
     platform.account_type = "SIPP"
@@ -382,6 +396,7 @@ class TestDividendSyntheticId(unittest.TestCase):
             user_id=42,
         )
         imp2._known_tickers.add("VWRP")
+        imp2.session.query.return_value.filter.return_value.first.return_value = None
         imp2.session.get.return_value = MagicMock()
         imp2._import_dividend(row, hm, "dividend (dividend)")
         self.assertEqual(imp2._result.dividends, 1)
@@ -447,6 +462,7 @@ class TestFullCsvParse(unittest.TestCase):
 
     def _make_importer(self):
         session = MagicMock()
+        session.query.return_value.filter.return_value.first.return_value = None
         # _rebuild_positions calls session.execute(...).fetchall() — return empty list
         session.execute.return_value.fetchall.return_value = []
         platform = MagicMock()
@@ -462,6 +478,13 @@ class TestFullCsvParse(unittest.TestCase):
         self.assertEqual(result.cash_transactions, 1)
         self.assertEqual(result.skipped, 0)
 
+    def test_price_currency_is_not_taken_from_withholding_column(self):
+        imp = self._make_importer()
+        with patch.object(imp, "_ensure_instrument", return_value="AAPL") as ensure:
+            result = imp.import_file(io.StringIO(self.CSV))
+        self.assertEqual(result.errors, [])
+        self.assertEqual(ensure.call_args_list[0].args[3], "USD")
+
     def test_empty_csv(self):
         imp = self._make_importer()
         result = imp.import_file(io.StringIO(""))
@@ -473,6 +496,36 @@ class TestFullCsvParse(unittest.TestCase):
         csv_bytes = ("﻿" + self.CSV).encode("utf-8")
         result = imp.import_file(io.BytesIO(csv_bytes))
         self.assertEqual(result.orders, 1)
+
+    def test_failed_row_rolls_back_whole_file_and_stops(self):
+        imp = self._make_importer()
+        with patch.object(imp, "_process_row", side_effect=[None, ValueError("bad row"), None]) as process:
+            with patch.object(imp, "_rebuild_positions") as rebuild:
+                result = imp.import_file(io.StringIO(self.CSV))
+        self.assertEqual(process.call_count, 2)
+        rebuild.assert_not_called()
+        imp.session.rollback.assert_called_once()
+        imp.session.commit.assert_not_called()
+        self.assertEqual(result.orders, 0)
+        self.assertIn("Row 3", result.errors[0])
+
+    def test_failed_rebuild_resets_written_counts_and_ticker_cache(self):
+        imp = self._make_importer()
+        with patch.object(imp, "_rebuild_positions", side_effect=RuntimeError("rebuild failed")):
+            result = imp.import_file(io.StringIO(self.CSV))
+        imp.session.rollback.assert_called_once()
+        imp.session.commit.assert_not_called()
+        self.assertEqual((result.orders, result.dividends, result.cash_transactions), (0, 0, 0))
+        self.assertEqual(imp._known_tickers, set())
+        self.assertIn("no changes saved", result.errors[0])
+
+    def test_commit_failure_is_reported_as_failed_import(self):
+        imp = self._make_importer()
+        imp.session.commit.side_effect = RuntimeError("commit failed")
+        result = imp.import_file(io.StringIO(self.CSV))
+        imp.session.rollback.assert_called_once()
+        self.assertEqual(result.orders, 0)
+        self.assertIn("Committing import", result.errors[0])
 
 
 if __name__ == "__main__":

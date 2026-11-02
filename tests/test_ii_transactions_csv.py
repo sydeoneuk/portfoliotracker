@@ -137,6 +137,7 @@ class TestSynthId(unittest.TestCase):
 
 def _make_importer(platform_id: int = 3) -> tuple[IiTransactionsCsvImporter, MagicMock]:
     session = MagicMock()
+    session.query.return_value.filter.return_value.first.return_value = None
     session.get.return_value = None  # simulate instrument not found → will be created
     platform = MagicMock()
     platform.id = platform_id
@@ -191,6 +192,40 @@ class TestImporterWithSampleCsv(unittest.TestCase):
         result = self._run(csv_with_blank)
         # No extra errors from blank rows
         self.assertEqual(result.errors, [])
+
+    def test_successful_import_commits(self):
+        self._run(SAMPLE_CSV)
+        self.session.commit.assert_called_once()
+        self.session.rollback.assert_not_called()
+
+    def test_database_failure_rolls_back_all_rows(self):
+        # The dividend succeeds before the second row fails.
+        original_process = self.importer._process_row
+
+        def process(row, row_num):
+            if row_num == 3:
+                raise RuntimeError("database failure")
+            original_process(row, row_num)
+
+        with patch.object(self.importer, "_process_row", side_effect=process) as mocked:
+            result = self._run(SAMPLE_CSV)
+        self.assertEqual(mocked.call_count, 2)
+        self.session.rollback.assert_called_once()
+        self.session.commit.assert_not_called()
+        self.assertEqual((result.dividends_upserted, result.transactions_upserted, result.instruments_created), (0, 0, 0))
+        self.assertIn("Row 3", result.errors[0])
+
+    def test_invalid_dividend_rolls_back_preceding_transactions(self):
+        csv = (
+            "Date,Symbol,Description,Reference,Debit,Credit\n"
+            "25/10/2026,n/a,GROSS INTEREST,n/a,n/a,1.05\n"
+            "26/10/2026,TRIG,Div 10 Example,n/a,n/a,n/a\n"
+        )
+        result = self._run(csv)
+        self.session.rollback.assert_called_once()
+        self.session.commit.assert_not_called()
+        self.assertEqual(result.transactions_upserted, 0)
+        self.assertIn("no credit amount", result.errors[0])
 
 
 class TestDividendUpsertData(unittest.TestCase):
@@ -252,7 +287,7 @@ class TestTradeUsesProvidedReference(unittest.TestCase):
         result = importer.import_file(io.BytesIO(csv.encode("utf-8")))
         self.assertEqual(result.transactions_upserted, 1)
         all_sql = " ".join(
-            c[0][0].compile(compile_kwargs={"literal_binds": True}).string
+            str(c[0][0].compile().params)
             for c in session.execute.call_args_list
         )
         self.assertIn("27726IBQHJS", all_sql)
