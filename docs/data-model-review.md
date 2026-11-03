@@ -16,6 +16,13 @@ This is a source review, not a production data audit. No live database was queri
 
 ## Findings requiring correction
 
+Snapshot follow-up: migration 047 freezes units, applied FX and valuation evidence
+for new holding snapshots; legacy unknown-unit rows remain unchanged and display
+from preserved GBP totals. See [snapshot-valuation-evidence.md](snapshot-valuation-evidence.md).
+
+Holding-view follow-up: verified aliases now resolve to an owner-scoped combined
+investment view without merging financial rows. See [verified-holding-view.md](verified-holding-view.md).
+
 ### 1. P1 — ii transaction uploads report success without persisting
 
 Evidence: `app/importers/ii_transactions_csv.py:155`, `app/web/server.py:1913`, `app/database.py:9`.

@@ -112,6 +112,37 @@
       <div id="import-history-results" class="mt-2"></div>
     </div></div>
 
+    {% if cost_upload_accounts %}
+    <div class="card mb-4" id="purchase-cost-upload"><div class="card-body">
+      <h6>Import or correct purchase costs</h6>
+      <p class="small text-muted">Use an Interactive Investor holdings export or a CSV with <code>Symbol,Qty,Book Cost,Currency</code>. Enter the total book cost for the stated quantity, in its recorded currency. Review the proposed costs before applying them.</p>
+      <form id="purchase-cost-form" action="/import/purchase-costs" method="post" enctype="multipart/form-data">
+        <label for="purchase-cost-account" class="form-label">Account</label>
+        <select id="purchase-cost-account" name="platform_id" class="form-select mb-2" required>
+          <option value="">Select an account</option>
+          {% for account in cost_upload_accounts %}
+          <option value="{{ account.id }}">{{ account.name }} ({{ account.account_type }})</option>
+          {% endfor %}
+        </select>
+        <button id="purchase-cost-export" class="btn btn-sm btn-outline-secondary mb-3" type="button" disabled>Download account CSV</button>
+        <label for="purchase-cost-date" class="form-label">Statement date</label>
+        <input id="purchase-cost-date" name="effective_date" class="form-control mb-2" type="date" required>
+        <label for="purchase-cost-file" class="form-label">Statement CSV</label>
+        <input id="purchase-cost-file" name="csv_file" class="form-control mb-2" type="file" accept=".csv,text/csv" required>
+        <label class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="confirm_unchanged_cost" value="true">
+          <span class="form-check-label">If this statement is older, I confirm the supplied costs still apply. There have been no trades, transfers or corporate actions affecting those costs since the statement date.</span>
+        </label>
+        <label class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="replace_purchase_costs" value="true">
+          <span class="form-check-label">Correct existing purchase costs using this statement</span>
+        </label>
+        <button class="btn btn-sm btn-outline-primary" type="submit">Preview purchase costs</button>
+      </form>
+      <div id="purchase-cost-result" class="mt-2" aria-live="polite"></div>
+    </div></div>
+    {% endif %}
+
     <div class="card mb-4" id="holding-attention"><div class="card-body">
       <h6>Holdings needing attention</h6>
       <p class="small text-muted">The app first uses existing ISINs to verify listings and restore prices automatically. Only missing, conflicting or ambiguous matches need your review. Purchase costs and transaction history stay unchanged.</p>
@@ -858,6 +889,40 @@ document.getElementById('add-account-form').addEventListener('submit', async fun
 });
 
 // ── CSV import helpers ───────────────────────────────────────────────────
+const purchaseCostAccount = document.getElementById('purchase-cost-account');
+const purchaseCostExport = document.getElementById('purchase-cost-export');
+if (purchaseCostAccount && purchaseCostExport) {
+  const updateExportButton = () => { purchaseCostExport.disabled = !purchaseCostAccount.value; };
+  purchaseCostAccount.addEventListener('change', updateExportButton);
+  updateExportButton();
+  purchaseCostExport.addEventListener('click', () => {
+    const params = new URLSearchParams({platform_id: purchaseCostAccount.value});
+    window.location.href = '/export/purchase-costs?' + params.toString();
+  });
+}
+
+document.getElementById('purchase-cost-form')?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('button');
+  const result = document.getElementById('purchase-cost-result');
+  button.disabled = true;
+  result.textContent = 'Preparing preview…';
+  try {
+    const response = await fetch(form.action, {method: 'POST', body: new FormData(form)});
+    const data = await response.json();
+    if (data.batch_id) {
+      window.ImportReview.render(result, data);
+    } else {
+      result.textContent = data.error || 'Unable to preview the statement.';
+    }
+  } catch {
+    result.textContent = 'Unable to preview the statement. Please try again.';
+  } finally {
+    button.disabled = false;
+  }
+});
+
 const CSV_IMPORT_ENDPOINTS = {
   't212_api': '/import/t212-csv',
   't212_csv': '/import/t212-csv',

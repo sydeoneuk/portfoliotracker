@@ -79,9 +79,13 @@ class SyncRunner:
         from app.enrichment.ticker_mapper import build_yf_ticker_candidates
 
         candidates = build_yf_ticker_candidates(
-            instrument.ticker, instrument.short_name, instrument.exchange
+            instrument.ticker, instrument.short_name, instrument.exchange, instrument.currency_code
         )
-        if instrument.yf_ticker and instrument.yf_ticker not in candidates:
+        if instrument.yf_ticker and '.' in instrument.yf_ticker and candidates and '.' not in candidates[0]:
+            candidates = [instrument.yf_ticker, *[c for c in candidates if c != instrument.yf_ticker]]
+        if instrument.yf_ticker and instrument.yf_ticker not in candidates and not (
+            instrument.currency_code in {'GBX', 'GBp'} and instrument.yf_ticker == instrument.ticker
+        ):
             candidates.append(instrument.yf_ticker)
 
         if not candidates:
@@ -168,12 +172,15 @@ class SyncRunner:
         now = datetime.datetime.utcnow()
         snapshot_date = now.date()
 
+        from app.snapshot_evidence import snapshot_quote_sql, snapshot_fields
+
         position_rows = self.session.execute(_text(f"""
             SELECT
                 p.ticker,
                 p.quantity,
                 {effective_price_sql()} AS price,
-                i.currency_code AS currency
+                COALESCE(({snapshot_quote_sql('p')})->>'normalized_currency', i.currency_code) AS currency,
+                {snapshot_quote_sql('p')} AS quote_evidence
             FROM positions p
             JOIN instruments i ON i.ticker = p.ticker
             WHERE p.user_id = :user_id
@@ -186,9 +193,11 @@ class SyncRunner:
         per_ticker_value_gbp: dict[str, float] = {}
         per_ticker_quantity: dict[str, float] = {}
 
+        snapshot_values = {}
         for row in position_rows:
             quantity = float(row.quantity or 0)
-            value_gbp = float(value_holding(quantity, row.price, row.currency, fx).value_gbp)
+            snapshot_values[row.ticker] = value_holding(quantity, row.price, row.currency, fx)
+            value_gbp = float(snapshot_values[row.ticker].value_gbp)
             account_total += value_gbp
             per_ticker_value_gbp[row.ticker] = value_gbp
             per_ticker_quantity[row.ticker] = quantity
@@ -229,6 +238,7 @@ class SyncRunner:
                 quantity=quantity,
                 price_native=price_native,
                 value_gbp=value_gbp,
+                **snapshot_fields(row, snapshot_values[row.ticker]),
             ))
 
         pie_rows = self.session.execute(_text("""
@@ -524,6 +534,7 @@ class SyncRunner:
                 instrument.ticker,
                 instrument.short_name,
                 instrument.exchange,
+                instrument.currency_code,
             )
             preferred = candidates[0] if candidates else None
 
@@ -532,6 +543,11 @@ class SyncRunner:
                 continue
 
             current = (instrument.yf_ticker or "").strip() or None
+            # Incomplete legacy venue metadata is not evidence that an existing
+            # explicit Yahoo suffix should be removed.
+            if current and '.' in current and '.' not in preferred:
+                unchanged += 1
+                continue
             if current == preferred:
                 unchanged += 1
                 continue

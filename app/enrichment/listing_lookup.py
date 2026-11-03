@@ -107,7 +107,7 @@ class YahooListingLookup:
         base = instrument.ticker.split("_")[0]
         if instrument.currency_code in {"GBP", "GBX", "GBp"} and "_" not in instrument.ticker:
             candidates.append(base.replace("/", "-") + ".L")
-        candidates.extend(build_yf_ticker_candidates(instrument.ticker, instrument.short_name, instrument.exchange))
+        candidates.extend(build_yf_ticker_candidates(instrument.ticker, instrument.short_name, instrument.exchange, instrument.currency_code))
         candidates.append(instrument.yf_ticker)
         return list(dict.fromkeys(c for c in candidates if c and SYMBOL.fullmatch(c)))[:4]
 

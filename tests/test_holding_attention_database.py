@@ -65,12 +65,13 @@ class TestHoldingAttention(unittest.TestCase):
         self.assertEqual(row['value'], 140)
         self.assertTrue(row['cost_unknown'])
         self.assertIsNone(row['annual_rate_per_share'])
-        # Current market display must not smuggle a new unit interpretation into
-        # the old snapshot schema, which has no per-row price-currency field.
+        # The snapshot now freezes the newly verified quote's explicit units.
         from app.snapshots import snapshot_csv_platforms
-        from app.valuation import ValuationUnavailable
-        with self.assertRaises(ValuationUnavailable):
-            snapshot_csv_platforms(self.db)
+        from app.models import HoldingSnapshot
+        snapshot_csv_platforms(self.db)
+        saved = self.db.query(HoldingSnapshot).filter_by(user_id=self.user_id).one()
+        self.assertEqual(saved.price_currency, 'GBP')
+        self.assertEqual(saved.value_gbp, 140)
         client = self.client(self.user_id)
         self.assertEqual(client.get(f'/holding/{self.ticker}').status_code, 200)
 

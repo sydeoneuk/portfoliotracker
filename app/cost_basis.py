@@ -1,6 +1,6 @@
 """Chronological moving-average portfolio cost, not a tax-lot calculation."""
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from itertools import groupby
 
 
@@ -71,10 +71,67 @@ def broker_cost_values(quantity, average_price, currency):
                 cost_basis_reason=None if amount is not None else "Reported cost or currency unavailable")
 
 
+def purchase_costs(db, user_id, positions):
+    """Read explicit costs, recovering missing fields from the current observation."""
+    from app.models import ImportAuthority, ImportHoldingObservation, IngestionBatch
+
+    costs = {}
+    missing = {}
+    for position in positions:
+        key = (position.platform_id, position.ticker)
+        if (position.cost_basis_status in {"reported", "estimated"}
+                and position.cost_basis_amount is not None and position.cost_basis_currency):
+            costs[key] = (Decimal(str(position.cost_basis_amount)), position.cost_basis_currency,
+                          position.cost_basis_status)
+        elif not position.cost_basis_reason:
+            missing[key] = position
+    if not missing:
+        return costs
+
+    observations = db.query(IngestionBatch.platform_id, ImportHoldingObservation.holdings).join(
+        ImportHoldingObservation, ImportHoldingObservation.batch_id == IngestionBatch.id,
+    ).join(ImportAuthority, ImportAuthority.batch_id == IngestionBatch.id).filter(
+        ImportAuthority.user_id == user_id, ImportAuthority.scope == 'account',
+        ImportAuthority.platform_id == IngestionBatch.platform_id,
+        IngestionBatch.user_id == user_id, IngestionBatch.status == 'applied',
+        ImportHoldingObservation.user_id == user_id,
+        ImportHoldingObservation.scope == 'account', ImportHoldingObservation.phase == 'applied',
+        ImportHoldingObservation.complete.is_(True),
+        IngestionBatch.platform_id.in_({key[0] for key in missing}),
+    )
+    recovered = {}
+    for platform_id, holdings in observations:
+        for row in holdings:
+            key = (platform_id, row.get('ticker'))
+            position = missing.get(key)
+            if position is None or position.last_synced_at is None:
+                continue
+            observed_at = row.get('last_synced_at')
+            if observed_at not in {position.last_synced_at.isoformat(), str(position.last_synced_at)}:
+                continue
+            if row.get('quantity') != position.quantity:
+                continue
+            status = row.get('cost_basis_status')
+            currency = row.get('cost_basis_currency')
+            amount = row.get('cost_basis_amount')
+            if status in {'reported', 'estimated'} and currency and amount is not None:
+                try:
+                    amount = Decimal(str(amount))
+                except InvalidOperation:
+                    continue
+                if amount.is_finite() and amount >= 0:
+                    recovered.setdefault(key, set()).add((amount, currency, status))
+    for key, candidates in recovered.items():
+        if len(candidates) == 1:
+            costs[key] = candidates.pop()
+    return costs
+
+
 def decorate_cost_basis(db, user_id, rows, platform_ids=None, selected_pies=(), outside=False):
     """Allocate each account's cost by its actual selected holding quantity."""
     from app.models import Position, Pie, PieHolding
     positions = db.query(Position).filter_by(user_id=user_id).all()
+    costs = purchase_costs(db, user_id, positions)
     allocations = db.query(PieHolding, Pie.platform_id).join(Pie, Pie.pk == PieHolding.pie_id).filter(
         Pie.user_id == user_id, PieHolding.user_id == user_id).all() if selected_pies or outside else []
     grouped = {}
@@ -96,9 +153,9 @@ def decorate_cost_basis(db, user_id, rows, platform_ids=None, selected_pies=(), 
             desired = chosen + (max(quantity - all_qty, Decimal(0)) if outside else Decimal(0))
         if desired <= 0:
             continue
-        known = position.cost_basis_status in {"reported", "estimated"} and position.cost_basis_amount is not None and bool(position.cost_basis_currency)
-        component = dict(amount=float(position.cost_basis_amount * desired / quantity) if known else None,
-                         currency=position.cost_basis_currency, status=position.cost_basis_status or "legacy_unknown")
+        amount, currency, status = costs.get((position.platform_id, position.ticker), (None, None, 'unknown'))
+        component = dict(amount=float(amount * desired / quantity) if amount is not None else None,
+                         currency=currency, status=status)
         grouped.setdefault(position.ticker, []).append(component)
     for row in rows:
         components = grouped.get(row["ticker"], [])

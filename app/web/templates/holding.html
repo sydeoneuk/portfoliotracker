@@ -146,14 +146,16 @@
         {% if positions %}
           {% set seen_accs = [] %}
           {% for p in positions %}
-            {% if p.account not in seen_accs %}
-              {% if seen_accs.append(p.account) %}{% endif %}
-              <span class="ticker-badge" style="background:rgba(255,255,255,.08); color:#c8d6e5; border-color:rgba(255,255,255,.15)">{{ p.account }}</span>
+            {% if p.platform_id not in seen_accs %}
+              {% if seen_accs.append(p.platform_id) %}{% endif %}
+              <span class="ticker-badge" style="background:rgba(255,255,255,.08); color:#c8d6e5; border-color:rgba(255,255,255,.15)">{{ event_accounts[p.platform_id].label if event_accounts is defined and p.platform_id in event_accounts else p.account }}</span>
             {% endif %}
           {% endfor %}
         {% endif %}
       </div>
       <div class="meta">
+        {% if holding_aliases | default([]) | length > 1 %}<div>Broker references: {{ holding_aliases | join(' · ') }}</div>{% endif %}
+        {% if unverified_holding_aliases | default([]) %}<div>Other account references need identity matching before they can be combined. <a href="/settings#account-prices-refresh">Match investments in Settings</a>.</div>{% endif %}
         {% if instrument.sector %}{{ instrument.sector }}{% endif %}
         {% if instrument.industry %}{% if instrument.sector %} · {% endif %}{{ instrument.industry }}{% endif %}
         {% if instrument.exchange %}{% if instrument.sector or instrument.industry %} · {% endif %}{{ instrument.exchange }}{% else %}{% if not instrument.sector and not instrument.industry %}—{% endif %}{% endif %}
@@ -173,7 +175,14 @@
 
 <!-- ── Main content ─────────────────────────────────────────────────────── -->
 <div class="container-fluid px-4 py-3">
-{% if cost_unknown %}<div class="alert alert-warning">Cost basis unavailable; preserved legacy values require reconciliation.</div>{% elif cost_estimated %}<div class="alert alert-info">Moving-average cost estimate; opening history is unverified.</div>{% endif %}
+{% if cost_unknown %}<div class="alert alert-warning"><strong>Purchase cost unavailable</strong>
+<ul class="mb-2">
+{% for issue in cost_issues | default([]) %}
+  {% set badge = event_accounts.get(issue.platform_id) %}
+  <li>{{ badge.label if badge else 'Unassigned account' }} ({{ issue.ticker }}) — {{ issue.reason }}{% if issue.api_account %} Refresh this account with Data Sync to retrieve broker-reported costs when available.{% endif %}</li>
+{% endfor %}
+</ul>
+For CSV accounts, <a href="/settings#purchase-cost-upload">import a statement with the purchase cost</a>. If the statement omits the cost, reconcile it against complete trade history.</div>{% elif cost_estimated %}<div class="alert alert-info">Moving-average cost estimate; opening history is unverified.</div>{% endif %}
 
   {% if instrument.description %}
   <!-- ── About ──────────────────────────────────────────────────────────── -->
@@ -317,7 +326,7 @@
           <div class="label d-flex align-items-center justify-content-between">
             <span>{{ p.platform.name if p.platform else '—' }}</span>
             {% if p.platform and p.platform.account_type %}
-            <span class="badge-exchange ms-1">{{ p.platform.account_type }}</span>
+            <span class="badge-exchange ms-1">{{ event_accounts[p.platform_id].label if event_accounts is defined and p.platform_id in event_accounts else p.platform.account_type }}</span>
             {% endif %}
           </div>
           <div class="value" style="font-size:1rem;">{{ fmt(p.quantity, 4) }} shares</div>
@@ -456,13 +465,15 @@
         </thead>
         <tbody>
           {% for dp in div_payments %}
+          {% set dividend_quote_currency = dp.per_share_currency | default(instrument.currency_code) %}
           <tr>
             <td data-order="{{ dp.paid_on.strftime('%Y%m%d') if dp.paid_on else '0' }}">{{ dp.paid_on.strftime('%d %b %Y') if dp.paid_on else '—' }}</td>
-            <td><span style="background:#e9ecef;color:#495057;font-size:.68rem;font-weight:500;border-radius:4px;padding:2px 6px">{{ dp.account or '—' }}</span></td>
+            {% set acc = (event_accounts | default({})).get(dp.platform_id) %}
+            <td><span title="{{ acc.name if acc else '' }} · {{ dp.ticker }}" style="background:#e9ecef;color:#495057;font-size:.68rem;font-weight:500;border-radius:4px;padding:2px 6px">{{ acc.label if acc else ('Unassigned' if event_accounts is defined else dp.account or '—') }}</span></td>
             <td class="text-end">{{ fmt(dp.quantity, 4) if dp.quantity else '—' }}</td>
             <td class="text-end pnl-pos">{{ cfmt(dp.amount_display, display_currency) if dp.amount else '—' }}</td>
             <td class="text-end">
-              {% if dp.gross_amount_per_share %}{{ cfmt(dp.gross_amount_per_share, instrument.currency_code or '', 4) }}{% else %}—{% endif %}
+              {% if dp.gross_amount_per_share and dividend_quote_currency %}{{ cfmt(dp.gross_amount_per_share, dividend_quote_currency, 4) }}{% else %}—{% endif %}
             </td>
             <td><small class="text-muted">{{ dp.type or '—' }}</small></td>
             <td><small class="text-muted font-monospace">{{ dp.reference or '—' }}</small></td>
@@ -506,7 +517,8 @@
           {% set val = o.settlement_amount %}
           <tr>
             <td data-order="{{ o.filled_at.strftime('%Y%m%d%H%M') if o.filled_at else '0' }}">{{ o.filled_at.strftime('%d %b %Y %H:%M') if o.filled_at else '—' }}</td>
-            <td><span style="background:#e9ecef;color:#495057;font-size:.68rem;font-weight:500;border-radius:4px;padding:2px 6px">{{ o.account or '—' }}</span></td>
+            {% set acc = (event_accounts | default({})).get(o.platform_id) %}
+            <td><span title="{{ acc.name if acc else '' }} · {{ o.ticker }}" style="background:#e9ecef;color:#495057;font-size:.68rem;font-weight:500;border-radius:4px;padding:2px 6px">{{ acc.label if acc else ('Unassigned' if event_accounts is defined else o.account or '—') }}</span></td>
             <td>
               {% if o.side == 'BUY' %}<span class="pnl-pos fw-semibold">BUY</span>
               {% elif o.side == 'SELL' %}<span class="pnl-neg fw-semibold">SELL</span>

@@ -1,5 +1,6 @@
 import datetime
 from app.valuation import effective_price_sql, get_fx_rates_to_gbp, value_holding
+from app.snapshot_evidence import snapshot_quote_sql, snapshot_fields
 
 
 def snapshot_csv_platforms(db) -> dict:
@@ -42,7 +43,8 @@ def _snapshot_csv_platforms(db) -> dict:
             SELECT
                 pos.ticker,
                 pos.quantity,
-                i.currency_code AS currency,
+                COALESCE(({snapshot_quote_sql('pos')})->>'normalized_currency', i.currency_code) AS currency,
+                {snapshot_quote_sql('pos')} AS quote_evidence,
                 {effective_price_sql('pos.ticker', 'pos.current_price')} AS price_native
             FROM positions pos
             JOIN instruments i ON i.ticker = pos.ticker
@@ -77,6 +79,7 @@ def _snapshot_csv_platforms(db) -> dict:
                     quantity=quantity,
                     price_native=price,
                     value_gbp=value_gbp,
+                    **snapshot_fields(row, values[row.ticker]),
                 )
                 .on_conflict_do_update(
                     index_elements=["user_id", "snapshot_date", "platform_id", "ticker"],
@@ -85,6 +88,7 @@ def _snapshot_csv_platforms(db) -> dict:
                         "price_native": price,
                         "value_gbp": value_gbp,
                         "captured_at": now,
+                        **snapshot_fields(row, values[row.ticker]),
                     },
                 )
             )

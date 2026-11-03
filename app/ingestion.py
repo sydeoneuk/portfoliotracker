@@ -12,7 +12,7 @@ from app.import_preview import import_effect
 from app.models import Platform, Position, IngestionBatch, IngestionRow, ImportHoldingObservation, ImportAuthority
 
 PARSER_VERSION = 'csv-2'
-SOURCES = {'t212_history', 'ii_holdings', 'ii_transactions', 'pie_snapshot'}
+SOURCES = {'t212_history', 'ii_holdings', 'ii_transactions', 'pie_snapshot', 'purchase_costs'}
 MAX_UPLOAD = 10 * 1024 * 1024
 
 
@@ -76,6 +76,11 @@ def holdings(db, batch, *, full=False):
 def run_adapter(db, batch):
     platform = account_for(db, batch.user_id, batch.platform_id)
     args = dict(session=db, platform=platform, user_id=batch.user_id, managed=True)
+    if batch.source == 'purchase_costs':
+        from app.importers.purchase_cost_csv import import_purchase_costs
+        result = import_purchase_costs(db, platform, batch)
+        db.flush()
+        return result
     if batch.source == 'ii_holdings':
         from app.importers.ii_csv import IiCsvImporter
         importer = IiCsvImporter(**args)
@@ -96,6 +101,11 @@ def run_adapter(db, batch):
 
 
 def validate_authority(db, batch):
+    if batch.source == 'purchase_costs':
+        selected = db.get(ImportAuthority, (batch.platform_id, 'account'))
+        if selected and selected.effective_date > batch.effective_date and not batch.options.get('confirm_unchanged_cost'):
+            raise ValueError('This cost statement is older than the selected holdings statement. Confirm the supplied costs still apply to the current holdings.')
+        return
     if not changes_holdings(batch):
         return
     account = account_for(db, batch.user_id, batch.platform_id)
@@ -125,17 +135,21 @@ def validate_authority(db, batch):
 
 
 def stage(db, user_id, platform_id, source, content, filename, *, effective_date=None, history_complete=False,
-          coverage_start=None, coverage_end=None, pie_name=None):
+          coverage_start=None, coverage_end=None, pie_name=None, confirm_unchanged_cost=False, replace_purchase_costs=False):
     account_for(db, user_id, platform_id)
     if source not in SOURCES:
         raise ValueError('Unsupported import source')
     if not content or len(content) > MAX_UPLOAD:
         raise ValueError('Upload a nonempty CSV no larger than 10 MB')
     options = {}
+    if source == 'purchase_costs' and confirm_unchanged_cost:
+        options['confirm_unchanged_cost'] = True
+    if source == 'purchase_costs' and replace_purchase_costs:
+        options['replace_purchase_costs'] = True
     def date(value):
         return dt.date.fromisoformat(value) if value else None
     effective = date(effective_date)
-    if source in {'ii_holdings', 'pie_snapshot'} and effective is None:
+    if source in {'ii_holdings', 'pie_snapshot', 'purchase_costs'} and effective is None:
         raise ValueError('Enter the snapshot effective date from your statement')
     if effective and effective > dt.datetime.now(dt.timezone.utc).date():
         raise ValueError('A snapshot cannot be effective in the future')

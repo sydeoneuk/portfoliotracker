@@ -270,11 +270,16 @@ def build_yf_ticker_candidates(
     t212_ticker: str,
     short_name: str | None,
     exchange: str | None,
+    currency: str | None = None,
 ) -> list[str]:
     """Return best-effort Yahoo Finance ticker candidates in descending confidence order."""
     candidates: list[str] = []
     symbol = _strip_t212_suffix(t212_ticker)
     normalised_exchange = normalize_exchange(exchange)
+    # Pence are quote units, unlike a GBP settlement/account currency. A bare
+    # legacy pence symbol must not be tried as an unrelated US Yahoo ticker.
+    pence_london = (currency in {'GBX', 'GBp'} and not normalised_exchange
+                    and '_' not in t212_ticker and '.' not in t212_ticker)
 
     def _append(candidate: str | None) -> None:
         if candidate and candidate not in candidates:
@@ -284,6 +289,8 @@ def build_yf_ticker_candidates(
         suffix = EXCHANGE_SUFFIX_MAP.get(normalised_exchange)
         if suffix is not None:
             _append(f"{symbol}{suffix}")
+    if symbol and pence_london:
+        _append(f"{symbol}.L")
 
     if symbol and t212_ticker.endswith("l_EQ") and not t212_ticker.endswith("_US_EQ"):
         _append(f"{symbol}.L")
@@ -291,7 +298,8 @@ def build_yf_ticker_candidates(
     if symbol and "_US_" in t212_ticker:
         _append(symbol)
 
-    _append(symbol)
+    if not pence_london:
+        _append(symbol)
 
     fallback = (short_name or "").strip()
     if fallback and _looks_like_symbol(fallback) and fallback.upper() != (symbol or "").upper():

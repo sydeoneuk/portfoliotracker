@@ -19,7 +19,9 @@ def stage_upload(db, user_id, platform, source, content, filename, form):
     try:
         batch = ingestion.stage(db, user_id, platform.id, source, content, filename,
             effective_date=form.get('effective_date'), history_complete=form.get('history_complete') == 'true',
-            coverage_start=form.get('coverage_start'), coverage_end=form.get('coverage_end'), pie_name=form.get('pie_name'))
+            coverage_start=form.get('coverage_start'), coverage_end=form.get('coverage_end'), pie_name=form.get('pie_name'),
+            confirm_unchanged_cost=form.get('confirm_unchanged_cost') == 'true',
+            replace_purchase_costs=form.get('replace_purchase_costs') == 'true')
         return JSONResponse(ingestion.describe(batch))
     except (ValueError, LookupError) as exc:
         db.rollback()

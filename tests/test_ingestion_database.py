@@ -72,6 +72,21 @@ class TestIngestionDatabase(unittest.TestCase):
                 self.assertEqual(position.cost_basis_currency, 'GBP')
                 self.assertEqual(position.cost_basis_amount, expected)
 
+    def test_missing_cost_recovers_only_from_matching_current_observation(self):
+        from app.cost_basis import purchase_costs
+
+        batch = self.stage()
+        ingestion.apply(self.db, self.user_id, batch.id)
+        position = self.position()
+        position.cost_basis_amount = None
+        position.cost_basis_currency = None
+        position.cost_basis_status = None
+        key = (self.platform_id, self.ticker)
+        self.assertEqual(purchase_costs(self.db, self.user_id, [position])[key], (120, 'GBP', 'reported'))
+        self.assertIsNone(position.cost_basis_amount)
+        position.last_synced_at += datetime.timedelta(seconds=1)
+        self.assertNotIn(key, purchase_costs(self.db, self.user_id, [position]))
+
     def test_ii_totals_footer_and_pence_quotes_preserve_recorded_pound_units(self):
         raw = f'Symbol,Name,Qty,Price,Average Price,Book Cost\n{self.ticker},Test,10,646.7p,£5,£49\n,,,Totals,,\n,,,GBP,,£49\n'.encode()
         batch = self.stage(raw)
@@ -180,6 +195,100 @@ class TestIngestionDatabase(unittest.TestCase):
         with self.assertRaises(LookupError):
             ingestion.apply(self.db, self.user_id + 999999, batch_id)
         self.assertEqual(client.post('/import/pie-accept', data={'platform_id': self.platform_id}).status_code, 409)
+
+    def test_purchase_cost_export_uses_original_units_and_blank_missing_costs(self):
+        import csv
+        from app.models import Instrument
+
+        known_ticker = self.ticker + '_known_cost'
+        self.extra_instruments = [known_ticker]
+        self.db.add(Instrument(ticker=known_ticker, currency_code='GBX'))
+        self.db.flush()
+        self.db.add(Position(
+            user_id=self.user_id, platform_id=self.platform_id, ticker=known_ticker,
+            quantity=2, cost_basis_amount=49, cost_basis_currency='GBP', cost_basis_status='reported',
+        ))
+        self.db.commit()
+        client = self.client(self.user_id)
+        response = client.get('/export/purchase-costs', params={'platform_id': self.platform_id})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('attachment', response.headers['content-disposition'])
+        reader = csv.DictReader(io.StringIO(response.text))
+        self.assertEqual(reader.fieldnames, ['Symbol', 'Qty', 'Book Cost', 'Currency'])
+        rows = {row['Symbol']: row for row in reader}
+        self.assertEqual(rows[self.ticker]['Book Cost'], '')
+        self.assertEqual(rows[self.ticker]['Currency'], '')
+        self.assertEqual(float(rows[known_ticker]['Book Cost']), 49)
+        self.assertEqual(rows[known_ticker]['Currency'], 'GBP')
+        self.assertIn(self.client().get('/export/purchase-costs', params={'platform_id': self.platform_id},
+                                        follow_redirects=False).status_code, (302, 303, 307))
+
+    def test_purchase_cost_upload_previews_then_changes_only_cost_fields(self):
+        client = self.client(self.user_id)
+        before = ingestion.holdings(self.db, self.stage(), full=True)[0]
+        data = {'platform_id': self.platform_id, 'effective_date': '2026-10-31'}
+
+        def upload(quantity):
+            raw = f'Symbol,Qty,Book Cost,Currency\n{self.ticker},{quantity},"1,049.25",GBP\n'.encode()
+            response = client.post('/import/purchase-costs', data=data,
+                                   files={'csv_file': ('costs.csv', raw, 'text/csv')})
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        self.assertEqual(upload(8)['status'], 'rejected')
+        preview = upload(7)
+        self.assertEqual(preview['status'], 'review', preview)
+        self.assertIsNone(self.position().cost_basis_amount)
+        apply_data = {'batch_id': preview['batch_id'], 'reviewed': True}
+        for _ in range(2):
+            self.assertEqual(client.post('/imports/apply', json=apply_data).status_code, 200)
+        position = self.position()
+        self.assertEqual(position.cost_basis_amount, 1049.25)
+        self.assertEqual(position.cost_basis_currency, 'GBP')
+        applied = self.db.query(ImportHoldingObservation).filter_by(
+            batch_id=preview['batch_id'], phase='applied',
+        ).one()
+        self.assertEqual(
+            {key: value for key, value in applied.holdings[0].items() if not key.startswith('cost_basis_')},
+            {key: value for key, value in before.items() if not key.startswith('cost_basis_')},
+        )
+        self.assertFalse(applied.complete)
+        self.assertIsNone(self.db.get(ImportAuthority, (self.platform_id, 'account')))
+
+    def test_older_purchase_cost_statement_requires_confirmation(self):
+        current = self.stage(effective_date='2026-10-31')
+        ingestion.apply(self.db, self.user_id, current.id)
+        raw = f'Symbol,Qty,Book Cost,Currency\n{self.ticker},10,49,GBP\n'.encode()
+        rejected = self.stage(raw, source='purchase_costs')
+        self.assertEqual(rejected.status, 'rejected')
+        confirmed = self.stage(raw, source='purchase_costs', confirm_unchanged_cost=True)
+        self.assertEqual(confirmed.status, 'review', confirmed.review)
+        self.assertTrue(confirmed.options['confirm_unchanged_cost'])
+        self.assertEqual(self.position().cost_basis_amount, 120)
+
+    def test_purchase_cost_upload_reads_ii_export_and_preserves_a_usable_cost(self):
+        raw = f'Symbol,Name,Qty,Price,Average Price,Book Cost\n{self.ticker},Test,7,646.7p,£5,£49\n,,,Totals,,\n,,,GBP,,£49\n'.encode()
+        batch = self.stage(raw, source='purchase_costs')
+        self.assertEqual(batch.status, 'review', batch.review)
+        ingestion.apply(self.db, self.user_id, batch.id)
+        self.assertEqual(self.position().cost_basis_amount, 49)
+        self.assertEqual(self.position().cost_basis_currency, 'GBP')
+        revised = self.stage(raw.replace('£49'.encode(), '£51'.encode()), source='purchase_costs')
+        self.assertEqual(revised.review['updated'], 0)
+        ingestion.apply(self.db, self.user_id, revised.id)
+        self.assertEqual(self.position().cost_basis_amount, 49)
+
+    def test_purchase_cost_replacement_requires_opt_in_and_keeps_before_value(self):
+        first = self.stage(self.content(quantity=7), source='purchase_costs')
+        ingestion.apply(self.db, self.user_id, first.id)
+        raw = f'Symbol,Qty,Book Cost,Currency\n{self.ticker},7,49,GBP\n'.encode()
+        revised = self.stage(raw, source='purchase_costs', replace_purchase_costs=True)
+        self.assertEqual(revised.status, 'review', revised.review)
+        self.assertEqual(float(revised.review['before'][0]['cost_basis_amount']), 84)
+        self.assertEqual(float(revised.review['proposed'][0]['cost_basis_amount']), 49)
+        self.assertEqual(self.position().cost_basis_amount, 84)
+        ingestion.apply(self.db, self.user_id, revised.id)
+        self.assertEqual(self.position().cost_basis_amount, 49)
 
     def test_effective_dates_required_and_future_dates_are_rejected(self):
         for date in (None, '2100-01-01'):

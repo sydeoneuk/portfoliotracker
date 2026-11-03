@@ -1,5 +1,6 @@
 import datetime
-from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, Numeric
+from sqlalchemy.dialects.postgresql import JSONB
 from app.models.base import Base
 
 
@@ -25,3 +26,7 @@ class HoldingSnapshot(Base):
     quantity = Column(Float, nullable=False, default=0.0)
     price_native = Column(Float, nullable=False, default=0.0)
     value_gbp = Column(Float, nullable=False, default=0.0)
+    price_currency = Column(String(10), nullable=True)
+    price_unit_scale = Column(Numeric(12, 8), nullable=True)
+    fx_rate_to_gbp = Column(Numeric(28, 14), nullable=True)
+    valuation_evidence = Column(JSONB, nullable=True)

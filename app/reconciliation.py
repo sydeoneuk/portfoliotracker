@@ -46,7 +46,7 @@ def propose_metadata(db, user_id, ticker, symbol, isin, currency, statement_refe
     original = baseline(instrument, mapping_for(db, user_id, ticker))
     before = metadata_snapshot(instrument)
     target = {**before, 'isin': isin, 'currency_code': currency}
-    if target == before:
+    if target == before and symbol.strip() == (instrument.yf_ticker or ''):
         raise ValueError('No metadata change entered. Use Verify entered symbol instead.')
     lookup = lookup or YahooListingLookup()
     symbols = lookup.candidates(instrument, symbol.strip())

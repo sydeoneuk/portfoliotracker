@@ -1,5 +1,71 @@
 # Initial import and snapshot fixes
 
+## Verified cross-provider holding views
+
+Holding detail now groups verified security aliases in the read layer while
+preserving their original account/ticker records. Quotes convert per account,
+filters apply consistently, and trades, dividends and recorded history include
+linked aliases. Either alias URL opens the shared investment view. See
+[verified-holding-view.md](verified-holding-view.md) for identity guards, limits and
+preservation checks. No migration or financial-row rewrite is required.
+
+## Legacy London Yahoo symbols
+
+Bare pence-denominated symbols with missing exchange metadata now prefer `.L`
+for enrichment and price downloads. GBP account/settlement currency alone does
+not trigger this new rule, and explicit US exchange hints remain authoritative.
+Revalidation and enrichment preserve an existing explicit suffix when incomplete
+venue metadata would otherwise reduce it to a bare symbol. Verified symbol-only
+metadata correction is now supported through the existing audited review service.
+
+Local audit found eight bare pence symbols. Seven were independently verified
+against their expected ISIN and London/pence quote: CUKX, EMIM, FWRG, PCT, SMT,
+TRIG and UKW. Existing broker aliases supplied lookup hints only. After verified
+backup restoration and rehearsal, the same seven audited corrections were applied
+locally. Original financial/source fields across 38,793 rows in 34 tables remained
+unchanged; only catalogue ISIN/symbol/exchange metadata and its update timestamp,
+personal derived mappings and proposal/audit receipts changed. CUKS lacked a known
+identity hint and was left without a catalogue correction. Shared/unassigned
+foreign references remain protected by the existing exclusivity guard.
+
+335 Python tests and 43 subtests passed in local WSL PostgreSQL, including pence
+candidate selection, US/GBP behaviour, suffix preservation, price download symbols
+and audited symbol-only apply/undo. No production changes or new migration.
+
+## Analysis holding account badges
+
+The ACC. column uses contributing platform IDs from each holdings query and
+shows a separate provider/account badge per account (T212, II, CS, BI plus wrapper).
+API and CSV Trading 212 delivery use the same provider code. Combined, multi-account,
+wrapper, selected-pie and outside-pie queries retain their actual account IDs;
+merging rows unions IDs instead of reducing them to the legacy "Both" label.
+Badge metadata is owner-scoped and account names appear as tooltips. Unknown
+ownership is displayed as Unassigned, without inferring a provider from a ticker.
+The holding page's dividend payments and Transactions tables use the same badge
+helper, keyed by each event's platform ID rather than the current holding or its
+deprecated account string. Seven account-display/query integration tests and six
+subtests passed in local WSL PostgreSQL, including both event tables, mixed
+providers, unassigned legacy records and selected-account filters.
+No schema or financial values change. WSL PostgreSQL validation passed 327 tests
+and 43 subtests, including account/pie filter and ownership checks; a read-only
+local Analysis render returned 200 with badges for all 429 priced holdings.
+
+## Analysis history totals
+
+The history chart carries each account's last recorded value across missing
+snapshot dates, leaves unknown opening coverage blank, and adds a labelled Current
+point from the market value card. Display currency and outside-pie aggregation
+are corrected. No history is rewritten. See [analysis-history.md](analysis-history.md).
+
+## Snapshot currency and valuation evidence
+
+Additive migration 047 freezes price currency, unit scale, applied GBP FX and
+valuation evidence for new API/CSV holding snapshots. Historical reads no longer
+interpret prices using current catalogue currency. Unknown legacy units remain
+unassigned, with display derived from preserved GBP totals. See
+[snapshot-valuation-evidence.md](snapshot-valuation-evidence.md) for preservation,
+validation and deployment details.
+
 ## Legacy cash identity blocking Data Sync
 
 Trading 212 cash sync now reconciles an unassigned legacy transaction only from exact owned-account API evidence, preserves its PK/financial fields, and retains grouped before/after receipts. Genuine ambiguities remain untouched without aborting unrelated cash sync. A narrowly recognised legacy deposit-to-interest category difference is recorded without changing the stored type. All 150 local unassigned cash records were verified and scoped safely; CSV and non-cash guards remain strict. See `legacy-cash-sync.md` for policy and preservation checks.

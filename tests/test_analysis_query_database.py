@@ -20,6 +20,84 @@ class TestAnalysisQueries(unittest.TestCase):
     apply = scoped_tests.TestScopedIdentityDatabase.apply
     client = web_tests.TestReconciliationDatabase.client
 
+    def test_holding_events_show_each_records_provider_account(self):
+        import datetime as dt
+        from app.models import Order, DividendPayment
+        self.platform.platform_type = 't212_api'
+        other = Platform(user_id=self.user_id, name='II Pension', platform_type='interactive_investor', account_type='SIPP', currency='GBP')
+        self.db.add(other); self.db.flush()
+        for index, pid in enumerate([self.platform_id, other.id, None]):
+            self.db.add(DividendPayment(user_id=self.user_id, platform_id=pid, ticker=self.ticker,
+                reference=f'dividend-{index}', account='ISA', amount=1, paid_on=dt.datetime(2026, 11, 1)))
+            self.db.add(Order(user_id=self.user_id, platform_id=pid, ticker=self.ticker,
+                id=f'trade-{index}', account='ISA', status='FILLED', side='BUY', quantity=1,
+                filled_at=dt.datetime(2026, 11, 1)))
+        self.db.commit()
+        client = self.client(self.user_id)
+        with patch('app.web.server._get_fx_rates_to_gbp', return_value={'GBP': 1}):
+            response = client.get(f'/holding/{self.ticker}')
+            self.assertEqual(response.status_code, 200)
+            for table_id in ['div-payments-table', 'trade-history-table']:
+                table = response.text.split(f'id="{table_id}"', 1)[1].split('</table>', 1)[0]
+                self.assertIn('T212-ISA', table)
+                self.assertIn('II-SIPP', table)
+                self.assertIn('Unassigned', table)
+                self.assertIn('title="II Pension', table)
+            response = client.get(f'/holding/{self.ticker}?account=platform_{other.id}')
+            self.assertEqual(response.status_code, 200)
+            for table_id in ['div-payments-table', 'trade-history-table']:
+                table = response.text.split(f'id="{table_id}"', 1)[1].split('</table>', 1)[0]
+                self.assertIn('II-SIPP', table)
+                self.assertNotIn('T212-ISA', table)
+                self.assertNotIn('Unassigned', table)
+
+    def test_holding_badges_list_actual_provider_accounts_for_each_filter(self):
+        from app.web import server
+        from app.holding_accounts import decorate_holding_accounts
+        self.prepare()
+        self.platform.platform_type = 't212_api'
+        sipp = Platform(user_id=self.user_id, name='Trading 212 Pension', platform_type='t212_csv', account_type='SIPP', currency='GBP')
+        self.db.add(sipp); self.db.flush()
+        self.db.add(Position(user_id=self.user_id, platform_id=sipp.id, ticker=self.ticker, quantity=2, current_price=13))
+        self.db.commit()
+        def badges(account='portfolio', pies=(), outside=False):
+            rows = server._fetch_filtered_positions(self.db, self.user_id, account, list(pies), outside)
+            decorate_holding_accounts(self.db, self.user_id, rows)
+            row = next(r for r in rows if r['ticker'] == self.ticker)
+            return [badge['label'] for badge in row['holding_accounts']]
+        self.assertEqual(badges(), ['II-GIA', 'T212-ISA', 'T212-SIPP'])
+        self.assertEqual(badges(f'platform_{sipp.id}'), ['T212-SIPP'])
+        self.assertEqual(badges('ISA'), ['T212-ISA'])
+        self.assertEqual(badges(f'platform_{sipp.id},platform_{self.other.id}'), ['II-GIA', 'T212-SIPP'])
+        self.assertEqual(badges(pies=[self.pie.pk]), ['T212-ISA'])
+        self.assertEqual(badges(pies=[self.pie.pk], outside=True), ['II-GIA', 'T212-ISA', 'T212-SIPP'])
+        rows = [{'platform_ids': [sipp.id]}]
+        decorate_holding_accounts(self.db, -1, rows)
+        self.assertEqual(rows[0]['holding_accounts'], [])
+        with patch.object(server, '_get_fx_rates_to_gbp', return_value={'GBP': 1, 'GBX': .01}):
+            response = self.client(self.user_id).get('/analysis')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('II-GIA', response.text)
+        self.assertIn('T212-SIPP', response.text)
+
+    def test_history_uses_owned_account_scope_and_matches_market_value_card(self):
+        import datetime as dt
+        from app.models import PortfolioSnapshot
+        from app.web import server
+        self.db.add(PortfolioSnapshot(user_id=self.user_id, platform_id=self.platform_id,
+            snapshot_date=dt.date(2026, 11, 1), scope_type='account', total_value_gbp=91))
+        self.db.commit()
+        data = json.loads(server._build_portfolio_history(self.db, self.user_id,
+            f'platform_{self.platform_id}', [], current_value=100))
+        self.assertEqual(data['values'], [91, 100])
+        other = json.loads(server._build_portfolio_history(self.db, -1,
+            f'platform_{self.platform_id}', []))
+        self.assertEqual(other['values'], [])
+        with patch.object(server, '_get_fx_rates_to_gbp', return_value={'GBP': 1, 'GBX': .01}):
+            response = self.client(self.user_id).get('/analysis')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('Current market value', response.text)
+
     def prepare(self):
         from app.account_pricing import refresh_resolution
         from app.models import AccountListingResolution

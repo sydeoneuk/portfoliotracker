@@ -162,3 +162,20 @@ class TestAccountPricingDatabase(unittest.TestCase):
         self.assertEqual(compare(self.db, self.user_id)['newly_unavailable'], 1)
         self.refresh(result, lookup=Lookup())
         self.assertEqual(compare(self.db, self.user_id)['changed'], 1)
+
+    def test_snapshot_freezes_verified_quote_with_missing_catalogue_currency(self):
+        from app.snapshots import snapshot_csv_platforms
+        from app.models import HoldingSnapshot
+        self.instrument.currency_code = None
+        self.db.commit()
+        result = self.apply()
+        self.refresh(result, lookup=Lookup())
+        snapshot_csv_platforms(self.db)
+        saved = self.db.query(HoldingSnapshot).filter_by(user_id=self.user_id).one()
+        self.assertEqual(saved.price_currency, 'GBP')
+        self.assertEqual(saved.price_native, 20)
+        self.assertEqual(saved.value_gbp, 140)
+        self.assertEqual(saved.fx_rate_to_gbp, 1)
+        self.assertEqual(saved.valuation_evidence['quote_currency'], 'GBX')
+        self.assertEqual(saved.valuation_evidence['listing_id'], result['listing_id'])
+        self.assertIsNone(self.instrument.currency_code)

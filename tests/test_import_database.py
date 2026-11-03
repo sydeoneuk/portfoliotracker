@@ -282,6 +282,11 @@ class TestImportDatabase(unittest.TestCase):
         self.assertEqual(self.db.scalar(select(HoldingSnapshot.value_gbp).where(
             HoldingSnapshot.user_id == self.user_id)), 800)
 
+        saved = self.db.scalar(select(HoldingSnapshot).where(HoldingSnapshot.user_id == self.user_id))
+        self.assertEqual(saved.price_currency, 'USD')
+        self.assertEqual(float(saved.fx_rate_to_gbp), .8)
+        self.assertEqual(saved.valuation_evidence['calculation_version'], 'snapshot-1')
+
     def test_missing_fx_preserves_previous_daily_snapshot(self):
         self.seed_valuation("USD", 100, None)
         with patch("app.snapshots.get_fx_rates_to_gbp", return_value={"USD": 0.8}):
@@ -292,6 +297,26 @@ class TestImportDatabase(unittest.TestCase):
         with Session(self.engine) as reader:
             self.assertEqual(reader.scalar(select(HoldingSnapshot.value_gbp).where(
                 HoldingSnapshot.user_id == self.user_id)), 800)
+
+    def test_historical_units_survive_catalogue_edit_and_unknown_legacy_uses_stored_gbp(self):
+        from app.web.server import _fetch_filtered_positions_as_of
+        self.seed_valuation('GBX', 2000, 20)
+        snapshot_csv_platforms(self.db)
+        snapshot = self.db.scalar(select(HoldingSnapshot).where(HoldingSnapshot.user_id == self.user_id))
+        self.assertEqual(snapshot.price_currency, 'GBX')
+        self.assertEqual(float(snapshot.price_unit_scale), .01)
+        self.assertEqual(float(snapshot.fx_rate_to_gbp), .01)
+        self.db.get(Instrument, self.ticker).currency_code = 'USD'
+        self.db.commit()
+        rows = _fetch_filtered_positions_as_of(self.db, self.user_id, f'platform_{self.platform_id}', [], datetime.date.today())
+        self.assertEqual(rows[0]['currency'], 'GBX')
+        self.assertEqual(rows[0]['current_price'], 2000)
+        snapshot.price_currency = None  # simulate a preserved pre-047 record
+        self.db.commit()
+        rows = _fetch_filtered_positions_as_of(self.db, self.user_id, f'platform_{self.platform_id}', [], datetime.date.today())
+        self.assertEqual(rows[0]['currency'], 'GBP')
+        self.assertEqual(rows[0]['value'], 200)
+        self.assertEqual(snapshot.price_native, 2000)
 
     def test_cost_is_not_used_as_a_market_price(self):
         self.db.add(Position(ticker=self.ticker, platform_id=self.platform_id, user_id=self.user_id,

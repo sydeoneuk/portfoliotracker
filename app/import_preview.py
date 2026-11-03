@@ -4,6 +4,11 @@ def import_effect(batch):
     """Explain existing import rules without changing or reinterpreting observations."""
     if batch.source == 't212_identity_reconciliation':
         explanation = 'Assigns an existing cash transaction to its verified broker account. Amounts, dates and holdings stay unchanged.'
+    elif batch.source == 'purchase_costs':
+        if batch.options.get('replace_purchase_costs'):
+            explanation = 'Fills missing costs and replaces existing costs for matching rows in this statement. Review each old and new cost before applying.'
+        else:
+            explanation = 'Fills missing purchase costs for matching holdings in the selected account. Existing usable costs and quantities are preserved.'
     elif batch.source == 'pie_snapshot':
         explanation = 'Updates this pie’s allocation only. Account holdings and purchase costs stay unchanged.'
     elif batch.source == 'ii_holdings':

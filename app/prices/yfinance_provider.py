@@ -69,6 +69,8 @@ class YFinanceProvider(PriceProvider):
         yf_map: dict[str, dict[str, dict]] = {}
         for inst in instruments:
             yf_t = inst.get("yf_ticker") or _derive_yf_ticker(inst)
+            if inst.get('currency') in {'GBX', 'GBp'} and yf_t == inst.get('ticker'):
+                yf_t = _derive_yf_ticker(inst) or yf_t
             if yf_t:
                 yf_map.setdefault(yf_t, {})[inst['ticker']] = inst
 
@@ -153,6 +155,8 @@ def _derive_yf_ticker(inst: dict) -> str | None:
     ticker = inst.get("ticker", "")
     exchange = (inst.get("exchange") or "").upper()
     mic = (inst.get("mic_code") or "").upper()
+    if not mic and not exchange and inst.get('currency') in {'GBX', 'GBp'} and '_' not in ticker and '.' not in ticker:
+        return f'{ticker}.L'
 
     # Strip T212 suffixes like _EQ, _US_EQ
     base = ticker.split("_")[0]

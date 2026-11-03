@@ -53,6 +53,17 @@ class TestReconciliationDatabase(unittest.TestCase):
             kwargs.pop('isin', 'GB00BP6MXD84'), kwargs.pop('currency', 'GBP'),
             'Broker statement 2026-11-01', lookup=kwargs.pop('lookup', FakeLookup()), **kwargs)[0]
 
+    def test_verified_symbol_only_metadata_correction_preserves_units_and_can_undo(self):
+        instrument = self.db.get(Instrument, self.ticker)
+        original_currency = instrument.currency_code
+        proposal = self.metadata_proposal()
+        self.assertEqual(proposal.status, 'verified')
+        mapping, audit = service.apply_proposal(self.db, self.user_id, proposal.id)
+        self.assertEqual(instrument.yf_ticker, 'SHEL.L')
+        self.assertEqual(instrument.currency_code, original_currency)
+        service.undo_change(self.db, self.user_id, audit.id)
+        self.assertEqual(instrument.yf_ticker, 'WRONG')
+
     def test_missing_currency_metadata_preview_apply_and_undo_preserve_original_records(self):
         instrument = self.db.get(Instrument, self.ticker)
         instrument.currency_code = None

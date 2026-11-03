@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 import yfinance as yf
-from fastapi import FastAPI, Depends, Request, Form, Body
+from fastapi import FastAPI, Depends, Request, Form, Body, File, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -21,7 +21,7 @@ from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.snapshots import snapshot_csv_platforms as _snapshot_csv_platforms
-from app.cost_basis import decorate_cost_basis
+from app.cost_basis import decorate_cost_basis, purchase_costs
 from app.identity import T212_PIE_CSV
 from app.valuation import (
     ValuationUnavailable, convert_amount, effective_price_sql, get_fx_rates_to_gbp,
@@ -1288,8 +1288,14 @@ def settings_page(request: Request, db: Session = Depends(get_session)):
     if isinstance(user, RedirectResponse):
         return user
     user_settings = _get_or_create_settings(db, user.id)
+    from app.models import Platform
+    cost_upload_accounts = db.query(Platform).filter(
+        Platform.user_id == user.id, Platform.is_active.is_(True),
+        Platform.platform_type.in_(('interactive_investor', 't212_csv')),
+    ).order_by(Platform.name, Platform.id).all()
     return templates.TemplateResponse(request, "settings.html", {
         "user": user,
+        "cost_upload_accounts": cost_upload_accounts,
         "user_settings": user_settings,
         "has_trading_key": bool(user_settings.t212_api_key_enc),
         "has_trading_secret": bool(user_settings.t212_api_secret_enc),
@@ -1301,6 +1307,58 @@ def settings_page(request: Request, db: Session = Depends(get_session)):
         "is_admin": _is_admin(user),
         "server_ip": _get_server_ip(),
     })
+
+
+@app.get("/export/purchase-costs")
+def export_purchase_costs(request: Request, platform_id: int, db: Session = Depends(get_session)):
+    import csv
+    import io
+    from starlette.responses import Response
+    from app.ingestion import account_for
+    from app.models import Position
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    try:
+        account = account_for(db, user.id, platform_id)
+    except LookupError:
+        return JSONResponse({"error": "Account not found."}, status_code=404)
+    positions = db.query(Position).filter(
+        Position.user_id == user.id, Position.platform_id == account.id, Position.quantity > 0,
+    ).order_by(Position.ticker).all()
+    costs = purchase_costs(db, user.id, positions)
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(("Symbol", "Qty", "Book Cost", "Currency"))
+    for position in positions:
+        amount, currency, _ = costs.get((account.id, position.ticker), (None, "", None))
+        writer.writerow((position.ticker, position.quantity, "" if amount is None else format(amount, "f"), currency))
+    return Response(output.getvalue(), media_type="text/csv", headers={
+        "Content-Disposition": f'attachment; filename="purchase-costs-account-{account.id}.csv"',
+        "Cache-Control": "no-store",
+    })
+
+
+@app.post("/import/purchase-costs")
+async def preview_purchase_costs(
+    request: Request, platform_id: int = Form(...), csv_file: UploadFile = File(...),
+    db: Session = Depends(get_session),
+):
+    from app.ingestion import MAX_UPLOAD, account_for
+    from app.web.ingestion_routes import check_origin, stage_upload
+
+    user = _require_user(request, db)
+    if isinstance(user, RedirectResponse):
+        return user
+    check_origin(request)
+    try:
+        platform = account_for(db, user.id, platform_id)
+    except LookupError:
+        return JSONResponse({"error": "Account not found."}, status_code=404)
+    form = await request.form()
+    return stage_upload(db, user.id, platform, 'purchase_costs',
+                        await csv_file.read(MAX_UPLOAD + 1), csv_file.filename or 'purchase-costs.csv', form)
 
 
 @app.post("/settings")
@@ -1898,6 +1956,7 @@ _COMBINED_SQL = text(f"""
         i.country,
         CASE WHEN COUNT(DISTINCT p.account) > 1 THEN 'Both'
              ELSE MAX(p.account) END                           AS account,
+        ARRAY_AGG(DISTINCT p.platform_id) FILTER (WHERE p.quantity > 0) AS platform_ids,
         SUM(p.quantity)                                        AS quantity,
         SUM(p.quantity * p.average_price)
             / NULLIF(SUM(p.quantity), 0)                       AS average_price,
@@ -1948,6 +2007,7 @@ _PLATFORM_SQL = text(f"""
         i.instrument_class,
         i.country,
         pl.account_type                                        AS account,
+        ARRAY[p.platform_id] AS platform_ids,
         p.quantity,
         p.average_price,
         {_ep_p}                                               AS current_price,
@@ -1999,6 +2059,7 @@ _ACCOUNT_TYPE_SQL = text(f"""
         i.instrument_class,
         i.country,
         pl.account_type                                        AS account,
+        ARRAY_AGG(DISTINCT p.platform_id) FILTER (WHERE p.quantity > 0) AS platform_ids,
         SUM(p.quantity)                                        AS quantity,
         SUM(p.quantity * p.average_price)
             / NULLIF(SUM(p.quantity), 0)                       AS average_price,
@@ -2056,6 +2117,7 @@ def _build_multi_platform_sql(platform_ids: list[int]):
             i.country,
             CASE WHEN COUNT(DISTINCT p.account) > 1 THEN 'Both'
                  ELSE MAX(p.account) END                           AS account,
+        ARRAY_AGG(DISTINCT p.platform_id) FILTER (WHERE p.quantity > 0) AS platform_ids,
             SUM(p.quantity)                                        AS quantity,
             SUM(p.quantity * p.average_price)
                 / NULLIF(SUM(p.quantity), 0)                       AS average_price,
@@ -2294,7 +2356,7 @@ def _fetch_filtered_positions_as_of(
             COALESCE(NULLIF(i.name, ''), i.short_name, hs.ticker) AS name,
             COALESCE(NULLIF(i.short_name, ''), hs.ticker)         AS short_name,
             COALESCE(i.exchange, '—')                             AS exchange,
-            COALESCE(i.currency_code, '—')                        AS currency,
+            COALESCE(hs.price_currency, 'GBP')                    AS currency,
             COALESCE(i.instrument_type, '—')                      AS instrument_type,
             i.sector,
             i.industry,
@@ -2303,8 +2365,10 @@ def _fetch_filtered_positions_as_of(
             i.fcf_per_share_3y_avg,
             i.eps_ttm,
             hs.account                                             AS account,
+            ARRAY[hs.platform_id] AS platform_ids,
             hs.quantity                                            AS quantity,
-            hs.price_native                                        AS price_native,
+            CASE WHEN hs.price_currency IS NULL THEN hs.value_gbp / NULLIF(hs.quantity, 0)
+                 ELSE hs.price_native END AS price_native,
             hs.value_gbp                                           AS value_gbp
         FROM holding_snapshots hs
         JOIN instruments i ON i.ticker = hs.ticker
@@ -2386,6 +2450,7 @@ def _fetch_filtered_positions_as_of(
         )
         return {
             "ticker": snapshot_row["ticker"],
+            "platform_ids": snapshot_row["platform_ids"],
             "name": snapshot_row["name"],
             "short_name": snapshot_row["short_name"],
             "exchange": snapshot_row["exchange"],
@@ -2509,6 +2574,7 @@ def _pie_query(pie_ids: list[int], account: str) -> str:
             i.instrument_class,
             i.country,
             {account_col}                                          AS account,
+            ARRAY_AGG(DISTINCT pos.platform_id) FILTER (WHERE pa.quantity > 0) AS platform_ids,
             SUM(pa.quantity)                                       AS quantity,
             SUM(pa.quantity * pos.average_price)
                 / NULLIF(SUM(pa.quantity), 0)                      AS average_price,
@@ -2577,6 +2643,7 @@ def _no_pie_query(account: str) -> str:
             i.instrument_class,
             i.country,
             p.account,
+            ARRAY[p.platform_id] AS platform_ids,
             GREATEST(
                 COALESCE(p.quantity, 0) - COALESCE((
                     SELECT SUM(ph.owned_quantity)
@@ -2698,6 +2765,7 @@ def _merge_position_rows(rows: list[dict], account: str) -> list[dict]:
             grouped[key] = dict(row)
             continue
 
+        existing["platform_ids"] = sorted(set(existing.get("platform_ids") or []) | set(row.get("platform_ids") or []), key=lambda pid: (pid is None, pid or 0))
         existing_quantity = float(existing.get("quantity") or 0)
         row_quantity = float(row.get("quantity") or 0)
         combined_quantity = existing_quantity + row_quantity
@@ -2959,26 +3027,43 @@ def index(request: Request, db: Session = Depends(get_session)):
 
     # Value every holding in its listing currency, then convert exactly once.
     rows = db.execute(text(f"""
-        SELECT p.platform_id, p.ticker, p.quantity, p.average_price, p.cost_basis_amount, p.cost_basis_currency, p.cost_basis_status,
+        SELECT p.platform_id, p.ticker, COALESCE(NULLIF(i.name, ''), p.ticker) AS name, p.quantity, p.average_price, p.cost_basis_amount, p.cost_basis_currency, p.cost_basis_status, p.cost_basis_reason, p.last_synced_at,
                COALESCE(i.currency_code, 'GBP') AS currency, {_eff_price()} AS price_native
         FROM positions p JOIN instruments i ON i.ticker = p.ticker
         WHERE p.user_id = :user_id AND p.quantity > 0
     """), {"user_id": user.id}).fetchall()
-    rates = _get_fx_rates_to_gbp({row.currency for row in rows} | {row.cost_basis_currency for row in rows if row.cost_basis_currency})
+    costs = purchase_costs(db, user.id, rows)
+    rates = _get_fx_rates_to_gbp({row.currency for row in rows} | {currency for _, currency, _ in costs.values()})
     stats_by_platform = {}
+    holdings = []
+    active_ids = {platform.id for platform in platforms}
     for row in rows:
         stats = stats_by_platform.setdefault(row.platform_id, {"holding_count": 0, "value": 0.0, "cost": 0.0, "priced_subtotal": 0.0, "unpriced": []})
         stats["holding_count"] += 1
         try:
-            stats["priced_subtotal"] += float(value_holding(row.quantity, row.price_native, row.currency, rates).value_gbp)
+            value_gbp = float(value_holding(row.quantity, row.price_native, row.currency, rates).value_gbp)
+            stats["priced_subtotal"] += value_gbp
         except ValuationUnavailable:
+            value_gbp = None
             stats["unpriced"].append(row.ticker)
         stats["value"] = None if stats["unpriced"] else stats["priced_subtotal"]
         if stats["cost"] is not None:
             try:
-                stats["cost"] += convert_amount(row.cost_basis_amount, row.cost_basis_currency, "GBP", rates) if row.cost_basis_status in {"reported", "estimated"} else None
+                cost = costs.get((row.platform_id, row.ticker))
+                stats["cost"] = stats["cost"] + convert_amount(cost[0], cost[1], "GBP", rates) if cost else None
             except (ValuationUnavailable, TypeError):
                 stats["cost"] = None
+
+        if row.platform_id in active_ids:
+            holdings.append({
+                "ticker": row.ticker, "name": row.name, "quantity": row.quantity,
+                "platform_ids": [row.platform_id], "value_display": value_gbp,
+            })
+
+    from app.holding_accounts import decorate_holding_accounts
+    from app.holding_identity import group_display_holdings
+    decorate_holding_accounts(db, user.id, holdings)
+    holdings = group_display_holdings(db, user.id, holdings, "GBP")
 
     # Group platforms by provider.
     from collections import OrderedDict
@@ -3018,6 +3103,7 @@ def index(request: Request, db: Session = Depends(get_session)):
     return templates.TemplateResponse(request, "index.html", {
         "user": user,
         "providers": providers,
+        "holdings": holdings,
         "total_value": total_value,
         "priced_subtotal": priced_subtotal,
         "unpriced_count": unpriced_count,
@@ -4048,93 +4134,48 @@ def _extract_planning_orders(analysis_text: str) -> tuple[str, dict]:
 
 
 def _build_portfolio_history(
-    db: Session,
-    user_id: int,
-    account: str,
-    selected_pie_ids: list[int],
-    include_no_pie: bool = False,
+    db: Session, user_id: int, account: str, selected_pie_ids: list[int],
+    include_no_pie: bool = False, *, current_value=None, display_currency='GBP',
+    rates=None, as_of_date=None, filtered=False,
 ) -> str:
-    params: dict = {"user_id": user_id}
-
-    if selected_pie_ids or include_no_pie:
-        pie_sum_sql = "COALESCE(SUM(CASE WHEN ps.scope_type = 'pie'"
-        if selected_pie_ids:
-            safe_ids = ", ".join(str(int(i)) for i in selected_pie_ids)
-            pie_sum_sql += f" AND ps.pie_id IN ({safe_ids})"
-        pie_sum_sql += " THEN ps.total_value_gbp ELSE 0 END), 0)"
-
-        if include_no_pie:
-            selected_total_sql = f"""
-                MAX(CASE WHEN ps.scope_type = 'account' THEN ps.total_value_gbp END)
-                - COALESCE(SUM(CASE WHEN ps.scope_type = 'pie' THEN ps.total_value_gbp ELSE 0 END), 0)
-                + {pie_sum_sql}
-            """
-        else:
-            selected_total_sql = pie_sum_sql
-
-        safe_ids = ", ".join(str(int(i)) for i in selected_pie_ids)
-        ph_ft, ph_fv = _parse_account_filter(account)
-        if ph_ft == "platform":
-            params["platform_id"] = ph_fv
-            account_filter = "AND ps.platform_id = :platform_id"
-        elif ph_ft == "platforms":
-            account_filter, extra = _platforms_in_clause(ph_fv, "ps.platform_id")
-            params.update(extra)
-        elif ph_ft == "account_type":
-            params["account_type"] = ph_fv
-            account_filter = (
-                "AND ps.platform_id IN "
-                "(SELECT id FROM platforms WHERE user_id = :user_id AND account_type = :account_type)"
-            )
-        else:
-            account_filter = ""
-        rows = db.execute(text(f"""
-            SELECT
-                ps.snapshot_date,
-                {selected_total_sql} AS total_value_gbp
-            FROM portfolio_snapshots ps
-            WHERE ps.user_id = :user_id
-              AND ps.scope_type IN ('account', 'pie')
-              {account_filter}
-            GROUP BY ps.snapshot_date
-            ORDER BY ps.snapshot_date
-        """), params).fetchall()
+    from app.portfolio_history import build_history
+    params = {'user_id': user_id}
+    kind, value = _parse_account_filter(account)
+    if kind == 'platform':
+        params['platform_id'] = value
+        account_filter = 'AND pl.id=:platform_id'
+    elif kind == 'platforms':
+        account_filter, extra = _platforms_in_clause(value, 'pl.id')
+        params.update(extra)
+    elif kind == 'account_type':
+        params['account_type'] = value
+        account_filter = 'AND pl.account_type=:account_type'
     else:
-        ph_ft, ph_fv = _parse_account_filter(account)
-        if ph_ft == "platform":
-            params["platform_id"] = ph_fv
-            account_filter = "AND ps.platform_id = :platform_id"
-        elif ph_ft == "platforms":
-            account_filter, extra = _platforms_in_clause(ph_fv, "ps.platform_id")
-            params.update(extra)
-        elif ph_ft == "account_type":
-            params["account_type"] = ph_fv
-            account_filter = (
-                "AND ps.platform_id IN "
-                "(SELECT id FROM platforms WHERE user_id = :user_id AND account_type = :account_type)"
-            )
-        else:
-            account_filter = ""
-        rows = db.execute(text(f"""
-            SELECT ps.snapshot_date, SUM(ps.total_value_gbp) AS total_value_gbp
-            FROM portfolio_snapshots ps
-            WHERE ps.user_id = :user_id
-              AND ps.scope_type = 'account'
-              {account_filter}
-            GROUP BY ps.snapshot_date
-            ORDER BY ps.snapshot_date
-        """), params).fetchall()
-
-    values = [round(float(r.total_value_gbp or 0), 2) for r in rows]
-    return json.dumps({
-        "labels": [r.snapshot_date.strftime("%d %b %Y") for r in rows],
-        "iso_dates": [r.snapshot_date.isoformat() for r in rows],
-        "values": values,
-        "latest": values[-1] if values else 0.0,
-    })
+        account_filter = ''
+    accounts = db.execute(text(f"""
+        SELECT pl.id FROM platforms pl WHERE pl.user_id=:user_id {account_filter}
+          AND (EXISTS(SELECT 1 FROM positions p WHERE p.platform_id=pl.id AND p.user_id=pl.user_id AND p.quantity>0)
+            OR EXISTS(SELECT 1 FROM portfolio_snapshots ps WHERE ps.platform_id=pl.id AND ps.user_id=pl.user_id))
+    """), params).scalars().all()
+    if selected_pie_ids and not include_no_pie:
+        owned_pie_accounts = db.execute(text('SELECT platform_id FROM pies WHERE user_id=:user_id AND pk=ANY(:pies)'),
+                                       dict(params, pies=selected_pie_ids)).scalars().all()
+        accounts = [pid for pid in accounts if pid in owned_pie_accounts]
+    rows = db.execute(text(f"""
+        SELECT ps.snapshot_date, ps.platform_id, ps.scope_type, ps.pie_id,
+               ps.total_value_gbp, ps.captured_at, ps.id
+        FROM portfolio_snapshots ps JOIN platforms pl ON pl.id=ps.platform_id AND pl.user_id=ps.user_id
+        WHERE ps.user_id=:user_id AND ps.scope_type IN ('account','pie') {account_filter}
+        ORDER BY ps.snapshot_date, ps.captured_at, ps.id
+    """), params).mappings().all()
+    def convert(value):
+        return _convert_gbp_to_currency(value, display_currency, rates or {})
+    return json.dumps(build_history(rows, accounts, selected_pie_ids, include_no_pie,
+        convert=convert, current_value=current_value, currency=display_currency,
+        as_of_date=as_of_date, filtered=filtered))
 
 
-def _build_holding_history(db: Session, user_id: int, ticker: str, account: str) -> str:
+def _build_holding_history(db: Session, user_id: int, ticker: str, account: str, pairs=()) -> str:
     params: dict = {"user_id": user_id, "ticker": ticker}
     hh_ft, hh_fv = _parse_account_filter(account)
     if hh_ft == "platform":
@@ -4152,11 +4193,14 @@ def _build_holding_history(db: Session, user_id: int, ticker: str, account: str)
     else:
         account_filter = ""
 
+    from app.holding_identity import history_scope
+    scope_sql, scope_params = history_scope('hs', ticker, pairs)
+    params.update(scope_params)
     rows = db.execute(text(f"""
         SELECT hs.snapshot_date, SUM(hs.value_gbp) AS value_gbp
         FROM holding_snapshots hs
         WHERE hs.user_id = :user_id
-          AND hs.ticker = :ticker
+          AND {scope_sql}
           {account_filter}
         GROUP BY hs.snapshot_date
         ORDER BY hs.snapshot_date
@@ -4235,6 +4279,8 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         positions = _fetch_filtered_positions_as_of(db, user.id, account, selected_pie_ids, as_of_date, include_no_pie)
     else:
         positions = _fetch_filtered_positions(db, user.id, account, selected_pie_ids, include_no_pie)
+    from app.holding_accounts import decorate_holding_accounts
+    decorate_holding_accounts(db, user.id, positions)
     # Retain the unnormalised whole-portfolio rows before country/sector filtering
     # and display conversion. Their native units must not be converted twice.
     whole_portfolio_positions = positions if (
@@ -4674,7 +4720,11 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "values": [round(float(r.total), 2) for r in div_rows],
         "total":  round(sum(float(r.total) for r in div_rows), 2),
     })
-    portfolio_history = _build_portfolio_history(db, user.id, account, selected_pie_ids, include_no_pie)
+    portfolio_history = _build_portfolio_history(
+        db, user.id, account, selected_pie_ids, include_no_pie,
+        current_value=analysis_summary['value'], display_currency=display_currency,
+        rates=pricing_fx, as_of_date=as_of_date,
+        filtered=bool(requested_country or requested_sector))
     pie_filter_key = _build_ai_pie_filter_key(pies, selected_pie_tokens)
     initial_ai_analysis = None
     ai_analysis_header_text = "No cached analysis yet"
@@ -4701,6 +4751,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
             ai_analysis_header_text = "Last run previously saved"
             ai_analysis_button_label = "Reanalyse"
 
+    from app.holding_identity import group_display_holdings
     return templates.TemplateResponse(request, "analysis.html", {
         "user": user,
         "account_filter": account,
@@ -4730,7 +4781,7 @@ def portfolio_analysis(request: Request, account: str = "combined", pies: str = 
         "unpriced_positions": unpriced_positions,
         "cash_issue": cash_issue,
         "total_portfolio_pct": total_portfolio_pct,
-        "positions": positions,
+        "positions": positions if as_of_date else group_display_holdings(db, user.id, positions, display_currency),
         "display_currency": display_currency,
         "geo_table": geo_table,
         "sector_table": sector_table,
@@ -5028,9 +5079,22 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
 
     _hd_account_types, _hd_user_platforms = _load_filter_items(db, user.id)
 
-    # Positions for this user/ticker, optionally filtered by account
-    q = db.query(Position).filter_by(ticker=ticker, user_id=user.id)
+    from app.holding_identity import holding_scope, event_scope, history_scope
     hd_ft, hd_fv = _parse_account_filter(account)
+    selected_ids = None
+    if hd_ft == 'platform':
+        selected_ids = [hd_fv]
+    elif hd_ft == 'platforms':
+        selected_ids = hd_fv
+    elif hd_ft == 'account_type':
+        from app.models import Platform
+        selected_ids = [p.id for p in db.query(Platform).filter_by(user_id=user.id, account_type=hd_fv).all()]
+    pairs, alias_instruments, alias_symbols = holding_scope(db, user.id, ticker, selected_ids)
+    # An alias URL with no position in the selected account still resolves from
+    # the owner's verified security, then the account filter is applied strictly.
+    if not pairs and selected_ids is not None:
+        pairs, alias_instruments, alias_symbols = holding_scope(db, user.id, ticker)
+    q = db.query(Position).filter(Position.user_id == user.id, event_scope(Position, ticker, pairs))
     if hd_ft == "platform":
         q = q.filter_by(platform_id=hd_fv)
     elif hd_ft == "platforms":
@@ -5040,33 +5104,55 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         plat_ids = [p.id for p in db.query(_Plat).filter_by(user_id=user.id, account_type=hd_fv).all()]
         q = q.filter(Position.platform_id.in_(plat_ids))
     positions_list = q.all()
-    if not positions_list and hd_ft != "portfolio":
-        positions_list = db.query(Position).filter_by(ticker=ticker, user_id=user.id).all()
+    all_positions = db.query(Position).filter(Position.user_id == user.id, event_scope(Position, ticker, pairs)).all()
 
     currency = instrument.currency_code or "GBP"  # verified market display units only
     user_settings = db.query(UserSettings).filter_by(user_id=user.id).first()
     display_currency = _resolve_display_currency(user_settings, account)
-    fx = _get_fx_rates_to_gbp({currency, display_currency} | {p.cost_basis_currency for p in positions_list if p.cost_basis_currency})
+    costs = purchase_costs(db, user.id, positions_list)
+    fx = _get_fx_rates_to_gbp(
+        {currency, display_currency}
+        | {cost_currency for _, cost_currency, _ in costs.values()}
+        | {p.instrument.currency_code or "GBP" for p in positions_list}
+    )
     native_to_display = _native_to_display_rate(currency, display_currency, fx)
-    # native_to_display converts listing-currency amounts into the active account display currency.
-
     total_quantity = sum(float(p.quantity or 0) for p in positions_list)
-    cost_unknown = any(p.cost_basis_amount is None or not p.cost_basis_currency or p.cost_basis_status not in {"reported", "estimated"} for p in positions_list)
-    cost_estimated = any(p.cost_basis_status == "estimated" for p in positions_list)
-    try:
-        total_cost_native = sum(convert_amount(p.cost_basis_amount, p.cost_basis_currency, currency, fx) for p in positions_list) if not cost_unknown else 0
-    except ValuationUnavailable:
-        cost_unknown, total_cost_native = True, 0
+    cost_issues = []
+    cost_estimated = False
+    total_cost_native = 0
+    for position in positions_list:
+        cost = costs.get((position.platform_id, position.ticker))
+        reason = position.cost_basis_reason or "No verified purchase cost and currency are recorded."
+        if cost:
+            amount, cost_currency, status = cost
+            try:
+                total_cost_native += convert_amount(amount, cost_currency, currency, fx)
+                cost_estimated |= status == "estimated"
+                continue
+            except ValuationUnavailable:
+                reason = f"Exchange rate unavailable for the recorded cost in {cost_currency}."
+        cost_issues.append({
+            "platform_id": position.platform_id,
+            "ticker": position.ticker,
+            "reason": reason,
+            "api_account": position.platform is not None and position.platform.platform_type == "t212_api",
+        })
+    cost_unknown = bool(cost_issues)
     avg_price_native = total_cost_native / total_quantity if total_quantity else 0
     # Value each account independently, then derive a quantity-weighted display
     # price. Never let one account's listing price leak into another account.
     if positions_list:
-        ids = ','.join(str(int(p.platform_id)) for p in positions_list)
-        account_prices = db.execute(text(f'''SELECT p.quantity, {_eff_price()} AS price
-            FROM positions p WHERE p.user_id=:user_id AND p.ticker=:ticker AND p.platform_id IN ({ids})'''),
-            {'user_id': user.id, 'ticker': ticker}).mappings().all()
-        current_price_native = (sum(float(p['quantity'] or 0) * float(p['price']) for p in account_prices)
-            / total_quantity if total_quantity and all(p['price'] is not None for p in account_prices) else None)
+        scope_sql, scope_params = history_scope('p', ticker, pairs)
+        account_prices = db.execute(text(f'''SELECT p.ticker,p.platform_id,p.quantity, {_eff_price()} AS price,
+            COALESCE(i.currency_code,'GBP') AS currency
+            FROM positions p JOIN instruments i ON i.ticker=p.ticker
+            WHERE p.user_id=:user_id AND {scope_sql}'''),
+            {'user_id': user.id, **scope_params}).mappings().all()
+        selected_keys = {(p.ticker, p.platform_id) for p in positions_list}
+        account_prices = [p for p in account_prices if (p['ticker'],p['platform_id']) in selected_keys]
+        current_price_native = (sum(float(p['quantity'] or 0) * convert_amount(p['price'], p['currency'], currency, fx)
+            for p in account_prices) / total_quantity
+            if total_quantity and all(p['price'] is not None for p in account_prices) else None)
     else:
         current_price_native = db.execute(text(f"SELECT {quote_price_sql(':ticker', ':user_id')}"),
             {'ticker': ticker, 'user_id': user.id}).scalar()
@@ -5077,19 +5163,20 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
             [p.platform_id for p in positions_list])[0].get('valuation_issue')
         if issue:
             raise ValuationUnavailable(issue)
-    value_holding(total_quantity, current_price_native, currency, fx)
-    current_price_native = float(current_price_native)
+    if positions_list or current_price_native is not None:
+        value_holding(total_quantity, current_price_native, currency, fx)
+    current_price_native = float(current_price_native) if current_price_native is not None else None
 
     avg_price_display = avg_price_native * native_to_display
-    current_price_display = current_price_native * native_to_display
+    current_price_display = current_price_native * native_to_display if current_price_native is not None else None
     cost_display = total_cost_native * native_to_display
-    value_display = total_quantity * current_price_native * native_to_display
+    value_display = total_quantity * current_price_native * native_to_display if total_quantity else 0.0
     market_cap_display = (float(instrument.market_cap or 0) * native_to_display) if instrument.market_cap and instrument.currency_code else 0
     cap_pnl_display = value_display - cost_display
     cap_pnl_pct = (cap_pnl_display / cost_display * 100) if cost_display else 0
 
     # Actual dividends received by user
-    div_q = db.query(DividendPayment).filter_by(ticker=ticker, user_id=user.id)
+    div_q = db.query(DividendPayment).filter(DividendPayment.user_id == user.id, event_scope(DividendPayment, ticker, pairs))
     if hd_ft == "platform":
         div_q = div_q.filter_by(platform_id=hd_fv)
     elif hd_ft == "platforms":
@@ -5100,6 +5187,7 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     total_divs_gbp = sum(float(dp.amount or 0) for dp in div_payments)
     total_divs_display = _convert_gbp_to_currency(total_divs_gbp, display_currency, fx)
     for dp in div_payments:
+        dp.per_share_currency = alias_instruments[dp.ticker].currency_code
         dp.amount_display = _convert_gbp_to_currency(float(dp.amount or 0), display_currency, fx)
 
     total_pnl_display = cap_pnl_display + total_divs_display
@@ -5111,6 +5199,12 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         text("SELECT MAX(annual_rate) FROM dividend_forecast WHERE ticker = :t"),
         {"t": ticker},
     ).scalar() or 0
+    if pairs:
+        rates = db.execute(text('SELECT ticker,MAX(annual_rate) AS rate FROM dividend_forecast WHERE ticker=ANY(:symbols) GROUP BY ticker'),
+                           {'symbols': sorted(alias_symbols)}).mappings().all()
+        converted_rates = [convert_amount(r['rate'], alias_instruments[r['ticker']].currency_code, currency, fx)
+                           for r in rates if r['rate'] is not None and alias_instruments[r['ticker']].currency_code]
+        annual_rate = max(converted_rates, default=annual_rate)
     if not instrument.currency_code:
         annual_rate = 0  # historical dividend-rate units remain unknown
     fwd_div_display = float(annual_rate) * total_quantity * native_to_display
@@ -5130,7 +5224,7 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     # Trade history (filled orders)
     orders_q = (
         db.query(Order)
-        .filter(Order.ticker == ticker, Order.user_id == user.id, Order.status == "FILLED")
+        .filter(event_scope(Order, ticker, pairs), Order.user_id == user.id, Order.status == "FILLED")
     )
     if hd_ft == "platform":
         orders_q = orders_q.filter(Order.platform_id == hd_fv)
@@ -5139,6 +5233,12 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
     elif hd_ft == "account_type":
         orders_q = orders_q.filter(Order.platform_id.in_(plat_ids))
     trade_history = orders_q.order_by(Order.filled_at.desc()).all()
+
+    from app.holding_accounts import decorate_holding_accounts
+    event_account_rows = [{'platform_ids': [pid]} for pid in
+                          {event.platform_id for event in [*div_payments, *trade_history, *all_positions]}]
+    decorate_holding_accounts(db, user.id, event_account_rows)
+    event_accounts = {badge['id']: badge for row in event_account_rows for badge in row['holding_accounts']}
 
     # Historical per-share dividends
     hist_divs = (
@@ -5157,28 +5257,30 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         .all()
     )
 
-    # All positions (unfiltered) for per-account breakdown cards
-    all_positions = db.query(Position).filter_by(ticker=ticker, user_id=user.id).all()
 
     # Pies containing this ticker — scoped to the current user
-    pie_rows = db.execute(text("""
+    # Pie holdings carry the account on their parent pie.
+    pie_scope_sql, pie_scope_params = history_scope('pie', ticker, pairs)
+    pie_scope_sql = pie_scope_sql.replace('pie.ticker', 'ph.ticker')
+    pie_rows = db.execute(text(f"""
         SELECT pie.pk AS id, pie.name, pie.account,
                ph.owned_quantity, ph.current_share, ph.expected_share
         FROM pies pie
         JOIN pie_holdings ph ON ph.pie_id = pie.pk
-        WHERE ph.ticker = :ticker
+        WHERE {pie_scope_sql}
           AND pie.user_id = :user_id
-          AND (:account = 'combined' OR pie.account = :account OR pie.account IS NULL)
+          AND (:all_accounts OR pie.platform_id=ANY(:selected_accounts))
         ORDER BY pie.name
-    """), {"ticker": ticker, "account": account, "user_id": user.id}).fetchall()
+    """), {**pie_scope_params, "all_accounts": selected_ids is None, "selected_accounts": selected_ids or [], "user_id": user.id}).fetchall()
     pies_in = [dict(r._mapping) for r in pie_rows]
-    holding_history = _build_holding_history(db, user.id, ticker, account)
+    holding_history = _build_holding_history(db, user.id, ticker, account, pairs=pairs)
 
     if cost_unknown:
         avg_price_display = cost_display = cap_pnl_display = cap_pnl_pct = None
         total_pnl_display = total_pnl_pct = actual_yield = personal_fwd_yield = None
     return templates.TemplateResponse(request, "holding.html", {
         "cost_unknown": cost_unknown, "cost_estimated": cost_estimated,
+        "cost_issues": cost_issues,
         "user": user,
         "instrument": instrument,
         "ticker": ticker,
@@ -5187,6 +5289,9 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         "user_platforms": _hd_user_platforms,
         "display_currency": display_currency,
         "positions": positions_list,
+        "holding_aliases": sorted(alias_symbols),
+        "unverified_holding_aliases": sorted(i.ticker for i in alias_instruments.values()
+            if instrument.isin and i.isin == instrument.isin and i.ticker not in alias_symbols),
         "all_positions": all_positions,
         "total_quantity": total_quantity,
         "avg_price_display": avg_price_display,
@@ -5211,6 +5316,7 @@ def holding_detail(ticker: str, request: Request, account: str = "combined",
         "eps_ttm": eps_ttm,
         "fcf_ps": fcf_ps,
         "trade_history": trade_history,
+        "event_accounts": event_accounts,
         "div_payments": div_payments,
         "hist_divs": hist_divs,
         "forecast_divs": forecast_divs,
